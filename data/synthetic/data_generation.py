@@ -9,7 +9,26 @@ def make_synthetic_data(
     noise_std: float = 0.1,
     samples_test: int = 5_000,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor], torch.Tensor, torch.Tensor]:
-    """Generate logistic-regression data with a ground-truth weight."""
+    """Generate logistic-regression data with a ground-truth weight.
+
+    Parameters
+    ----------
+    n_clients : int, optional
+        Number of clients (datasets) to generate.
+    samples_per_client : int, optional
+        Number of samples per client. 
+    d : int, optional
+        Number of features (dimensionality) for each sample. 
+    noise_std : float, optional
+        Standard deviation of Gaussian noise added to the logits.
+    samples_test : int, optional
+        Number of samples in the global test set. 
+
+    Returns
+    -------
+    Tuple[List[torch.Tensor], List[torch.Tensor], torch.Tensor, torch.Tensor]
+        Tuple containing the training data (features and labels) for each client, and the global test set (features and labels).
+    """
 
     # Generate ground-truth weight
     w_true = torch.randn(d) / np.sqrt(d) #It creates a random weight vector of size d normalized ot maintain stable the variance (d, )

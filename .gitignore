@@ -3,3 +3,6 @@
 /venv
 
 __pycache__/
+
+/data/real
+.DS_Store

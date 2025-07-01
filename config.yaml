@@ -1,0 +1,17 @@
+# Configuration file for Federated Proximal Gating with Data Quality
+# You can override any of these parameters by editing this file.
+# Command-line arguments take precedence over these values.
+
+K: 5                # Number of clients
+N: 1000              # Samples per client
+D: 13                # Number of features
+n_rounds: 100         # Number of rounds
+local_epochs: 40     # Local epochs
+lr: 0.001              # Learning rate 
+mu: 0.5              # Proximal regularization term
+n_corrupt: 2         # Number of corrupted features per client
+synthetic_data: False # Whether to use synthetic data
+dataset_path: ./data/real/heart.csv  # Path to real dataset
+target_column: target  # Target column string
+model_type: nn # logreg or nn
+num_classes: 2 # number of classes for nn
