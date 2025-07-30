@@ -5,4 +5,5 @@
 __pycache__/
 
 /data/real
+/data_visualization/graphics
 .DS_Store

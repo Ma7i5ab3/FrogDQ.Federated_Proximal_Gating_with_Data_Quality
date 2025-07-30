@@ -4,3 +4,7 @@ scikit-learn
 pandas
 requests
 PyYAML
+plotly
+kaleido
+datasets
+mlcroissant
