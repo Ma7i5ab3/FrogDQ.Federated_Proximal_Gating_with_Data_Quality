@@ -11,46 +11,94 @@ class Stats:
         self.data = {
             ("fedavg", "clean"): {
                 "accuracy_test": [],
-                "accuracy_val": [], 
+                "roc_auc_test": [],
+                "accuracy_val": [],
+                "roc_auc_val": [],
+                "loss_val": [], 
                 "loss": [],
                 "gate_updates": [],
                 "weight_updates": [],
             },
             ("fedprox", "clean"): {
                 "accuracy_test": [],
-                "accuracy_val": [], 
+                "roc_auc_test": [],
+                "accuracy_val": [],
+                "roc_auc_val": [],
+                "loss_val": [], 
                 "loss": [],
                 "gate_updates": [],
                 "weight_updates": [],
             },
             ("frog", "clean"): {
+                "accuracy_test": [],
+                "roc_auc_test": [],
+                "accuracy_val": [],
+                "roc_auc_val": [],
+                "loss_val": [], 
+                "loss": [],
+                "gate_updates": [],
+                "weight_updates": [],
+            },
+            ("frog_new", "clean"): {
                "accuracy_test": [],
-                "accuracy_val": [], 
+                "roc_auc_test": [],
+                "accuracy_val": [],
+                "roc_auc_val": [],
+                "loss_val": [], 
                 "loss": [],
                 "gate_updates": [],
                 "weight_updates": [],
             },
             ("fedavg", "dirty"): {
                 "accuracy_test": [],
-                "accuracy_val": [], 
+                "roc_auc_test": [],
+                "accuracy_val": [],
+                "roc_auc_val": [],
+                "loss_val": [], 
                 "loss": [],
                 "gate_updates": [],
                 "weight_updates": [],
             },
             ("fedprox", "dirty"): {
                 "accuracy_test": [],
-                "accuracy_val": [], 
+                "roc_auc_test": [],
+                "accuracy_val": [],
+                "roc_auc_val": [],
+                "loss_val": [], 
                 "loss": [],
                 "gate_updates": [],
                 "weight_updates": [],
             },
             ("frog", "dirty"): {
-               "accuracy_test": [],
-                "accuracy_val": [], 
+                "accuracy_test": [],
+                "roc_auc_test": [],
+                "accuracy_val": [],
+                "roc_auc_val": [],
+                "loss_val": [], 
                 "loss": [],
                 "gate_updates": [],
                 "weight_updates": [],
             },
+            ("frog_new", "dirty"): {
+                "accuracy_test": [],
+                "roc_auc_test": [],
+                "accuracy_val": [],
+                "roc_auc_val": [],
+                "loss_val": [], 
+                "loss": [],
+                "gate_updates": [],
+                "weight_updates": [],
+            },
+            ("fedavg_no_corr_feat", "dirty"): {
+                "accuracy_test": [],
+                "roc_auc_test": [],
+                "accuracy_val": [],
+                "roc_auc_val": [],
+                "loss_val": [], 
+                "loss": [],
+                "gate_updates": [],
+                "weight_updates": [],
+            }
         }
 
     # Topk_features
@@ -60,6 +108,13 @@ class Stats:
     def get_topk_features(self):
         return self.topk_features
 
+    # Generic Eval Metric
+    def set_eval_metric(self, algorithm, dq_type, metric, value):
+        self.data[(algorithm, dq_type)][metric].append(value)
+    
+    def get_eval_metric(self, algorithm, dq_type, metric):
+        return self.data[(algorithm, dq_type)][metric]
+
     # Accuracy test
     def set_accuracy_test(self, algorithm, dq_type, value):
         self.data[(algorithm, dq_type)]["accuracy_test"].append(value)
@@ -67,6 +122,7 @@ class Stats:
     def get_accuracy_test(self, algorithm, dq_type):
         return self.data[(algorithm, dq_type)]["accuracy_test"]
     
+    # Accuracy val
     def set_accuracy_val(self, algorithm, dq_type, value):
         self.data[(algorithm, dq_type)]["accuracy_val"].append(value)
 
@@ -74,11 +130,11 @@ class Stats:
         return self.data[(algorithm, dq_type)]["accuracy_val"]
 
     # Loss
-    def set_loss(self, algorithm, dq_type, value):
-        self.data[(algorithm, dq_type)]["loss"].append(value)
+    def set_val_loss(self, algorithm, dq_type, value):
+        self.data[(algorithm, dq_type)]["loss_val"].append(value)
 
-    def get_loss(self, algorithm, dq_type):
-        return self.data[(algorithm, dq_type)]["loss"]
+    def get_val_loss(self, algorithm, dq_type):
+        return self.data[(algorithm, dq_type)]["loss_val"]
 
     # Gate updates
     def set_gate_updates(self, algorithm, dq_type, value):

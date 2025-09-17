@@ -142,33 +142,77 @@ def plot_accuracy_test_comparison(stats_client: Stats, experiment_name: str):
     )
 
 
-def plot_accuracy_val_over_rounds(stats_client: Stats, experiment_name: str, iteration: int):
+def plot_val_metrics_over_rounds(stats_client: Stats, experiment_name: str, iteration: int):
 
     line_style = {'clean': 'solid', 'dirty': 'dot'}
-    fig = go.Figure()
+    color_style = {'fedavg': 'red', 'frog': 'green', 'fedprox': 'blue', 'frog_new': 'blue', 'fedavg_no_corr_feat': 'black'}
+    fig_acc = go.Figure()
+    fig_loss = go.Figure()
+    fig_auc_roc = go.Figure()
 
     for i, sim_info in enumerate(stats_client.data.keys()):
-
-        fig.add_trace(
-            go.Scatter(
-                y=stats_client.get_accuracy_val(algorithm=sim_info[0], dq_type=sim_info[1]),
-                mode="lines",
-                name=f"{sim_info[0]} - {sim_info[1]}",
-                line=dict(dash=line_style[sim_info[1]]),
+        if sim_info[0] in ['frog', 'frog_new', 'fedavg']: # or sim_info[0] == 'fedavg_no_corr_feat':
+            fig_acc.add_trace(
+                go.Scatter(
+                    y=stats_client.get_accuracy_val(algorithm=sim_info[0], dq_type=sim_info[1])[-1],
+                    mode="lines",
+                    name=f"{sim_info[0]} - {sim_info[1]}",
+                    line=dict(dash=line_style[sim_info[1]],
+                              color=color_style[sim_info[0]]),
+                )
             )
-        )
+
+            fig_loss.add_trace(
+                go.Scatter(
+                    y=stats_client.get_val_loss(algorithm=sim_info[0], dq_type=sim_info[1])[-1],
+                    mode="lines",
+                    name=f"{sim_info[0]} - {sim_info[1]}",
+                    line=dict(dash=line_style[sim_info[1]],
+                              color=color_style[sim_info[0]]),
+                )
+            )
+
+            fig_auc_roc.add_trace(
+                go.Scatter(
+                    y=stats_client.get_eval_metric(algorithm=sim_info[0], dq_type=sim_info[1], metric="roc_auc_val")[-1],
+                    mode="lines",
+                    name=f"{sim_info[0]} - {sim_info[1]}",
+                    line=dict(dash=line_style[sim_info[1]],
+                              color=color_style[sim_info[0]]),
+                )
+            )
     
-    fig.update_layout(
+    fig_acc.update_layout(
         title="Accuracy on Validation Set over rounds",
         xaxis_title="Rounds",
         yaxis_title="Accuracy",
         template="simple_white",
     )
 
+    fig_loss.update_layout(
+        title="Loss on Validation Set over rounds",
+        xaxis_title="Rounds",
+        yaxis_title="Loss",
+        template="simple_white",
+    )
+
+    fig_auc_roc.update_layout(
+        title="ROC-AUC on Validation Set over rounds",
+        xaxis_title="Rounds",
+        yaxis_title="ROC-AUC",
+        template="simple_white",
+    )
+
     os.makedirs(f'data_visualization/graphics/{experiment_name}/{iteration}/', exist_ok=True)
 
-    fig.write_image(
+    fig_acc.write_image(
         f"data_visualization/graphics/{experiment_name}/{iteration}/accuracy_rounds.png", width=800, height=600, scale=1
+    )
+    fig_loss.write_image(
+        f"data_visualization/graphics/{experiment_name}/{iteration}/loss_rounds.png", width=800, height=600, scale=1
+    )
+    fig_auc_roc.write_image(
+        f"data_visualization/graphics/{experiment_name}/{iteration}/roc_auc_rounds.png", width=800, height=600, scale=1
     )
 
 
@@ -218,4 +262,78 @@ def plot_compare_weights_original_model(stats_client: Stats, w_true: list, dq_ty
 
     fig.write_image(
         f"data_visualization/graphics/{experiment_name}/{iteration}/weight_comparison_on_feature_{feature}_{dq_type}_setting.png", width=800, height=600, scale=1
+    )
+
+
+def plot_mean_val_over_rounds(stats_client: Stats, experiment_name: str):
+
+    line_style = {'clean': 'solid', 'dirty': 'dot'}
+    color_style = {'fedavg': 'red', 'frog': 'green', 'fedprox': 'blue', 'frog_new': 'blue'}
+    fig_acc = go.Figure()
+    fig_loss = go.Figure()
+    fig_auc_roc = go.Figure()
+
+    for i, sim_info in enumerate(stats_client.data.keys()):
+        if sim_info[0] == 'fedavg' or sim_info[0] == 'frog' or sim_info[0] == 'frog_new':
+            fig_acc.add_trace(
+                go.Scatter(
+                    y=np.mean(stats_client.get_accuracy_val(algorithm=sim_info[0], dq_type=sim_info[1]), axis=0),
+                    mode="lines",
+                    name=f"{sim_info[0]} - {sim_info[1]}",
+                    line=dict(dash=line_style[sim_info[1]],
+                              color=color_style[sim_info[0]]),
+                )
+            )
+
+            fig_loss.add_trace(
+                go.Scatter(
+                    y=np.mean(stats_client.get_val_loss(algorithm=sim_info[0], dq_type=sim_info[1]), axis=0),
+                    mode="lines",
+                    name=f"{sim_info[0]} - {sim_info[1]}",
+                    line=dict(dash=line_style[sim_info[1]],
+                              color=color_style[sim_info[0]]),
+                )
+            )
+
+            fig_auc_roc.add_trace(
+                go.Scatter(
+                    y=stats_client.get_eval_metric(algorithm=sim_info[0], dq_type=sim_info[1], metric="roc_auc_val")[-1],
+                    mode="lines",
+                    name=f"{sim_info[0]} - {sim_info[1]}",
+                    line=dict(dash=line_style[sim_info[1]],
+                              color=color_style[sim_info[0]]),
+                )
+            )
+    
+    fig_acc.update_layout(
+        title="Accuracy on Validation Set over rounds",
+        xaxis_title="Rounds",
+        yaxis_title="Accuracy",
+        template="simple_white",
+    )
+
+    fig_loss.update_layout(
+        title="Loss on Validation Set over rounds",
+        xaxis_title="Rounds",
+        yaxis_title="Loss",
+        template="simple_white",
+    )
+
+    fig_auc_roc.update_layout(
+        title="ROC-AUC on Validation Set over rounds",
+        xaxis_title="Rounds",
+        yaxis_title="ROC-AUC",
+        template="simple_white",
+    )
+
+    os.makedirs(f'data_visualization/graphics/{experiment_name}/final', exist_ok=True)
+
+    fig_acc.write_image(
+        f"data_visualization/graphics/{experiment_name}/final/accuracy_rounds.png", width=800, height=600, scale=1
+    )
+    fig_loss.write_image(
+        f"data_visualization/graphics/{experiment_name}/final/loss_rounds.png", width=800, height=600, scale=1
+    )
+    fig_auc_roc.write_image(
+        f"data_visualization/graphics/{experiment_name}/final/roc_auc_rounds.png", width=800, height=600, scale=1
     )
