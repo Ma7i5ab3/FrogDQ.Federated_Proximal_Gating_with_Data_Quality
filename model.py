@@ -261,11 +261,11 @@ def train(
     weight_decay: float = 0.0,
     optimizer: Literal["adam", "sgd"] = "adam",
     early_stop: bool = True,
-    es_patience: int = 20,
+    es_patience: int = 50,
     es_min_delta: float = 1e-4,
     device: Optional[torch.device] = None,
     verbose: bool = False,
-    log_every: int = 1,
+    log_every: int = 5,
     random_state: int = 42,
     # FrogDQ options
     q_vec: Optional[torch.Tensor] = None,

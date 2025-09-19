@@ -1,8 +1,5 @@
-from data_poisoning.data_poisoning import *
+from data_poisoning import *
 from DataPreparation import DataPreparation
-from federated.central import run_federated_training
-from data_statistics.Stats import Stats
-from utils import *
 import torch
 import os
 import yaml
@@ -12,10 +9,80 @@ import numpy as np
 import sys
 import random
 from loguru import logger
+from model import *
+from itertools import product
+import json
+from datetime import datetime
 
 import warnings
 
 warnings.filterwarnings("ignore")
+
+def convert_numpy_types(obj):
+    """
+    Convert numpy types to native Python types for JSON serialization.
+    
+    Parameters
+    ----------
+    obj : any
+        Object that may contain numpy types
+        
+    Returns
+    -------
+    any
+        Object with numpy types converted to Python types
+    """
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    else:
+        return obj
+
+def save_experiment_results(experiment_data):
+    """
+    Save experiment results to a JSON file, appending new results to existing data.
+    
+    Parameters
+    ----------
+    experiment_data : dict
+        Dictionary containing all experiment results and metadata
+    """
+    json_filename = "experiment_results.json"
+    
+    # Convert numpy types to JSON-serializable types
+    experiment_data = convert_numpy_types(experiment_data)
+    
+    # Load existing results if file exists
+    if os.path.exists(json_filename):
+        try:
+            with open(json_filename, 'r') as f:
+                all_results = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            # If file is corrupted or doesn't exist, start fresh
+            all_results = {"experiments": [], "metadata": {"created": datetime.now().isoformat(), "last_updated": None}}
+    else:
+        # Create new structure if file doesn't exist
+        all_results = {"experiments": [], "metadata": {"created": datetime.now().isoformat(), "last_updated": None}}
+    
+    # Add new experiment data
+    all_results["experiments"].append(experiment_data)
+    all_results["metadata"]["last_updated"] = datetime.now().isoformat()
+    all_results["metadata"]["total_experiments"] = len(all_results["experiments"])
+    
+    # Save updated results
+    try:
+        with open(json_filename, 'w') as f:
+            json.dump(all_results, f, indent=2, ensure_ascii=False)
+        logger.info(f"Experiment results saved to {json_filename}")
+    except Exception as e:
+        logger.error(f"Failed to save experiment results: {e}")
 
 if __name__ == "__main__":
     # Load all experiment setups from config.yaml
@@ -24,8 +91,16 @@ if __name__ == "__main__":
         with open("config.yaml", "r") as f:
             config = yaml.safe_load(f)
 
+    #Get Configuration values
     experiments = config.get("experiments", [])
-    n_repeat_exps = 10
+    data_poisoning_methods = config.get("data_poisoning").get("methods")
+    features_percentage = config.get("data_poisoning").get("features_percentage")
+    poisoning_percentage = config.get("data_poisoning").get("poisoning_percentage")
+    seeds = config.get("seeds")
+    models = config.get("models")
+    frogdq_modes = config.get("frogdq_modes")
+
+    n_repeat_exps = len(seeds)
     if not experiments:
         print("No experiments found in config.yaml under 'experiments'. Exiting.")
         sys.exit(1)
@@ -37,65 +112,101 @@ if __name__ == "__main__":
         torch.manual_seed(seed)
         torch.use_deterministic_algorithms(True)
 
+    #Running Experiment for each Dataset define in the config.yaml
     for exp in experiments:
-        logger.info(f"\n===== Running Experiment for Dataset: {exp.get('dataset', 'Unnamed')} =====")
+        logger.info(
+            f"\n===== Running Experiment for Dataset: {exp.get('dataset', 'Unnamed')} ====="
+        )
 
-        # Extract parameters for this experiment
-        experiment_name = exp.get("dataset", "Unnamed")
+        # Extract hyperparameters for the current dataset
+        dataset = exp.get("dataset", "Unnamed")
         lr = exp.get("lr", 0.2)
         mu = exp.get("mu", 1.0)
-        dataset_path = exp.get("dataset_path", "")
+        epochs = exp.get("local_epochs", 200)
         label_col = exp.get("target_column", "")
+        splitting_perc_train_test = exp.get("splitting_perc_train_test", "")
+        splitting_perc_test_val = exp.get("splitting_perc_test_val", "")
 
-        # Set fixed seeds for reproducibility per experiment
-        seeds = [42, 56, 221, 800, 1258, 2, 121, 4200, 444, 500]
-        if len(seeds) < n_repeat_exps:
-            raise ValueError(
-                f"Not enough seeds for {n_repeat_exps} repetitions. Please provide at least {n_repeat_exps} seeds."
-            )
 
         for exp_iteration in range(n_repeat_exps):
-            logger.info(f"\n===== Loop {exp_iteration+1} of {n_repeat_exps} =====")
+            logger.info(f"\n===== Loop {exp_iteration} of {n_repeat_exps} / Seed: {seeds[exp_iteration]} =====")
             set_seed(seed=seeds[exp_iteration])
 
-            data_prep = DataPreparation(dataset_name='diabates')
-            data_prep.load(label_col=label_col)
-            X_train, y_clients, X_test, y_test, X_val, y_val = data_prep.run_preprocessing(label_col=label_col)
+            # Iterate over each combination of features_percentage and poisoning_percentage
+            for feat_pct, pois_pct in product(features_percentage, poisoning_percentage):
+                logger.info(f"----- Features percentage: {feat_pct}, Poisoning Percentage={pois_pct} -----")
+
+                data_prep = DataPreparation(dataset_name=dataset)
+                data_prep.load()
+                data_dct = data_prep.run_preprocessing(
+                    splitting_perc_train_test = splitting_perc_train_test,
+                    splitting_perc_test_val = splitting_perc_test_val,
+                    features_percentage = feat_pct,
+                    poisoning_percentage = pois_pct
+                )
+
+                for model_type, poisonong_type, frogdq_mode in product(models, data_poisoning_methods, frogdq_modes):
+                    logger.info(f"----- Start Training ----- Arch: {model_type}/Poisoning Type: {poisonong_type}/FrogDQ Mode: {frogdq_mode}")
                 
-            # ---------------- Run Experiments ----------------
-            '''w_global = torch.randn(X_clients[0].size(1)+1) / torch.sqrt(torch.tensor(X_clients[0].size(1)+1))
-            for sim_info in stats_client.data.keys():
-                if sim_info[0] in ['fedavg', 'frog', 'frog_new']:
-                    w, g = run_federated_training(
-                        X_clients=(
-                            X_clients if sim_info[1] == "clean"
-                            else X_corr_clients if sim_info[0] != "fedavg_no_corr_feat" and sim_info[1] == "dirty"
-                            else X_clients_no_corr if sim_info[0] == "fedavg_no_corr_feat" and sim_info[1] == "dirty"
-                            else None
-                        ),  
-                        y_clients=y_clients,
-                        X_val=X_val if sim_info[0] != "fedavg_no_corr_feat" else X_val_no_corr,
-                        y_val=y_val,
-                        dq_type=sim_info[1],
-                        fl_algorithm=sim_info[0],
-                        n_rounds=n_rounds,
-                        local_epochs=local_epochs,
+                    # Load Model
+                    model = build_model(
+                        input_dim=data_dct[poisonong_type]['X_train'].shape[1],
+                        output_dim=torch.unique(data_dct['y_train']).numel(),
+                        random_state=seeds[exp_iteration],
+                        arch=model_type 
+                    )
+
+                    #Train Model
+                    history = train(
+                        model=model,
+                        X_train=data_dct[poisonong_type]['X_train'],
+                        y_train=data_dct['y_train'],
+                        X_val=data_dct[poisonong_type]['X_val'],
+                        y_val=data_dct['y_val'],
+                        q_vec=data_dct[poisonong_type]['q'],
+                        frogdq_mode=frogdq_mode,
+                        epochs=epochs,
                         lr=lr,
-                        mu=mu,
-                        q_clients=q_clients,
-                        stats_client=stats_client,
-                        w_global=w_global if sim_info[0] != "fedavg_no_corr_feat" else torch.randn(X_clients_no_corr[0].size(1)+1) / torch.sqrt(torch.tensor(X_clients_no_corr[0].size(1)+1)),
+                        verbose=True
                     )
-                    roc_auc_test, accuracy_test, balanced_accuracy, loss_test = eval(
-                        X=X_test if sim_info[0] != "fedavg_no_corr_feat" else X_test_no_corr, y=y_test, w=w, g=g if sim_info[0] == "frog" else None
+
+                    #Test Model
+                    test_metrics = evaluate(
+                        model=model,
+                        X=data_dct[poisonong_type]['X_test'],
+                        y=data_dct['y_test'],
+                        random_state=seeds[exp_iteration]
                     )
-                    stats_client.set_accuracy_test(
-                        value=balanced_accuracy, algorithm=sim_info[0], dq_type=sim_info[1]
-                    )
-                    stats_client.set_eval_metric(
-                        value=roc_auc_test, algorithm=sim_info[0], dq_type=sim_info[1], metric="roc_auc_test"
-                    )
-                    print(
-                        f"{sim_info[0]} ({sim_info[1]} Data) accuracy: {accuracy_test:.3f} / roc_auc: {roc_auc_test:.3f} / balanced accuracy: {balanced_accuracy:.3f}"
-                    )'''
-        
+
+                    #Save Test results in history
+                    history["test_loss"] = test_metrics['loss']
+                    history["test_acc"] = test_metrics["accuracy"]
+                    history["test_bal_acc"] = test_metrics["balanced_accuracy"]
+                    history["test_f1"] = test_metrics["f1"]
+                    history["test_auc"] = test_metrics["auc_roc"]
+
+                    # Prepare experiment data for JSON saving
+                    experiment_data = {
+                        "experiment_id": f"{dataset}_{exp_iteration+1}_{feat_pct}_{pois_pct}_{model_type}_{poisonong_type}_{frogdq_mode}_{seeds[exp_iteration]}",
+                        "timestamp": datetime.now().isoformat(),
+                        "dataset": dataset,
+                        "seed": seeds[exp_iteration],
+                        "iteration": exp_iteration,
+                        "model_type": model_type,
+                        "poisoning_method": poisonong_type,
+                        "frogdq_mode": frogdq_mode,
+                        "features_percentage": feat_pct,
+                        "poisoning_percentage": pois_pct,
+                        "hyperparameters": {
+                            "learning_rate": lr,
+                            "mu": mu,
+                            "epochs": epochs,
+                        },
+                        "history": history
+                    }
+
+                    # Save experiment results to JSON file
+                    save_experiment_results(experiment_data)
+                    
+
+            
