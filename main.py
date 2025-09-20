@@ -121,7 +121,8 @@ if __name__ == "__main__":
         # Extract hyperparameters for the current dataset
         dataset = exp.get("dataset", "Unnamed")
         lr = exp.get("lr", 0.2)
-        mu = exp.get("mu", 1.0)
+        lambda_prox = exp.get("lambda_prox", 1.0)
+        frog_temp_tau = exp.get("frog_temp_tau", 1.0)
         epochs = exp.get("local_epochs", 200)
         label_col = exp.get("target_column", "")
         splitting_perc_train_test = exp.get("splitting_perc_train_test", "")
@@ -153,7 +154,8 @@ if __name__ == "__main__":
                         input_dim=data_dct[poisonong_type]['X_train'].shape[1],
                         output_dim=torch.unique(data_dct['y_train']).numel(),
                         random_state=seeds[exp_iteration],
-                        arch=model_type 
+                        arch=model_type,
+                        use_frogdq=True if frogdq_mode != "none" else False
                     )
 
                     #Train Model
@@ -167,6 +169,8 @@ if __name__ == "__main__":
                         frogdq_mode=frogdq_mode,
                         epochs=epochs,
                         lr=lr,
+                        lambda_prox=lambda_prox,
+                        frog_temp_tau=frog_temp_tau,
                         verbose=True
                     )
 
@@ -176,6 +180,12 @@ if __name__ == "__main__":
                         X=data_dct[poisonong_type]['X_test'],
                         y=data_dct['y_test'],
                         random_state=seeds[exp_iteration]
+                    )
+
+                    logger.info(
+                        f"Test: loss={test_metrics['loss']:.4f}, acc={test_metrics['accuracy']:.4f}, "
+                        f"bal_acc={test_metrics['balanced_accuracy']:.4f}, "
+                        f"f1={test_metrics['f1']:.4f}, auc={test_metrics['auc_roc']:.4f}"
                     )
 
                     #Save Test results in history
@@ -199,7 +209,8 @@ if __name__ == "__main__":
                         "poisoning_percentage": pois_pct,
                         "hyperparameters": {
                             "learning_rate": lr,
-                            "mu": mu,
+                            "lambda_prox": lambda_prox,
+                            "frog_temp_tau": frog_temp_tau,
                             "epochs": epochs,
                         },
                         "history": history

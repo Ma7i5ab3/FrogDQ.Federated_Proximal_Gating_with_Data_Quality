@@ -12,3 +12,4 @@ mlcroissant
 ucimlrepo
 imbalanced-learn
 loguru
+joblib

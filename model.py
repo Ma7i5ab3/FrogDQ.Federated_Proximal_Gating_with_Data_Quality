@@ -424,15 +424,21 @@ def train(
 
             if use_frog and reg_scale > 0.0:
                 g_curr = model.gate.gates
-                if frogdq_mode in {"inertia", "gaussian", "dirichlet"}:
-                    loss = (
-                        loss
-                        + reg_scale * lambda_prox * (((g_curr - g_prev) ** 2) * w_inertia).sum()
-                    )
+                if frogdq_mode in {"temp", "inertia", "gaussian", "dirichlet"}:
+                    if frogdq_mode == 'temp':
+                        loss = (
+                            loss
+                            + reg_scale * lambda_prox * (((g_curr - g_prev) ** 2) * w_inertia).sum()
+                        )
+                    else:
+                        loss = (
+                            loss
+                            + lambda_prox * (((g_curr - g_prev) ** 2) * w_inertia).sum()
+                        )
                 if frogdq_mode == "gaussian":
-                    loss = loss + reg_scale * lambda_gaussian_prior * ((g_curr - q_vec) ** 2).sum()
+                    loss = loss + lambda_gaussian_prior * ((g_curr - q_vec) ** 2).sum()
                 if frogdq_mode == "dirichlet":
-                    loss = loss + reg_scale * lambda_dirichlet_kl * _dirichlet_kl_prior_loss(
+                    loss = loss + lambda_dirichlet_kl * _dirichlet_kl_prior_loss(
                         g_curr, q_vec, tau=kl_temperature, eps=eps
                     )
 
