@@ -7,8 +7,9 @@ experiments:
     n_rounds: 500
     local_epochs: 500
     lr: 0.0015
-    lambda_prox: 0.5
+    lambda_prox: 0.1
     frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
     target_column: ""
     splitting_perc_train_test: 0.8
     splitting_perc_test_val: 0.5
@@ -17,8 +18,9 @@ experiments:
     n_rounds: 500
     local_epochs: 500
     lr: 0.05
-    lambda_prox: 0.001
+    lambda_prox: 0.1
     frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
     target_column: ""
     splitting_perc_train_test: 0.8
     splitting_perc_test_val: 0.5
@@ -27,8 +29,9 @@ experiments:
     n_rounds: 500
     local_epochs: 500
     lr: 0.001
-    lambda_prox: 0.001
+    lambda_prox: 0.1
     frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
     target_column: ""
     splitting_perc_train_test: 0.8
     splitting_perc_test_val: 0.5
@@ -39,6 +42,7 @@ experiments:
     lr: 0.001
     lambda_prox: 0.001
     frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
     target_column: ""
     splitting_perc_train_test: 0.8
     splitting_perc_test_val: 0.5
@@ -47,8 +51,9 @@ experiments:
     n_rounds: 500
     local_epochs: 500
     lr: 0.001
-    lambda_prox: 0.001
+    lambda_prox: 0.1
     frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
     target_column: ""
     splitting_perc_train_test: 0.8
     splitting_perc_test_val: 0.5
@@ -59,6 +64,7 @@ experiments:
     lr: 0.001
     lambda_prox: 0.001
     frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
     target_column: ""
     splitting_perc_train_test: 0.8
     splitting_perc_test_val: 0.5
@@ -67,8 +73,9 @@ experiments:
     n_rounds: 500
     local_epochs: 500
     lr: 0.001
-    lambda_prox: 0.001
+    lambda_prox: 0.1
     frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
     target_column: ""
     splitting_perc_train_test: 0.8
     splitting_perc_test_val: 0.5
@@ -79,7 +86,7 @@ data_poisoning:
   poisoning_percentage: [0.1, 0.2, 0.4, 0.6, 0.8]
 
 models: ["mlp", "linear"]
-frogdq_modes: ["none", "temp", "inertia", "gaussian", "dirichlet"]
+frogdq_modes: ["none", "temp_cos", "temp", "inertia", "gaussian", "dirichlet"]
 seeds: [42, 56, 221, 800, 1258, 2, 121, 4200, 444, 500]
     
 

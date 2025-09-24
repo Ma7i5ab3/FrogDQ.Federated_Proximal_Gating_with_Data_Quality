@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import random
-from typing import Tuple, List, Sequence, Optional
+from typing import Tuple, List, Sequence, Optional, Dict
 
 
 def flipping_poisoning(
@@ -11,6 +11,7 @@ def flipping_poisoning(
     random_state: int = None,
     *,
     features_to_poison: Optional[Sequence[str]] = None,
+    instances_by_feature: Optional[Dict[str, Sequence[int]]] = None,
 ) -> Tuple[pd.DataFrame, List[float]]:
     """
     Apply flipping poisoning to the dataset.
@@ -52,11 +53,12 @@ def flipping_poisoning(
         if len(unique_values) <= 1:
             continue
             
-        # Calculate number of instances to poison for this feature
-        n_instances_to_poison = max(1, int(n_instances * poisoning_percentage))
-        
-        # Randomly select instances to poison
-        instances_to_poison = random.sample(list(X.index), n_instances_to_poison) 
+        # Calculate/select instances to poison for this feature
+        if instances_by_feature is not None and feature in instances_by_feature:
+            instances_to_poison = list(instances_by_feature[feature])
+        else:
+            n_instances_to_poison = max(1, int(n_instances * poisoning_percentage))
+            instances_to_poison = random.sample(list(X.index), n_instances_to_poison)
         
         for instance_idx in instances_to_poison:
             current_value = X.loc[instance_idx, feature]
@@ -84,6 +86,7 @@ def noise_poisoning(
     random_state: int = None,
     *,
     features_to_poison: Optional[Sequence[str]] = None,
+    instances_by_feature: Optional[Dict[str, Sequence[int]]] = None,
 ) -> Tuple[pd.DataFrame, List[float]]:
     """
     Apply noise poisoning to the dataset.
@@ -124,11 +127,12 @@ def noise_poisoning(
         if not pd.api.types.is_numeric_dtype(X[feature]):
             continue
             
-        # Calculate number of instances to poison for this feature
-        n_instances_to_poison = max(1, int(n_instances * poisoning_percentage))
-        
-        # Randomly select instances to poison
-        instances_to_poison = random.sample(list(X.index), n_instances_to_poison)
+        # Calculate/select instances to poison for this feature
+        if instances_by_feature is not None and feature in instances_by_feature:
+            instances_to_poison = list(instances_by_feature[feature])
+        else:
+            n_instances_to_poison = max(1, int(n_instances * poisoning_percentage))
+            instances_to_poison = random.sample(list(X.index), n_instances_to_poison)
         
         # Calculate noise based on feature statistics
         feature_std = X[feature].std()
@@ -165,6 +169,7 @@ def incompleteness_poisoning(
     random_state: int = None,
     *,
     features_to_poison: Optional[Sequence[str]] = None,
+    instances_by_feature: Optional[Dict[str, Sequence[int]]] = None,
 ) -> Tuple[pd.DataFrame, List[float]]:
     """
     Apply incompleteness poisoning to the dataset by setting values to NaN and then imputing.
@@ -201,11 +206,12 @@ def incompleteness_poisoning(
         feature_quality[col] = max(0.0, 1.0 - float(poisoning_percentage))
     
     for feature in features_to_poison:
-        # Calculate number of instances to poison for this feature
-        n_instances_to_poison = max(1, int(n_instances * poisoning_percentage))
-        
-        # Randomly select instances to poison
-        instances_to_poison = random.sample(list(X.index), n_instances_to_poison)
+        # Calculate/select instances to poison for this feature
+        if instances_by_feature is not None and feature in instances_by_feature:
+            instances_to_poison = list(instances_by_feature[feature])
+        else:
+            n_instances_to_poison = max(1, int(n_instances * poisoning_percentage))
+            instances_to_poison = random.sample(list(X.index), n_instances_to_poison)
         
         # Store original values for imputation
         original_values = X.loc[instances_to_poison, feature].copy()
@@ -277,12 +283,33 @@ def _select_disjoint_feature_sets(
     all_features = list(X.columns)
     n_features_total = len(all_features)
     n_per_set = max(1, int(n_features_total * features_percentage))
+    # Cap to total features to keep sets internally unique
+    n_per_set = min(n_per_set, n_features_total)
 
-    # Sample without replacement for disjoint sets
-    selected = random.sample(all_features, min(3 * n_per_set, n_features_total))
-    flip_features = selected[0:n_per_set]
-    noise_features = selected[n_per_set:2 * n_per_set]
-    incomplete_features = selected[2 * n_per_set:3 * n_per_set]
+    # If we can allocate disjointly, do so
+    if 3 * n_per_set <= n_features_total:
+        selected = random.sample(all_features, 3 * n_per_set)
+        flip_features = selected[0:n_per_set]
+        noise_features = selected[n_per_set:2 * n_per_set]
+        incomplete_features = selected[2 * n_per_set:3 * n_per_set]
+        return flip_features, noise_features, incomplete_features
+
+    # Otherwise, allow overlaps across sets while keeping each set unique internally
+    def sample_unique_features(k: int) -> List[str]:
+        if k >= n_features_total:
+            return all_features.copy()
+        chosen = []
+        chosen_set = set()
+        while len(chosen) < k:
+            cand = random.choice(all_features)
+            if cand not in chosen_set:
+                chosen.append(cand)
+                chosen_set.add(cand)
+        return chosen
+
+    flip_features = sample_unique_features(n_per_set)
+    noise_features = sample_unique_features(n_per_set)
+    incomplete_features = sample_unique_features(n_per_set)
 
     return flip_features, noise_features, incomplete_features
 
@@ -309,9 +336,82 @@ def combined_poisoning(
         X, features_percentage, random_state
     )
 
-    # Apply each poisoning on its feature set
+    # Coordinate row selection across overlapping feature sets per-feature using proportional, disjoint allocation
+    n_instances = X.shape[0]
+    flip_instances_map: Dict[str, List[int]] = {}
+    noise_instances_map: Dict[str, List[int]] = {}
+    inc_instances_map: Dict[str, List[int]] = {}
+
+    feat_in_flip = set(flip_feats)
+    feat_in_noise = set(noise_feats)
+    feat_in_inc = set(inc_feats)
+    all_feats = list(set(flip_feats) | set(noise_feats) | set(inc_feats))
+
+    all_indices = list(X.index)
+
+    for feat in all_feats:
+        # Determine which types apply to this feature and their requested percentages
+        types_here: List[str] = []
+        perc_by_type: Dict[str, float] = {}
+        if feat in feat_in_flip:
+            types_here.append('flip')
+            perc_by_type['flip'] = float(flipping_percentage)
+        if feat in feat_in_noise:
+            types_here.append('noise')
+            perc_by_type['noise'] = float(noise_percentage)
+        if feat in feat_in_inc:
+            types_here.append('inc')
+            perc_by_type['inc'] = float(incompleteness_percentage)
+
+        if not types_here:
+            continue
+
+        sum_p = sum(perc_by_type[t] for t in types_here)
+
+        # Compute target counts per type for this feature
+        raw_targets: Dict[str, float]
+        if sum_p <= 1.0:
+            # Use disjoint percentages directly
+            raw_targets = {t: perc_by_type[t] * n_instances for t in types_here}
+        else:
+            # Scale proportionally to fill at most N rows disjointly
+            raw_targets = {t: (perc_by_type[t] / sum_p) * n_instances for t in types_here}
+
+        # Convert to integers using floor then distribute remainder by largest fractional parts
+        floored = {t: int(np.floor(raw_targets[t])) for t in types_here}
+        used = sum(floored.values())
+        remainder = max(0, n_instances - used)
+        # Sort by fractional part descending
+        frac_order = sorted(types_here, key=lambda t: (raw_targets[t] - floored[t]), reverse=True)
+        i = 0
+        while remainder > 0 and i < len(frac_order):
+            floored[frac_order[i]] += 1
+            remainder -= 1
+            i += 1
+
+        # Now sample disjoint indices according to floored counts
+        pool = all_indices.copy()
+        random.shuffle(pool)
+        offset = 0
+        for t in types_here:
+            k = max(0, min(floored[t], n_instances - offset))
+            chosen = pool[offset:offset + k]
+            offset += k
+            if t == 'flip':
+                flip_instances_map[feat] = chosen
+            elif t == 'noise':
+                noise_instances_map[feat] = chosen
+            else:
+                inc_instances_map[feat] = chosen
+
+    # Apply each poisoning with coordinated instance selections
     X_poisoned, _ = flipping_poisoning(
-        X, features_percentage, flipping_percentage, random_state, features_to_poison=flip_feats
+        X,
+        features_percentage,
+        flipping_percentage,
+        random_state,
+        features_to_poison=flip_feats,
+        instances_by_feature=flip_instances_map,
     )
     X_poisoned, _ = noise_poisoning(
         X_poisoned,
@@ -321,6 +421,7 @@ def combined_poisoning(
         noise_scale,
         random_state,
         features_to_poison=noise_feats,
+        instances_by_feature=noise_instances_map,
     )
     X_poisoned, _ = incompleteness_poisoning(
         X_poisoned,
@@ -329,16 +430,21 @@ def combined_poisoning(
         imputation_method,
         random_state,
         features_to_poison=inc_feats,
+        instances_by_feature=inc_instances_map,
     )
 
-    # Build combined quality vector aligned with X.columns
-    quality_by_feature = {col: 1.0 for col in X.columns}
-    for col in flip_feats:
-        quality_by_feature[col] = max(0.0, 1.0 - float(flipping_percentage))
-    for col in noise_feats:
-        quality_by_feature[col] = max(0.0, 1.0 - float(noise_percentage))
-    for col in inc_feats:
-        quality_by_feature[col] = max(0.0, 1.0 - float(incompleteness_percentage))
+    # Build combined quality vector aligned with X.columns considering cumulative poisoning per feature
+    quality_by_feature = {}
+    for col in X.columns:
+        total_poisoning = 0.0
+        if col in flip_feats:
+            total_poisoning += float(flipping_percentage)
+        if col in noise_feats:
+            total_poisoning += float(noise_percentage)
+        if col in inc_feats:
+            total_poisoning += float(incompleteness_percentage)
+        total_poisoning = min(1.0, total_poisoning)
+        quality_by_feature[col] = max(0.0, 1.0 - total_poisoning)
 
     q = [quality_by_feature[col] for col in X.columns]
     return X_poisoned, q

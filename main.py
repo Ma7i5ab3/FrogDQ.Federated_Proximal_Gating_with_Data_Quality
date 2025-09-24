@@ -13,6 +13,7 @@ from model import *
 from itertools import product
 import json
 from datetime import datetime
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 import warnings
 
@@ -123,6 +124,7 @@ if __name__ == "__main__":
         lr = exp.get("lr", 0.2)
         lambda_prox = exp.get("lambda_prox", 1.0)
         frog_temp_tau = exp.get("frog_temp_tau", 1.0)
+        frog_temp_eta = exp.get("frog_temp_eta", 1.01)
         epochs = exp.get("local_epochs", 200)
         label_col = exp.get("target_column", "")
         splitting_perc_train_test = exp.get("splitting_perc_train_test", "")
@@ -171,6 +173,7 @@ if __name__ == "__main__":
                         lr=lr,
                         lambda_prox=lambda_prox,
                         frog_temp_tau=frog_temp_tau,
+                        frog_temp_eta=frog_temp_eta,
                         verbose=True
                     )
 

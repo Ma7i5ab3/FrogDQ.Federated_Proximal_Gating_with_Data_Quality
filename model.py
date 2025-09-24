@@ -269,7 +269,7 @@ def train(
     random_state: int = 42,
     # FrogDQ options
     q_vec: Optional[torch.Tensor] = None,
-    frogdq_mode: Literal["none", "inertia", "gaussian", "dirichlet"] = "none",
+    frogdq_mode: Literal["none", "temp", "temp_cos", "inertia", "gaussian", "dirichlet"] = "none",
     lambda_prox: float = 0.1,
     lambda_gaussian_prior: float = 0.1,
     lambda_dirichlet_kl: float = 0.1,
@@ -280,9 +280,11 @@ def train(
     frog_temperature: float = 1.0,
     frog_temp_invert: bool = False,
     frog_temp_tau: float = 1.0,
+    # For frogdq_mode="temp": μ_n = μ * η^n (n = epoch-1)
+    frog_temp_eta: float = 1.0,
 ) -> dict[str, list]:
     """
-    Train a classifier with optional FrogDQ losses. Early stopping uses validation F1 (macro).
+    Train a classifier with optional FrogDQ losses. Early stopping uses validation loss.
 
     Temperature schedule (regularization impact)
     -------------------------------------------
@@ -311,11 +313,11 @@ def train(
     optimizer : {"adam","sgd"}, default="adam"
         Optimizer choice.
     early_stop : bool, default=True
-        Enable early stopping on val F1.
+        Enable early stopping on validation loss.
     es_patience : int, default=20
         Patience (epochs) for early stopping.
     es_min_delta : float, default=1e-4
-        Minimum val F1 improvement to reset patience.
+        Minimum validation loss decrease to reset patience.
     device : torch.device or None, default=None
         Device to run on; autodetects GPU if available.
     verbose : bool, default=False
@@ -326,7 +328,7 @@ def train(
         Seed for deterministic training.
     q_vec : Tensor or None, default=None
         Feature-quality vector for FrogDQ (length = D).
-    frogdq_mode : {"none","inertia","gaussian","dirichlet"}, default="none"
+    frogdq_mode : {"none","temp","temp_cos","inertia","gaussian","dirichlet"}, default="none"
         Which FrogDQ regularization to apply.
     lambda_prox : float, default=0.1
         Strength of inertia (trust region) term.
@@ -343,9 +345,11 @@ def train(
     frog_temperature : float, default=1.0
         Global scale applied to ALL FrogDQ regularization terms.
     frog_temp_invert : bool, default=False
-        Invert the default schedule (low→high→low instead of high→low→high).
+        For mode "temp_cos": invert schedule (low→high→low instead of high→low→high).
     frog_temp_tau : float, default=1.0
-        Speed/shape control for the schedule (τ>1 compresses early change).
+        For mode "temp_cos": speed/shape control (τ>1 compresses early change).
+    frog_temp_eta : float, default=1.0
+        For mode "temp": exponential factor η in μ_n = μ * η^n (n = epoch-1).
 
     Returns
     -------
@@ -388,7 +392,7 @@ def train(
         ),
     }
 
-    best_metric = -float("inf")
+    best_metric = float("inf")
     best_state = None
     patience_left = es_patience
 
@@ -402,6 +406,11 @@ def train(
 
     # Helper for temperature schedule
     def _reg_scale_for_epoch(e: int) -> float:
+        # Mode "temp": μ_n = μ * η^n, with n = epoch-1
+        if frogdq_mode == "temp":
+            n = max(0, e - 1)
+            return float(frog_temperature * (float(frog_temp_eta) ** n))
+        # Mode "temp_cos": cosine schedule over epochs
         if epochs <= 1:
             phase = 1.0
         else:
@@ -424,8 +433,8 @@ def train(
 
             if use_frog and reg_scale > 0.0:
                 g_curr = model.gate.gates
-                if frogdq_mode in {"temp", "inertia", "gaussian", "dirichlet"}:
-                    if frogdq_mode == 'temp':
+                if frogdq_mode in {"temp", "temp_cos", "inertia", "gaussian", "dirichlet"}:
+                    if frogdq_mode in {"temp", "temp_cos"}:
                         loss = (
                             loss
                             + reg_scale * lambda_prox * (((g_curr - g_prev) ** 2) * w_inertia).sum()
@@ -481,9 +490,9 @@ def train(
                 f"f1={val_metrics['f1']:.4f}, auc={val_metrics['auc_roc']:.4f}"
             )
 
-        # Early stopping on validation F1 (macro)
-        val_score = val_metrics["f1"]
-        if val_score > best_metric + es_min_delta:
+        # Early stopping on validation loss (lower is better)
+        val_score = val_metrics["loss"]
+        if val_score < best_metric - es_min_delta:
             best_metric = val_score
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             patience_left = es_patience
@@ -491,7 +500,7 @@ def train(
             patience_left -= 1
             if early_stop and patience_left <= 0:
                 if verbose:
-                    logger.info(f"Early stopping at epoch {epoch} (best val F1={best_metric:.4f}).")
+                    logger.info(f"Early stopping at epoch {epoch} (best val loss={best_metric:.4f}).")
                 break
 
     if best_state is not None:

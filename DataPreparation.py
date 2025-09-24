@@ -333,6 +333,6 @@ class DataPreparation:
             The same DataFrame with normalized columns applied in-place.
         """
         # Fit on training data and transform
-        df[feature_to_norm] = self.scaler.fit_transform(df[feature_to_norm])
+        df[feature_to_norm] = self.scaler.transform(df[feature_to_norm])
 
         return df
