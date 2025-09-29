@@ -239,7 +239,22 @@ def evaluate(
     _set_seed(random_state)
     device = device or next(model.parameters()).device
     loader = DataLoader(TensorDataset(X, y), batch_size=batch_size, shuffle=False)
-    criterion = nn.CrossEntropyLoss()
+    # --- Class-weighted loss to mitigate imbalance (computed from y_train)
+    with torch.no_grad():
+        # Ensure y_train is 1D LongTensor on CPU for bincount
+        y_for_count = y.detach().view(-1).cpu().to(torch.long)
+        if y_for_count.numel() > 0:
+            num_classes = int(torch.max(y_for_count).item() + 1)
+            counts = torch.bincount(y_for_count, minlength=num_classes).to(torch.float32)
+            # Prevent division by zero for any missing classes
+            counts = torch.where(counts > 0, counts, torch.ones_like(counts))
+            class_weights = (counts.sum() / counts)
+            class_weights = class_weights / class_weights.mean()
+            class_weights = class_weights.to(device)
+        else:
+            class_weights = None
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    #criterion = nn.CrossEntropyLoss()
     return _eval_on_loader(model, loader, criterion, device)
 
 
@@ -256,10 +271,15 @@ def train(
     y_val: torch.Tensor,
     *,
     epochs: int = 100,
-    batch_size: int = 128,
+    batch_size: int = 256,
     lr: float = 1e-3,
     weight_decay: float = 0.0,
     optimizer: Literal["adam", "sgd"] = "adam",
+    lr_scheduler: Literal["none", "plateau", "cosine"] = "none",
+    scheduler_patience: int = 10,
+    scheduler_factor: float = 0.5,
+    scheduler_min_lr: float = 1e-6,
+    scheduler_T_max: Optional[int] = None,
     early_stop: bool = True,
     es_patience: int = 50,
     es_min_delta: float = 1e-4,
@@ -312,6 +332,16 @@ def train(
         Optimizer L2 weight decay.
     optimizer : {"adam","sgd"}, default="adam"
         Optimizer choice.
+    lr_scheduler : {"none","plateau","cosine"}, default="none"
+        Learning-rate scheduler; "plateau" reacts to validation loss, "cosine" anneals deterministically.
+    scheduler_patience : int, default=10
+        Patience (epochs) before reducing lr when using "plateau".
+    scheduler_factor : float, default=0.5
+        Multiplicative drop applied to lr for "plateau".
+    scheduler_min_lr : float, default=1e-6
+        Minimum lr allowed by schedulers.
+    scheduler_T_max : int or None, default=None
+        Period for "cosine" scheduler (defaults to `epochs`).
     early_stop : bool, default=True
         Enable early stopping on validation loss.
     es_patience : int, default=20
@@ -356,7 +386,7 @@ def train(
     dict
         History with per-epoch metrics and frog gates (if enabled):
         keys = train_loss, val_loss, train_acc, val_acc, train_bal_acc,
-               val_bal_acc, train_f1, val_f1, train_auc, val_auc, frog_gates.
+               val_bal_acc, train_f1, val_f1, train_auc, val_auc, lr, frog_gates.
     """
     _set_seed(random_state)
 
@@ -365,7 +395,20 @@ def train(
     train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=batch_size, shuffle=False)
 
-    criterion = nn.CrossEntropyLoss()
+    # Build class-weighted cross-entropy to address class imbalance
+    with torch.no_grad():
+        y_flat = y_train.view(-1).to(torch.long).detach().cpu()
+        if y_flat.numel() == 0:
+            class_weights = None
+        else:
+            n_classes = int(y_flat.max().item()) + 1
+            counts = torch.bincount(y_flat, minlength=n_classes).to(torch.float32)
+            counts = torch.where(counts > 0, counts, torch.ones_like(counts))
+            class_weights = (counts.sum() / counts)
+            class_weights = class_weights / class_weights.mean()
+            class_weights = class_weights.to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    #criterion = nn.CrossEntropyLoss()
     if optimizer == "sgd":
         opt: torch.optim.Optimizer = optim.SGD(
             model.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay
@@ -373,6 +416,23 @@ def train(
     else:
         opt: torch.optim.Optimizer = optim.Adam(
             model.parameters(), lr=lr, weight_decay=weight_decay
+        )
+
+    scheduler = None
+    if lr_scheduler == "plateau":
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            opt,
+            mode="min",
+            factor=scheduler_factor,
+            patience=max(1, scheduler_patience),
+            min_lr=scheduler_min_lr,
+        )
+    elif lr_scheduler == "cosine":
+        t_max = scheduler_T_max if scheduler_T_max and scheduler_T_max > 0 else epochs
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            opt,
+            T_max=max(1, t_max),
+            eta_min=scheduler_min_lr,
         )
 
     history: dict[str, Any] = {
@@ -474,6 +534,12 @@ def train(
         history["train_auc"].append(train_metrics["auc_roc"])
         history["val_auc"].append(val_metrics["auc_roc"])
 
+        if scheduler is not None:
+            if lr_scheduler == "plateau":
+                scheduler.step(val_metrics["loss"])
+            else:
+                scheduler.step()
+
         # --- History (FrogDQ gates per epoch, as NumPy)
         if use_frog and history["frog_gates"] is not None:
             g_now = model.gate.gates.detach().cpu().numpy().copy()
@@ -481,7 +547,7 @@ def train(
 
         if verbose and (epoch % log_every == 0):
             logger.info(
-                f"Epoch {epoch:3d} | reg_scale={reg_scale:.3f} | "
+                f"Epoch {epoch:3d} | reg_scale={reg_scale:.3f} | lr={opt.param_groups[0]["lr"]:.2e} | "
                 f"train: loss={train_loss:.4f}, acc={train_metrics['accuracy']:.4f}, "
                 f"bal_acc={train_metrics['balanced_accuracy']:.4f}, "
                 f"f1={train_metrics['f1']:.4f}, auc={train_metrics['auc_roc']:.4f} | "

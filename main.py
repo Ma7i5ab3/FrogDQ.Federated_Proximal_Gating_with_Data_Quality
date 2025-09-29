@@ -45,6 +45,83 @@ def convert_numpy_types(obj):
         return [convert_numpy_types(item) for item in obj]
     else:
         return obj
+    
+def load_checkpoint(checkpoint_file="experiment_checkpoint.json"):
+    """
+    Load checkpoint data to track completed experiments.
+    
+    Parameters
+    ----------
+    checkpoint_file : str
+        Path to the checkpoint file
+        
+    Returns
+    -------
+    set
+        Set of experiment IDs that have been completed
+    """
+    if os.path.exists(checkpoint_file):
+        try:
+            with open(checkpoint_file, 'r') as f:
+                checkpoint_data = json.load(f)
+                return set(checkpoint_data.get("completed_experiments", []))
+        except (json.JSONDecodeError, FileNotFoundError):
+            logger.warning(f"Could not load checkpoint file {checkpoint_file}. Starting fresh.")
+            return set()
+    return set()
+
+def save_checkpoint(experiment_id, checkpoint_file="experiment_checkpoint.json"):
+    """
+    Save experiment ID to checkpoint file.
+    
+    Parameters
+    ----------
+    experiment_id : str
+        Unique identifier for the completed experiment
+    checkpoint_file : str
+        Path to the checkpoint file
+    """
+    # Load existing checkpoint data
+    if os.path.exists(checkpoint_file):
+        try:
+            with open(checkpoint_file, 'r') as f:
+                checkpoint_data = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            checkpoint_data = {"completed_experiments": [], "metadata": {"created": datetime.now().isoformat()}}
+    else:
+        checkpoint_data = {"completed_experiments": [], "metadata": {"created": datetime.now().isoformat()}}
+    
+    # Add new experiment ID if not already present
+    if experiment_id not in checkpoint_data["completed_experiments"]:
+        checkpoint_data["completed_experiments"].append(experiment_id)
+        checkpoint_data["metadata"]["last_updated"] = datetime.now().isoformat()
+        checkpoint_data["metadata"]["total_completed"] = len(checkpoint_data["completed_experiments"])
+        
+        # Save updated checkpoint
+        try:
+            with open(checkpoint_file, 'w') as f:
+                json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+            logger.info(f"Checkpoint updated: {experiment_id}")
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint: {e}")
+
+def is_experiment_completed(experiment_id, completed_experiments):
+    """
+    Check if an experiment has already been completed.
+    
+    Parameters
+    ----------
+    experiment_id : str
+        Unique identifier for the experiment
+    completed_experiments : set
+        Set of completed experiment IDs
+        
+    Returns
+    -------
+    bool
+        True if experiment is completed, False otherwise
+    """
+    return experiment_id in completed_experiments
 
 def save_experiment_results(experiment_data):
     """
@@ -86,6 +163,10 @@ def save_experiment_results(experiment_data):
         logger.error(f"Failed to save experiment results: {e}")
 
 if __name__ == "__main__":
+    # Load checkpoint data to resume from previous runs
+    completed_experiments = load_checkpoint()
+    logger.info(f"Loaded checkpoint: {len(completed_experiments)} experiments already completed")
+
     # Load all experiment setups from config.yaml
     config = {}
     if os.path.exists("config.yaml"):
@@ -132,6 +213,13 @@ if __name__ == "__main__":
 
 
         for exp_iteration in range(n_repeat_exps):
+            # Log which device is running this iteration
+            if torch.cuda.is_available():
+                _curr_dev = torch.cuda.current_device()
+                _device_str = f"cuda:{_curr_dev} ({torch.cuda.get_device_name(_curr_dev)})"
+            else:
+                _device_str = "cpu"
+            logger.info(f"Running on device: {_device_str}")
             logger.info(f"\n===== Loop {exp_iteration} of {n_repeat_exps} / Seed: {seeds[exp_iteration]} =====")
             set_seed(seed=seeds[exp_iteration])
 
@@ -145,11 +233,20 @@ if __name__ == "__main__":
                     splitting_perc_train_test = splitting_perc_train_test,
                     splitting_perc_test_val = splitting_perc_test_val,
                     features_percentage = feat_pct,
-                    poisoning_percentage = pois_pct
+                    poisoning_percentage = pois_pct,
+                    random_state=seeds[exp_iteration]
                 )
 
                 for model_type, poisonong_type, frogdq_mode in product(models, data_poisoning_methods, frogdq_modes):
                     logger.info(f"----- Start Training ----- Arch: {model_type}/Poisoning Type: {poisonong_type}/FrogDQ Mode: {frogdq_mode}")
+
+                    # Create unique experiment ID for checkpoint tracking
+                    experiment_id = f"{dataset}_{exp_iteration+1}_{feat_pct}_{pois_pct}_{model_type}_{poisonong_type}_{frogdq_mode}_{seeds[exp_iteration]}"
+                    
+                    # Check if this experiment has already been completed
+                    if is_experiment_completed(experiment_id, completed_experiments):
+                        logger.info(f"----- Skipping completed experiment: {experiment_id} -----")
+                        continue
                 
                     # Load Model
                     model = build_model(
@@ -157,7 +254,7 @@ if __name__ == "__main__":
                         output_dim=torch.unique(data_dct['y_train']).numel(),
                         random_state=seeds[exp_iteration],
                         arch=model_type,
-                        use_frogdq=True if frogdq_mode != "none" else False
+                        use_frogdq=True if frogdq_mode != "none" else False,
                     )
 
                     #Train Model
@@ -171,10 +268,13 @@ if __name__ == "__main__":
                         frogdq_mode=frogdq_mode,
                         epochs=epochs,
                         lr=lr,
+                        lr_scheduler="plateau",
                         lambda_prox=lambda_prox,
                         frog_temp_tau=frog_temp_tau,
                         frog_temp_eta=frog_temp_eta,
-                        verbose=True
+                        verbose=True,
+                        random_state=seeds[exp_iteration],
+                        device=_curr_dev
                     )
 
                     #Test Model
@@ -221,6 +321,24 @@ if __name__ == "__main__":
 
                     # Save experiment results to JSON file
                     save_experiment_results(experiment_data)
-                    
+
+                    # Save checkpoint to mark this experiment as completed
+                    save_checkpoint(experiment_id)
+                    completed_experiments.add(experiment_id)
+
+                    logger.info(f"----- Experiment completed and checkpointed: {experiment_id} -----")
+
+
+# Final summary
+total_experiments = len(experiments) * n_repeat_exps * len(features_percentage) * len(poisoning_percentage) * len(models) * len(data_poisoning_methods) * len(frogdq_modes)
+completed_count = len(completed_experiments)
+logger.info(f"\n===== EXPERIMENT SUMMARY =====")
+logger.info(f"Total experiments configured: {total_experiments}")
+logger.info(f"Completed experiments: {completed_count}")
+logger.info(f"Remaining experiments: {total_experiments - completed_count}")
+logger.info(f"Checkpoint file: experiment_checkpoint.json")
+logger.info(f"Results file: experiment_results.json")
+logger.info("================================\n")
+                
 
             

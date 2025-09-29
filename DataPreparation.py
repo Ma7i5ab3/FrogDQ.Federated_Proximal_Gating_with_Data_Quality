@@ -1,4 +1,4 @@
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 import torch
 import numpy as np
 import pandas as pd
@@ -79,6 +79,7 @@ class DataPreparation:
         elif lname == "heart":
             X = pd.read_csv("data/real/heart.csv")
             y = X["target"]
+            X = X.drop(columns=["target"])
         else:
             raise ValueError(f"Unknown dataset '{self.dataset_name}'")
 
@@ -90,7 +91,8 @@ class DataPreparation:
         splitting_perc_train_test: float = 0.8,
         splitting_perc_test_val: float = 0.5,
         features_percentage: float = 0.2,
-        poisoning_percentage: float = 0.8
+        poisoning_percentage: float = 0.8,
+        random_state: int = 42
     ):
         """Prepare data for modeling: encode, split, rebalance, poison, normalize.
 
@@ -139,6 +141,9 @@ class DataPreparation:
         - Non-binary numeric columns are normalized; binary numeric columns are left
           unchanged.
         """
+        #Save original copy of starting dataframe
+        X_original = self.__X.copy()
+
         # Apply one hot encoding to categorical and string columns
         categorical_cols = self.__X.select_dtypes(
             include=["object", "string", "category"]
@@ -159,6 +164,8 @@ class DataPreparation:
             self.__y,
             test_size=1 - splitting_perc_train_test,
             shuffle=True,
+            stratify=self.__y,
+            random_state=random_state
         )
 
         # Split in Test and Val
@@ -167,6 +174,8 @@ class DataPreparation:
             y_test,
             test_size=1 - splitting_perc_test_val,
             shuffle=True,
+            stratify=y_test,
+            random_state=random_state
         )
 
         # Compute distribution on y values and rebalance X_train with undersampling techniques
@@ -186,6 +195,8 @@ class DataPreparation:
             X=X_train,
             features_percentage=features_percentage,
             poisoning_percentage=poisoning_percentage,
+            original_dataframe=True,
+            columns_ohe=self.__X.columns
         )
         data_dct['noise']['X_train'], data_dct['noise']['q'] = noise_poisoning(
             X=X_train,
@@ -196,6 +207,8 @@ class DataPreparation:
             X=X_train,
             features_percentage=features_percentage,
             poisoning_percentage=poisoning_percentage,
+            original_dataframe=True,
+            columns_ohe=self.__X.columns
         )
         data_dct['all']['X_train'], data_dct['all']['q'] = combined_poisoning(
             X=X_train,
@@ -217,8 +230,8 @@ class DataPreparation:
         for type in data_dct.keys():
             self.__set_scaler(feature_to_norm=non_binary_cols, df=data_dct[type]['X_train'])
             data_dct[type]['X_train'] = torch.tensor(data=self.__normalize(feature_to_norm=non_binary_cols, df=data_dct[type]['X_train']).to_numpy(), dtype=torch.float32)
-            data_dct[type]['X_val'] = torch.tensor(data=self.__normalize(feature_to_norm=non_binary_cols, df=X_val).to_numpy(), dtype=torch.float32)
-            data_dct[type]['X_test'] = torch.tensor(data=self.__normalize(feature_to_norm=non_binary_cols, df=X_test).to_numpy(), dtype=torch.float32)
+            data_dct[type]['X_val'] = torch.tensor(data=self.__normalize(feature_to_norm=non_binary_cols, df=X_val.copy()).to_numpy(), dtype=torch.float32)
+            data_dct[type]['X_test'] = torch.tensor(data=self.__normalize(feature_to_norm=non_binary_cols, df=X_test.copy()).to_numpy(), dtype=torch.float32)
             
             data_dct[type]['q'] = torch.tensor(data_dct[type]['q'], dtype=torch.float32)
 
@@ -227,6 +240,7 @@ class DataPreparation:
         data_dct['y_test'] = torch.tensor(y_test.squeeze().to_numpy() if not isinstance(y_test.squeeze(), np.ndarray) else y_test.squeeze(), dtype=torch.long)
 
         return data_dct
+
 
     def __undersampling(self, X: pd.DataFrame, y: pd.Series):
         """Undersample the majority classes to match the minority class size.

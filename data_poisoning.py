@@ -10,6 +10,8 @@ def flipping_poisoning(
     poisoning_percentage: float,
     random_state: int = None,
     *,
+    columns_ohe: Optional[list[str]] = None,
+    original_dataframe: Optional[bool] = False,
     features_to_poison: Optional[Sequence[str]] = None,
     instances_by_feature: Optional[Dict[str, Sequence[int]]] = None,
 ) -> Tuple[pd.DataFrame, List[float]]:
@@ -41,9 +43,19 @@ def flipping_poisoning(
         features_to_poison = list(features_to_poison)
 
     # Initialize quality vector (1 = clean). For poisoned features set to 1 - poisoning_percentage
-    feature_quality = {col: 1.0 for col in X.columns}
-    for col in features_to_poison:
-        feature_quality[col] = max(0.0, 1.0 - float(poisoning_percentage))
+    feature_quality = {col: 1.0 for col in (X.columns if not original_dataframe else columns_ohe)}
+    if original_dataframe:
+        categorical_cols = X.select_dtypes(
+                include=["object", "string", "category"]
+        ).columns.tolist()
+        for col in features_to_poison:
+            if col not in categorical_cols:
+                feature_quality[col] = max(0.0, 1.0 - float(poisoning_percentage))
+            #Define later the poisoning percentage per categorical columns
+    else:
+        categorical_cols = []
+        for col in features_to_poison:
+            feature_quality[col] = max(0.0, 1.0 - float(poisoning_percentage))
     
     for feature in features_to_poison:
         # Get unique values for this feature
@@ -69,10 +81,27 @@ def flipping_poisoning(
             if other_values:
                 # Randomly select a different value
                 new_value = random.choice(other_values)
+                old_value = X_poisoned.loc[instance_idx, feature]
                 X_poisoned.loc[instance_idx, feature] = new_value
+
+        #Decrease feature quality of categorical columns for one/n_instances on this iteration    
+        if original_dataframe and feature in categorical_cols:
+            feature_quality[f"{feature}_{old_value}"] -= 1/n_instances
+            feature_quality[f"{feature}_{new_value}"] -= 1/n_instances
+
+    if original_dataframe:
+        #Original Dataframe must be converted to the one hot encoded version
+        X_poisoned = pd.get_dummies(
+            X_poisoned,
+            columns=categorical_cols,
+            drop_first=False,
+            dtype=int,
+        )
+
+        X_poisoned = X_poisoned.reindex(columns=columns_ohe, fill_value=0)
     
     # Build ordered q aligned with X.columns
-    q = [feature_quality[col] for col in X.columns]
+    q = [feature_quality[col] for col in (X.columns if not original_dataframe else columns_ohe)]
 
     return X_poisoned, q
 
@@ -82,9 +111,10 @@ def noise_poisoning(
     features_percentage: float,
     poisoning_percentage: float,
     noise_type: str = 'gaussian',
-    noise_scale: float = 0.2,
-    random_state: int = None,
+    noise_scale: float = 0.1,
+    random_state: int = None, 
     *,
+    continuous_features: Optional[list[str]] = None,
     features_to_poison: Optional[Sequence[str]] = None,
     instances_by_feature: Optional[Dict[str, Sequence[int]]] = None,
 ) -> Tuple[pd.DataFrame, List[float]]:
@@ -113,7 +143,7 @@ def noise_poisoning(
     # Select features to poison (external selection if provided)
     if features_to_poison is None:
         n_features_to_poison = max(1, int(n_features * features_percentage))
-        features_to_poison = random.sample(list(X.columns), n_features_to_poison)
+        features_to_poison = random.sample(continuous_features if continuous_features else list(X.columns), n_features_to_poison)
     else:
         features_to_poison = list(features_to_poison)
 
@@ -168,6 +198,8 @@ def incompleteness_poisoning(
     imputation_method: str = 'mean',
     random_state: int = None,
     *,
+    columns_ohe: Optional[list[str]] = None,
+    original_dataframe: Optional[bool] = False,
     features_to_poison: Optional[Sequence[str]] = None,
     instances_by_feature: Optional[Dict[str, Sequence[int]]] = None,
 ) -> Tuple[pd.DataFrame, List[float]]:
@@ -201,10 +233,19 @@ def incompleteness_poisoning(
         features_to_poison = list(features_to_poison)
 
     # Initialize quality vector (1 = clean). For poisoned features set to 1 - poisoning_percentage
-    feature_quality = {col: 1.0 for col in X.columns}
-    for col in features_to_poison:
-        feature_quality[col] = max(0.0, 1.0 - float(poisoning_percentage))
-    
+    feature_quality = {col: 1.0 for col in (X.columns if not original_dataframe else columns_ohe)}
+    if original_dataframe:
+        categorical_cols = X.select_dtypes(
+                include=["object", "string", "category"]
+        ).columns.tolist()
+        for col in features_to_poison:
+            if col not in categorical_cols:
+                feature_quality[col] = max(0.0, 1.0 - float(poisoning_percentage))
+    else:
+        categorical_cols = []
+        for col in features_to_poison:
+            feature_quality[col] = max(0.0, 1.0 - float(poisoning_percentage))
+
     for feature in features_to_poison:
         # Calculate/select instances to poison for this feature
         if instances_by_feature is not None and feature in instances_by_feature:
@@ -223,39 +264,67 @@ def incompleteness_poisoning(
         remaining_values = X_poisoned[feature].dropna()
         
         if len(remaining_values) > 0:
-            if imputation_method == 'mean':
-                imputation_value = remaining_values.mean()
-            elif imputation_method == 'median':
-                imputation_value = remaining_values.median()
-            elif imputation_method == 'mode':
-                imputation_value = remaining_values.mode().iloc[0] if not remaining_values.mode().empty else remaining_values.mean()
+            if feature not in categorical_cols:
+                if imputation_method == 'mean':
+                    imputation_value = remaining_values.mean()
+                elif imputation_method == 'median':
+                    imputation_value = remaining_values.median()
+                elif imputation_method == 'mode':
+                    imputation_value = remaining_values.mode().iloc[0] if not remaining_values.mode().empty else remaining_values.mean()
+                else:
+                    raise ValueError(f"Unknown imputation method: {imputation_method}")
             else:
-                raise ValueError(f"Unknown imputation method: {imputation_method}")
+                #Handling categorical features
+                value_counts = original_values.value_counts(normalize=True, dropna=True)
+                if value_counts.empty:
+                    raise ValueError("Cannot compute categorical imputation probabilities from empty original data.")
+                choices = value_counts.index.to_list()
+                probabilities = value_counts.to_numpy(dtype=float)
+                imputation_value = pd.Series(
+                    np.random.choice(choices, size=len(instances_to_poison), p=probabilities),
+                    index=instances_to_poison,
+                )
+
+                #Update feature quality
+                for new_value, old_value in zip(original_values, imputation_value):
+                    feature_quality[f"{feature}_{new_value}"] -= 1/n_instances
+                    feature_quality[f"{feature}_{old_value}"] -= 1/n_instances
             
             # Apply imputation
             X_poisoned.loc[instances_to_poison, feature] = imputation_value
             
-            # Store imputation statistics
+            '''# Store imputation statistics
             imputation_stats[feature] = {
                 'imputation_value': imputation_value,
                 'imputation_method': imputation_method,
                 'n_poisoned_instances': len(instances_to_poison),
                 'original_values': original_values.tolist()
-            }
+            }'''
         else:
             # If all values are NaN, use the mean of original values
             imputation_value = original_values.mean()
             X_poisoned.loc[instances_to_poison, feature] = imputation_value
             
-            imputation_stats[feature] = {
+            '''imputation_stats[feature] = {
                 'imputation_value': imputation_value,
                 'imputation_method': 'fallback_mean',
                 'n_poisoned_instances': len(instances_to_poison),
                 'original_values': original_values.tolist()
-            }
+            }'''
+    
+    if original_dataframe:
+        #Original Dataframe must be converted to the one hot encoded version
+        X_poisoned = pd.get_dummies(
+            X_poisoned,
+            columns=categorical_cols,
+            drop_first=False,
+            dtype=int,
+        )
+
+        X_poisoned = X_poisoned.reindex(columns=columns_ohe, fill_value=0)
     
     # Build ordered q aligned with X.columns
-    q = [feature_quality[col] for col in X.columns]
+    q = [feature_quality[col] for col in (X.columns if not original_dataframe else columns_ohe)]
 
     return X_poisoned, q
 
