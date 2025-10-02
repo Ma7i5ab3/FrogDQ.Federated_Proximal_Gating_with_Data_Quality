@@ -6,6 +6,7 @@
 
 __pycache__/
 
+/results
 /data/real
 /data_visualization/graphics
 .DS_Store

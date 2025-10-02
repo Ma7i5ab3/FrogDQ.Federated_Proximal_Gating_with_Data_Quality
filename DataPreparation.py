@@ -141,9 +141,6 @@ class DataPreparation:
         - Non-binary numeric columns are normalized; binary numeric columns are left
           unchanged.
         """
-        #Save original copy of starting dataframe
-        X_original = self.__X.copy()
-
         # Apply one hot encoding to categorical and string columns
         categorical_cols = self.__X.select_dtypes(
             include=["object", "string", "category"]
@@ -195,27 +192,27 @@ class DataPreparation:
             X=X_train,
             features_percentage=features_percentage,
             poisoning_percentage=poisoning_percentage,
-            original_dataframe=True,
-            columns_ohe=self.__X.columns
+            random_state=random_state
         )
         data_dct['noise']['X_train'], data_dct['noise']['q'] = noise_poisoning(
             X=X_train,
             features_percentage=features_percentage,
             poisoning_percentage=poisoning_percentage,
+            random_state=random_state
         )
         data_dct['nan']['X_train'], data_dct['nan']['q'] = incompleteness_poisoning(
             X=X_train,
             features_percentage=features_percentage,
             poisoning_percentage=poisoning_percentage,
-            original_dataframe=True,
-            columns_ohe=self.__X.columns
+            random_state=random_state
         )
         data_dct['all']['X_train'], data_dct['all']['q'] = combined_poisoning(
             X=X_train,
             features_percentage=features_percentage,
             flipping_percentage=poisoning_percentage,
             noise_percentage=poisoning_percentage,
-            incompleteness_percentage=poisoning_percentage
+            incompleteness_percentage=poisoning_percentage,
+            random_state=random_state
         )
 
         # Select continuous features to be normalized
