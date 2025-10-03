@@ -237,11 +237,11 @@ if __name__ == "__main__":
                     random_state=seeds[exp_iteration]
                 )
 
-                for model_type, poisonong_type, frogdq_mode in product(models, data_poisoning_methods, frogdq_modes):
-                    logger.info(f"----- Start Training ----- Arch: {model_type}/Poisoning Type: {poisonong_type}/FrogDQ Mode: {frogdq_mode}")
+                for model_type, poisoning_type, frogdq_mode in product(models, data_poisoning_methods, frogdq_modes):
+                    logger.info(f"----- Start Training ----- Arch: {model_type}/Poisoning Type: {poisoning_type}/FrogDQ Mode: {frogdq_mode}")
 
                     # Create unique experiment ID for checkpoint tracking
-                    experiment_id = f"{dataset}_{exp_iteration+1}_{feat_pct}_{pois_pct}_{model_type}_{poisonong_type}_{frogdq_mode}_{seeds[exp_iteration]}"
+                    experiment_id = f"{dataset}_{exp_iteration+1}_{feat_pct}_{pois_pct}_{model_type}_{poisoning_type}_{frogdq_mode}_{seeds[exp_iteration]}"
                     
                     # Check if this experiment has already been completed
                     if is_experiment_completed(experiment_id, completed_experiments):
@@ -250,7 +250,7 @@ if __name__ == "__main__":
                 
                     # Load Model
                     model = build_model(
-                        input_dim=data_dct[poisonong_type]['X_train'].shape[1],
+                        input_dim=data_dct[poisoning_type]['X_train'].shape[1],
                         output_dim=torch.unique(data_dct['y_train']).numel(),
                         random_state=seeds[exp_iteration],
                         arch=model_type,
@@ -260,11 +260,11 @@ if __name__ == "__main__":
                     #Train Model
                     history = train(
                         model=model,
-                        X_train=data_dct[poisonong_type]['X_train'],
+                        X_train=data_dct[poisoning_type]['X_train'],
                         y_train=data_dct['y_train'],
-                        X_val=data_dct[poisonong_type]['X_val'],
+                        X_val=data_dct[poisoning_type]['X_val'],
                         y_val=data_dct['y_val'],
-                        q_vec=data_dct[poisonong_type]['q'],
+                        q_vec=data_dct[poisoning_type]['q'],
                         frogdq_mode=frogdq_mode,
                         epochs=epochs,
                         lr=lr,
@@ -280,7 +280,7 @@ if __name__ == "__main__":
                     #Test Model
                     test_metrics = evaluate(
                         model=model,
-                        X=data_dct[poisonong_type]['X_test'],
+                        X=data_dct[poisoning_type]['X_test'],
                         y=data_dct['y_test'],
                         random_state=seeds[exp_iteration]
                     )
@@ -300,13 +300,13 @@ if __name__ == "__main__":
 
                     # Prepare experiment data for JSON saving
                     experiment_data = {
-                        "experiment_id": f"{dataset}_{exp_iteration+1}_{feat_pct}_{pois_pct}_{model_type}_{poisonong_type}_{frogdq_mode}_{seeds[exp_iteration]}",
+                        "experiment_id": f"{dataset}_{exp_iteration+1}_{feat_pct}_{pois_pct}_{model_type}_{poisoning_type}_{frogdq_mode}_{seeds[exp_iteration]}",
                         "timestamp": datetime.now().isoformat(),
                         "dataset": dataset,
                         "seed": seeds[exp_iteration],
                         "iteration": exp_iteration,
                         "model_type": model_type,
-                        "poisoning_method": poisonong_type,
+                        "poisoning_method": poisoning_type,
                         "frogdq_mode": frogdq_mode,
                         "features_percentage": feat_pct,
                         "poisoning_percentage": pois_pct,

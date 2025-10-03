@@ -111,7 +111,7 @@ def noise_poisoning(
     features_percentage: float,
     poisoning_percentage: float,
     noise_type: str = 'gaussian',
-    noise_scale: float = 0.1,
+    noise_scale: float = 0.5,
     random_state: int = None, 
     *,
     continuous_features: Optional[list[str]] = None,

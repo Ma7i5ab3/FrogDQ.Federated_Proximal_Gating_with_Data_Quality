@@ -273,7 +273,7 @@ def train(
     epochs: int = 100,
     batch_size: int = 256,
     lr: float = 1e-3,
-    weight_decay: float = 0.0,
+    weight_decay: float = 1e-3,
     optimizer: Literal["adam", "sgd"] = "adam",
     lr_scheduler: Literal["none", "plateau", "cosine"] = "none",
     scheduler_patience: int = 10,
@@ -452,11 +452,13 @@ def train(
         ),
     }
 
-    best_metric = float("inf")
+    best_metric = -float("inf")
     best_state = None
     patience_left = es_patience
 
+    logger.info(f"qvec: {q_vec}")
     use_frog = hasattr(model, "gate") and q_vec is not None and frogdq_mode != "none"
+    logger.info(f"Use_frog: {use_frog}")
     if use_frog:
         q_vec = q_vec.to(device)
         g_prev = model.gate.gates.detach().clone()
@@ -482,7 +484,7 @@ def train(
 
     for epoch in range(1, epochs + 1):
         model.train()
-        running_loss, nobs = 0.0, 0
+        running_loss, running_loss_prox, running_loss_prior, nobs = 0.0, 0.0, 0.0, 0
         reg_scale = _reg_scale_for_epoch(epoch)
 
         for xb, yb in train_loader:
@@ -490,35 +492,39 @@ def train(
             opt.zero_grad()
             logits = model(xb)
             loss = criterion(logits, yb)
+            loss_prox  = torch.tensor(0.0, device=device)
+            loss_prior = torch.tensor(0.0, device=device)
 
             if use_frog and reg_scale > 0.0:
                 g_curr = model.gate.gates
                 if frogdq_mode in {"temp", "temp_cos", "inertia", "gaussian", "dirichlet"}:
                     if frogdq_mode in {"temp", "temp_cos"}:
-                        loss = (
-                            loss
-                            + reg_scale * lambda_prox * (((g_curr - g_prev) ** 2) * w_inertia).sum()
-                        )
+                        loss_prox = reg_scale * lambda_prox * (((g_curr - g_prev) ** 2) * w_inertia).sum()
+                        loss = loss + loss_prox
                     else:
-                        loss = (
-                            loss
-                            + lambda_prox * (((g_curr - g_prev) ** 2) * w_inertia).sum()
-                        )
+                        loss_prox = lambda_prox * (((g_curr - g_prev) ** 2) * w_inertia).sum()
+                        loss = loss + loss_prox
                 if frogdq_mode == "gaussian":
-                    loss = loss + lambda_gaussian_prior * ((g_curr - q_vec) ** 2).sum()
+                    loss_prior = lambda_gaussian_prior * ((g_curr - q_vec) ** 2).sum()
+                    loss = loss + loss_prior
                 if frogdq_mode == "dirichlet":
-                    loss = loss + lambda_dirichlet_kl * _dirichlet_kl_prior_loss(
+                    loss_prior = lambda_dirichlet_kl * _dirichlet_kl_prior_loss(
                         g_curr, q_vec, tau=kl_temperature, eps=eps
                     )
+                    loss = loss + loss_prior
 
             loss.backward()
             opt.step()
             if use_frog:
                 g_prev = model.gate.gates.detach().clone()
             running_loss += loss.item() * xb.size(0)
+            running_loss_prox += loss_prox.item() * xb.size(0) 
+            running_loss_prior += loss_prior.item() * xb.size(0)
             nobs += xb.size(0)
 
         train_loss = running_loss / max(1, nobs)
+        train_loss_prox = running_loss_prox / max(1, nobs)
+        train_loss_prior = running_loss_prior / max(1, nobs)
         train_metrics = _eval_on_loader(model, train_loader, criterion, device)
         val_metrics = _eval_on_loader(model, val_loader, criterion, device)
 
@@ -546,9 +552,11 @@ def train(
             history["frog_gates"].append(g_now)
 
         if verbose and (epoch % log_every == 0):
+            logger.info(f"loss_prox: {True if train_loss_prox != 0 else False}")
             logger.info(
                 f"Epoch {epoch:3d} | reg_scale={reg_scale:.3f} | lr={opt.param_groups[0]["lr"]:.2e} | "
-                f"train: loss={train_loss:.4f}, acc={train_metrics['accuracy']:.4f}, "
+                f"train: loss={train_loss:.4f}, loss_prox={train_loss_prox:.4f}, ratio_loss_prox={(train_loss_prox/train_loss):.4f}, loss_prior={train_loss_prior:.4f}, ratio_loss_prior={(train_loss_prior/train_loss):.4f} "
+                f"acc={train_metrics['accuracy']:.4f}, "
                 f"bal_acc={train_metrics['balanced_accuracy']:.4f}, "
                 f"f1={train_metrics['f1']:.4f}, auc={train_metrics['auc_roc']:.4f} | "
                 f"val: loss={val_metrics['loss']:.4f}, acc={val_metrics['accuracy']:.4f}, "
@@ -557,8 +565,8 @@ def train(
             )
 
         # Early stopping on validation loss (lower is better)
-        val_score = val_metrics["loss"]
-        if val_score < best_metric - es_min_delta:
+        val_score = val_metrics["balanced_accuracy"]
+        if val_score > best_metric - es_min_delta:
             best_metric = val_score
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             patience_left = es_patience
@@ -566,7 +574,7 @@ def train(
             patience_left -= 1
             if early_stop and patience_left <= 0:
                 if verbose:
-                    logger.info(f"Early stopping at epoch {epoch} (best val loss={best_metric:.4f}).")
+                    logger.info(f"Early stopping at epoch {epoch} (best val balanced_accuracy={best_metric:.4f}).")
                 break
 
     if best_state is not None:
