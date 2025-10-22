@@ -13,3 +13,4 @@ ucimlrepo
 imbalanced-learn
 loguru
 joblib
+matplotlib

@@ -76,10 +76,34 @@ class DataPreparation:
             cdc_diabetes_health_indicators = fetch_ucirepo(id=891)
             X = cdc_diabetes_health_indicators.data.features
             y = cdc_diabetes_health_indicators.data.targets
+        elif lname == "bank_marketing":
+            bank_marketing_ds = fetch_ucirepo(id=222)
+            X, y = bank_marketing_ds.data.features.copy(), bank_marketing_ds.data.targets.copy()
+
+            # Fill missing values using a mapping for clarity and maintainability
+            fill_values = {
+                "contact": "none",
+                "pdays": -1,
+                "poutcome": "nonexistent",
+            }
+            X.fillna(value=fill_values, inplace=True)
+
+            # Convert target labels from strings to integers
+            y = y.replace({"yes": 1, "no": 0})
+            y = y.squeeze()
         elif lname == "heart":
             X = pd.read_csv("data/real/heart.csv")
             y = X["target"]
             X = X.drop(columns=["target"])
+        elif lname == "mimic":
+            X = pd.read_csv("data/real//mimic.csv")
+            bins = 4
+            time_bins = pd.qcut(X.loc[X["event"] == 1, "time"], q=bins, labels=False, duplicates='drop')
+            X.loc[X["event"] == 1, "time_bin"] = time_bins
+            X.loc[X["event"] == 0, "time_bin"] = bins
+            X = X.drop(columns=["time", "event"])
+            y = X["time_bin"].values
+            X = X.drop(columns=["time_bin"])
         else:
             raise ValueError(f"Unknown dataset '{self.dataset_name}'")
 
@@ -176,7 +200,7 @@ class DataPreparation:
         )
 
         # Compute distribution on y values and rebalance X_train with undersampling techniques
-        X_train, y_train = self.__undersampling(X_train, y_train)
+        #X_train, y_train = self.__undersampling(X_train, y_train)
 
         # Create Poisoned Splits
         data_dct = {
@@ -188,25 +212,35 @@ class DataPreparation:
         }
         data_dct['clean']['X_train'] = X_train
         data_dct['clean']['q'] = torch.ones(X_train.shape[1])
-        data_dct['flipping']['X_train'], data_dct['flipping']['q'] = flipping_poisoning(
+        data_dct['clean']['r'] = torch.ones(X_train.shape[0], dtype=torch.float32)
+
+        features_to_poison = top_logistic_features(X=X_train,
+                              y=y_train, 
+                              n_features=max(1, int(X_train.shape[1] * features_percentage)),
+                              random_state=random_state)
+
+        data_dct['flipping']['X_train'], data_dct['flipping']['q'], data_dct['flipping']['r'] = flipping_poisoning(
             X=X_train,
             features_percentage=features_percentage,
             poisoning_percentage=poisoning_percentage,
+            features_to_poison=features_to_poison,
             random_state=random_state
         )
-        data_dct['noise']['X_train'], data_dct['noise']['q'] = noise_poisoning(
+        data_dct['noise']['X_train'], data_dct['noise']['q'], data_dct['noise']['r'] = noise_poisoning(
             X=X_train,
             features_percentage=features_percentage,
             poisoning_percentage=poisoning_percentage,
-            random_state=random_state
+            features_to_poison=features_to_poison,
+            random_state=random_state,
         )
-        data_dct['nan']['X_train'], data_dct['nan']['q'] = incompleteness_poisoning(
+        data_dct['nan']['X_train'], data_dct['nan']['q'], data_dct['nan']['r'] = incompleteness_poisoning(
             X=X_train,
             features_percentage=features_percentage,
             poisoning_percentage=poisoning_percentage,
-            random_state=random_state
+            features_to_poison=features_to_poison,
+            random_state=random_state,
         )
-        data_dct['all']['X_train'], data_dct['all']['q'] = combined_poisoning(
+        data_dct['all']['X_train'], data_dct['all']['q'], data_dct['all']['r'] = combined_poisoning(
             X=X_train,
             features_percentage=features_percentage,
             flipping_percentage=poisoning_percentage,
@@ -231,6 +265,8 @@ class DataPreparation:
             data_dct[type]['X_test'] = torch.tensor(data=self.__normalize(feature_to_norm=non_binary_cols, df=X_test.copy()).to_numpy(), dtype=torch.float32)
             
             data_dct[type]['q'] = torch.tensor(data_dct[type]['q'], dtype=torch.float32)
+            if 'r' in data_dct[type]:
+                data_dct[type]['r'] = torch.tensor(data_dct[type]['r'], dtype=torch.float32)
 
         data_dct['y_train'] = torch.tensor(y_train.to_numpy() if not isinstance(y_train, np.ndarray) else y_train, dtype=torch.long)
         data_dct['y_val'] = torch.tensor(y_val.squeeze().to_numpy() if not isinstance(y_val.squeeze(), np.ndarray) else y_val.squeeze(), dtype=torch.long)

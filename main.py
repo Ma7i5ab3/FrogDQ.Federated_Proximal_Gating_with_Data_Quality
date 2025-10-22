@@ -13,7 +13,6 @@ from model import *
 from itertools import product
 import json
 from datetime import datetime
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 import warnings
 
@@ -163,6 +162,18 @@ def save_experiment_results(experiment_data):
         logger.error(f"Failed to save experiment results: {e}")
 
 if __name__ == "__main__":
+    # Set device
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        logger.info(f"Using CUDA device: {torch.cuda.get_device_name()}")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        logger.info("Using Apple Silicon GPU (MPS)")
+    else:
+        device = torch.device("cpu")
+        logger.info("Falling back to CPU")
+
+
     # Load checkpoint data to resume from previous runs
     completed_experiments = load_checkpoint()
     logger.info(f"Loaded checkpoint: {len(completed_experiments)} experiments already completed")
@@ -203,6 +214,7 @@ if __name__ == "__main__":
         # Extract hyperparameters for the current dataset
         dataset = exp.get("dataset", "Unnamed")
         lr = exp.get("lr", 0.2)
+        optimizer = exp.get("optimizer", "sgd")
         lambda_prox = exp.get("lambda_prox", 1.0)
         frog_temp_tau = exp.get("frog_temp_tau", 1.0)
         frog_temp_eta = exp.get("frog_temp_eta", 1.01)
@@ -213,13 +225,6 @@ if __name__ == "__main__":
 
 
         for exp_iteration in range(n_repeat_exps):
-            # Log which device is running this iteration
-            if torch.cuda.is_available():
-                _curr_dev = torch.cuda.current_device()
-                _device_str = f"cuda:{_curr_dev} ({torch.cuda.get_device_name(_curr_dev)})"
-            else:
-                _device_str = "cpu"
-            logger.info(f"Running on device: {_device_str}")
             logger.info(f"\n===== Loop {exp_iteration} of {n_repeat_exps} / Seed: {seeds[exp_iteration]} =====")
             set_seed(seed=seeds[exp_iteration])
 
@@ -255,6 +260,7 @@ if __name__ == "__main__":
                         random_state=seeds[exp_iteration],
                         arch=model_type,
                         use_frogdq=True if frogdq_mode != "none" else False,
+                        gate_init_vector=data_dct[poisoning_type]['q'] if (frogdq_mode == "inertia_q" or frogdq_mode == "gaussian_q" or frogdq_mode == "dirichlet_q") else None
                     )
 
                     #Train Model
@@ -265,16 +271,20 @@ if __name__ == "__main__":
                         X_val=data_dct[poisoning_type]['X_val'],
                         y_val=data_dct['y_val'],
                         q_vec=data_dct[poisoning_type]['q'],
+                        r_vec=data_dct[poisoning_type]['r'],
+                        fetch_g_every=10,
                         frogdq_mode=frogdq_mode,
                         epochs=epochs,
                         lr=lr,
                         lr_scheduler="plateau",
+                        weight_decay=1e-3 if model_type == "mlp" else 0.0,
+                        optimizer=optimizer,
                         lambda_prox=lambda_prox,
                         frog_temp_tau=frog_temp_tau,
                         frog_temp_eta=frog_temp_eta,
                         verbose=True,
                         random_state=seeds[exp_iteration],
-                        device=_curr_dev
+                        device=device
                     )
 
                     #Test Model
@@ -282,7 +292,8 @@ if __name__ == "__main__":
                         model=model,
                         X=data_dct[poisoning_type]['X_test'],
                         y=data_dct['y_test'],
-                        random_state=seeds[exp_iteration]
+                        random_state=seeds[exp_iteration],
+                        device=device
                     )
 
                     logger.info(

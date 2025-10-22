@@ -2,6 +2,81 @@ import numpy as np
 import pandas as pd
 import random
 from typing import Tuple, List, Sequence, Optional, Dict
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from collections import defaultdict
+
+
+def top_logistic_features(
+    X: pd.DataFrame,
+    y: Optional[pd.Series],
+    n_features: int,
+    *,
+    random_state: Optional[int] = None,
+    max_iter: int = 1000,
+) -> List[str]:
+    """
+    Return up to n_features columns ranked by logistic regression coefficient magnitudes.
+    Only numeric features are considered; rows with missing values are ignored.
+    """
+    if y is None or n_features <= 0:
+        return []
+
+    if not isinstance(y, pd.Series):
+        try:
+            y_series = pd.Series(y, index=X.index)
+        except ValueError:
+            return []
+    else:
+        y_series = y.reindex(X.index)
+
+    numeric_X = X.select_dtypes(include=[np.number])
+    if numeric_X.empty:
+        return []
+
+    combined = pd.concat([numeric_X, y_series], axis=1)
+    combined = combined.replace([np.inf, -np.inf], np.nan).dropna()
+    if combined.empty:
+        return []
+
+    y_valid = combined.iloc[:, -1]
+    if y_valid.nunique() < 2:
+        return []
+
+    X_valid = combined.iloc[:, :-1]
+    if X_valid.shape[1] == 0:
+        return []
+
+    X_valid = X_valid.astype(float)
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_valid)
+
+    model = LogisticRegression(
+        max_iter=max_iter,
+        class_weight='balanced',
+        solver='lbfgs',
+        multi_class='auto',
+        random_state=random_state,
+    )
+
+    try:
+        model.fit(X_scaled, y_valid)
+    except Exception:
+        return []
+
+    coef = np.abs(model.coef_)
+    if coef.ndim == 1:
+        coef_magnitude = coef
+    else:
+        coef_magnitude = coef.max(axis=0)
+
+    importance = pd.Series(coef_magnitude, index=X_valid.columns)
+    importance = importance.replace([np.inf, -np.inf], np.nan).dropna()
+    if importance.empty:
+        return []
+
+    return importance.nlargest(min(n_features, len(importance))).index.tolist()
 
 
 def flipping_poisoning(
@@ -17,15 +92,23 @@ def flipping_poisoning(
 ) -> Tuple[pd.DataFrame, List[float]]:
     """
     Apply flipping poisoning to the dataset.
-    
+
     Args:
         X: Original dataframe
         features_percentage: Percentage of features to poison (0-1)
         poisoning_percentage: Percentage of instances to poison per feature (0-1)
         random_state: Random seed for reproducibility
-        
+        columns_ohe: If original_dataframe=True, the expected final OHE columns order
+        original_dataframe: If True, X is the original df (will be OHE-encoded at the end)
+        features_to_poison: Optional explicit list of features to poison
+        instances_by_feature: Optional dict {feature: iterable of row indices} to poison
+
     Returns:
-        Tuple of (poisoned dataframe, q vector per feature ordered by X.columns)
+        Tuple of:
+            - poisoned dataframe (possibly OHE if original_dataframe=True),
+            - q: feature-wise quality vector ordered by (X.columns if not original_dataframe else columns_ohe),
+            - r: row-wise quality vector ordered by X.index
+              (r[i] = 1 - (# of poisoned features in row i) / n_features)
     """
     if random_state is not None:
         np.random.seed(random_state)
@@ -56,6 +139,9 @@ def flipping_poisoning(
         categorical_cols = []
         for col in features_to_poison:
             feature_quality[col] = max(0.0, 1.0 - float(poisoning_percentage))
+
+    # Count how many features were flipped in each row
+    row_poison_count = defaultdict(int)
     
     for feature in features_to_poison:
         # Get unique values for this feature
@@ -84,6 +170,9 @@ def flipping_poisoning(
                 old_value = X_poisoned.loc[instance_idx, feature]
                 X_poisoned.loc[instance_idx, feature] = new_value
 
+                # track for row quality
+                row_poison_count[instance_idx] += 1
+
         #Decrease feature quality of categorical columns for one/n_instances on this iteration    
         if original_dataframe and feature in categorical_cols:
             feature_quality[f"{feature}_{old_value}"] -= 1/n_instances
@@ -99,11 +188,18 @@ def flipping_poisoning(
         )
 
         X_poisoned = X_poisoned.reindex(columns=columns_ohe, fill_value=0)
+
+    # Build row-wise quality vector r (aligned to X.index)
+    r_index_order = list(X.index)
+    r = []
+    for idx in r_index_order:
+        k = row_poison_count.get(idx, 0)
+        r.append(max(0.0, 1.0 - (k / n_features)))
     
     # Build ordered q aligned with X.columns
     q = [feature_quality[col] for col in (X.columns if not original_dataframe else columns_ohe)]
 
-    return X_poisoned, q
+    return X_poisoned, q, r
 
 
 def noise_poisoning(
@@ -117,6 +213,7 @@ def noise_poisoning(
     continuous_features: Optional[list[str]] = None,
     features_to_poison: Optional[Sequence[str]] = None,
     instances_by_feature: Optional[Dict[str, Sequence[int]]] = None,
+    y: Optional[pd.Series] = None,
 ) -> Tuple[pd.DataFrame, List[float]]:
     """
     Apply noise poisoning to the dataset.
@@ -143,7 +240,7 @@ def noise_poisoning(
     # Select features to poison (external selection if provided)
     if features_to_poison is None:
         n_features_to_poison = max(1, int(n_features * features_percentage))
-        features_to_poison = random.sample(continuous_features if continuous_features else list(X.columns), n_features_to_poison)
+        features_to_poison = random.sample(list(X.columns), n_features_to_poison)
     else:
         features_to_poison = list(features_to_poison)
 
@@ -151,6 +248,9 @@ def noise_poisoning(
     feature_quality = {col: 1.0 for col in X.columns}
     for col in features_to_poison:
         feature_quality[col] = max(0.0, 1.0 - float(poisoning_percentage))
+
+    # Count how many features were flipped in each row
+    row_poison_count = defaultdict(int)
     
     for feature in features_to_poison:
         # Skip non-numeric features for noise poisoning
@@ -184,11 +284,20 @@ def noise_poisoning(
             # Apply noise
             new_value = current_value + noise
             X_poisoned.loc[instance_idx, feature] = new_value
+            # track for row quality
+            row_poison_count[instance_idx] += 1
+    
+    # Build row-wise quality vector r (aligned to X.index)
+    r_index_order = list(X.index)
+    r = []
+    for idx in r_index_order:
+        k = row_poison_count.get(idx, 0)
+        r.append(max(0.0, 1.0 - (k / n_features)))
     
     # Build ordered q aligned with X.columns
     q = [feature_quality[col] for col in X.columns]
 
-    return X_poisoned, q
+    return X_poisoned, q, r
 
 
 def incompleteness_poisoning(
@@ -202,6 +311,7 @@ def incompleteness_poisoning(
     original_dataframe: Optional[bool] = False,
     features_to_poison: Optional[Sequence[str]] = None,
     instances_by_feature: Optional[Dict[str, Sequence[int]]] = None,
+    y: Optional[pd.Series] = None,
 ) -> Tuple[pd.DataFrame, List[float]]:
     """
     Apply incompleteness poisoning to the dataset by setting values to NaN and then imputing.
@@ -228,7 +338,7 @@ def incompleteness_poisoning(
     # Select features to poison (external selection if provided)
     if features_to_poison is None:
         n_features_to_poison = max(1, int(n_features * features_percentage))
-        features_to_poison = random.sample(list(X.columns), n_features_to_poison)
+        features_to_poison = random.sample(list(X.columns), n_features_to_poison) 
     else:
         features_to_poison = list(features_to_poison)
 
@@ -245,6 +355,9 @@ def incompleteness_poisoning(
         categorical_cols = []
         for col in features_to_poison:
             feature_quality[col] = max(0.0, 1.0 - float(poisoning_percentage))
+    
+    # Count how many features were flipped in each row
+    row_poison_count = defaultdict(int)
 
     for feature in features_to_poison:
         # Calculate/select instances to poison for this feature
@@ -259,6 +372,10 @@ def incompleteness_poisoning(
         
         # Set selected instances to NaN
         X_poisoned.loc[instances_to_poison, feature] = np.nan
+
+        # Mark that these rows had this feature poisoned
+        for idx in instances_to_poison:
+            row_poison_count[idx] += 1
         
         # Calculate imputation value based on remaining non-NaN values
         remaining_values = X_poisoned[feature].dropna()
@@ -323,10 +440,17 @@ def incompleteness_poisoning(
 
         X_poisoned = X_poisoned.reindex(columns=columns_ohe, fill_value=0)
     
+    # Build row-wise quality vector r (aligned to X.index)
+    r_index_order = list(X.index)
+    r = []
+    for idx in r_index_order:
+        k = row_poison_count.get(idx, 0)
+        r.append(max(0.0, 1.0 - (k / n_features)))
+    
     # Build ordered q aligned with X.columns
     q = [feature_quality[col] for col in (X.columns if not original_dataframe else columns_ohe)]
 
-    return X_poisoned, q
+    return X_poisoned, q, r
 
 
 def _select_disjoint_feature_sets(
@@ -474,7 +598,7 @@ def combined_poisoning(
                 inc_instances_map[feat] = chosen
 
     # Apply each poisoning with coordinated instance selections
-    X_poisoned, _ = flipping_poisoning(
+    X_poisoned, _, _ = flipping_poisoning(
         X,
         features_percentage,
         flipping_percentage,
@@ -482,7 +606,7 @@ def combined_poisoning(
         features_to_poison=flip_feats,
         instances_by_feature=flip_instances_map,
     )
-    X_poisoned, _ = noise_poisoning(
+    X_poisoned, _, _ = noise_poisoning(
         X_poisoned,
         features_percentage,
         noise_percentage,
@@ -492,7 +616,7 @@ def combined_poisoning(
         features_to_poison=noise_feats,
         instances_by_feature=noise_instances_map,
     )
-    X_poisoned, _ = incompleteness_poisoning(
+    X_poisoned, _, _ = incompleteness_poisoning(
         X_poisoned,
         features_percentage,
         incompleteness_percentage,
@@ -515,5 +639,11 @@ def combined_poisoning(
         total_poisoning = min(1.0, total_poisoning)
         quality_by_feature[col] = max(0.0, 1.0 - total_poisoning)
 
+    # Build row-wise quality vector r (aligned to X.index): TODO: add tracking row-wise quality for this poisoning
+    r_index_order = list(X.index)
+    r = []
+    for _ in r_index_order:
+        r.append(1.0)
+
     q = [quality_by_feature[col] for col in X.columns]
-    return X_poisoned, q
+    return X_poisoned, q, r

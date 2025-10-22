@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from loguru import logger
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import DataLoader, TensorDataset
@@ -23,9 +24,12 @@ def _set_seed(random_state: int = 42) -> None:
     random.seed(random_state)
     np.random.seed(random_state)
     torch.manual_seed(random_state)
-    torch.cuda.manual_seed_all(random_state)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(random_state)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    if hasattr(torch, "mps") and torch.mps.is_available():
+        torch.mps.manual_seed(random_state)
 
 
 # -------------------------
@@ -62,9 +66,9 @@ class FeedForward(nn.Module):
 class FrogGate(nn.Module):
     """Per-feature gate vector g (learnable scale)."""
 
-    def __init__(self, input_dim: int, init: float = 1.0):
+    def __init__(self, input_dim: int, init: float = 1.0, init_vector: list[float] = None):
         super().__init__()
-        self.gates = nn.Parameter(torch.full((input_dim,), float(init)))
+        self.gates = nn.Parameter(torch.full((input_dim,), float(init)) if init_vector is None else torch.tensor(init_vector))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x * self.gates
@@ -92,6 +96,7 @@ def build_model(
     dropout: float = 0.0,
     use_frogdq: bool = False,
     gate_init: float = 1.0,
+    gate_init_vector: list[float] = None,
     random_state: int = 42,
 ) -> nn.Module:
     """
@@ -127,7 +132,14 @@ def build_model(
     base = FeedForward(
         input_dim, None if arch == "linear" else hidden, output_dim, activation, dropout
     )
-    return FrogModel(FrogGate(input_dim, gate_init), base) if use_frogdq else base
+    if gate_init_vector is None:
+        return FrogModel(FrogGate(input_dim, gate_init), base) if use_frogdq else base
+    else:
+        if len(gate_init_vector) == input_dim:
+            return FrogModel(FrogGate(input_dim, init_vector=gate_init_vector), base) if use_frogdq else base
+        else:
+            raise ValueError("The length of gate_init_vector does not correspond to input_dim")
+   
 
 
 # -------------------------
@@ -163,10 +175,21 @@ def _eval_on_loader(
     model.eval()
     total_loss, nobs = 0.0, 0
     all_logits, all_y = [], []
-    for xb, yb in loader:
+    for batch in loader:
+        if isinstance(batch, (tuple, list)):
+            xb, yb = batch[0], batch[1]
+            rb = batch[2] if len(batch) > 2 else None
+        else:
+            xb, yb = batch
+            rb = None
         xb, yb = xb.to(device), yb.to(device)
         logits = model(xb)
-        loss = criterion(logits, yb)
+        if rb is not None:
+            rb = rb.to(device).view(-1)
+            per_sample = F.cross_entropy(logits, yb, weight=getattr(criterion, "weight", None), reduction="none")
+            loss = torch.mean(rb * per_sample)
+        else:
+            loss = criterion(logits, yb)
         total_loss += loss.item() * xb.size(0)
         nobs += xb.size(0)
         all_logits.append(logits.detach().cpu())
@@ -274,7 +297,7 @@ def train(
     batch_size: int = 256,
     lr: float = 1e-3,
     weight_decay: float = 1e-3,
-    optimizer: Literal["adam", "sgd"] = "adam",
+    optimizer: Literal["adam", "sgd"] = "sgd",
     lr_scheduler: Literal["none", "plateau", "cosine"] = "none",
     scheduler_patience: int = 10,
     scheduler_factor: float = 0.5,
@@ -289,7 +312,20 @@ def train(
     random_state: int = 42,
     # FrogDQ options
     q_vec: Optional[torch.Tensor] = None,
-    frogdq_mode: Literal["none", "temp", "temp_cos", "inertia", "gaussian", "dirichlet"] = "none",
+    r_vec: Optional[torch.Tensor] = None,
+    fetch_g_every: int = 1,
+    frogdq_mode: Literal[
+        "none",
+        "temp",
+        "temp_cos",
+        "inertia",
+        "inertia_q",
+        "gaussian",
+        "dirichlet",
+        "gaussian_q",
+        "dirichlet_q",
+        "sample_wise",
+    ] = "none",
     lambda_prox: float = 0.1,
     lambda_gaussian_prior: float = 0.1,
     lambda_dirichlet_kl: float = 0.1,
@@ -358,7 +394,11 @@ def train(
         Seed for deterministic training.
     q_vec : Tensor or None, default=None
         Feature-quality vector for FrogDQ (length = D).
-    frogdq_mode : {"none","temp","temp_cos","inertia","gaussian","dirichlet"}, default="none"
+    r_vec : Tensor or None, default=None
+        Sample-quality vector for FrogDQ (length = N); required for frogdq_mode="sample_wise".
+    fetch_g_every : int, default = 1
+        How frequently g_prev must be fetched
+    frogdq_mode : {"none","temp","temp_cos","inertia","gaussian","dirichlet","sample_wise"}, default="none"
         Which FrogDQ regularization to apply.
     lambda_prox : float, default=0.1
         Strength of inertia (trust region) term.
@@ -390,9 +430,25 @@ def train(
     """
     _set_seed(random_state)
 
-    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif hasattr(torch, "mps") and torch.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
     model.to(device)
-    train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
+    use_sample_weights = frogdq_mode == "sample_wise"
+    if use_sample_weights:
+        if r_vec is None:
+            raise ValueError("frogdq_mode='sample_wise' requires r_vec with per-sample qualities.")
+        r_vec = r_vec.view(-1).detach().to(dtype=torch.float32)
+        if r_vec.numel() != X_train.size(0):
+            raise ValueError("Length of r_vec must match the number of training samples.")
+        train_dataset = TensorDataset(X_train, y_train, r_vec)
+    else:
+        train_dataset = TensorDataset(X_train, y_train)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=batch_size, shuffle=False)
 
     # Build class-weighted cross-entropy to address class imbalance
@@ -486,37 +542,49 @@ def train(
         model.train()
         running_loss, running_loss_prox, running_loss_prior, nobs = 0.0, 0.0, 0.0, 0
         reg_scale = _reg_scale_for_epoch(epoch)
+        if use_frog and (epoch == 1 or epoch % fetch_g_every == 0):
+            g_prev = model.gate.gates.detach().clone()
 
-        for xb, yb in train_loader:
+        for batch in train_loader:
+            if use_sample_weights:
+                xb, yb, rb = batch
+                rb = rb.to(device).view(-1)
+            else:
+                xb, yb = batch
+                rb = None
             xb, yb = xb.to(device), yb.to(device)
             opt.zero_grad()
             logits = model(xb)
-            loss = criterion(logits, yb)
+            if rb is not None:
+                per_sample_loss = F.cross_entropy(logits, yb, weight=class_weights, reduction="none")
+                loss = torch.mean(rb * per_sample_loss)
+            else:
+                loss = criterion(logits, yb)
             loss_prox  = torch.tensor(0.0, device=device)
             loss_prior = torch.tensor(0.0, device=device)
 
             if use_frog and reg_scale > 0.0:
                 g_curr = model.gate.gates
-                if frogdq_mode in {"temp", "temp_cos", "inertia", "gaussian", "dirichlet"}:
+                if frogdq_mode in {"inertia_q", "temp", "temp_cos", "inertia", "gaussian", "dirichlet", "gaussian_q", "dirichlet_q", "sample_wise"}:
                     if frogdq_mode in {"temp", "temp_cos"}:
                         loss_prox = reg_scale * lambda_prox * (((g_curr - g_prev) ** 2) * w_inertia).sum()
                         loss = loss + loss_prox
                     else:
                         loss_prox = lambda_prox * (((g_curr - g_prev) ** 2) * w_inertia).sum()
                         loss = loss + loss_prox
-                if frogdq_mode == "gaussian":
+                if frogdq_mode == "gaussian" or frogdq_mode == "gaussian_q":
                     loss_prior = lambda_gaussian_prior * ((g_curr - q_vec) ** 2).sum()
                     loss = loss + loss_prior
-                if frogdq_mode == "dirichlet":
+                if frogdq_mode == "dirichlet" or frogdq_mode == "dirichlet_q":
                     loss_prior = lambda_dirichlet_kl * _dirichlet_kl_prior_loss(
                         g_curr, q_vec, tau=kl_temperature, eps=eps
                     )
                     loss = loss + loss_prior
-
+                
             loss.backward()
             opt.step()
-            if use_frog:
-                g_prev = model.gate.gates.detach().clone()
+            '''if use_frog:
+                g_prev = model.gate.gates.detach().clone()'''
             running_loss += loss.item() * xb.size(0)
             running_loss_prox += loss_prox.item() * xb.size(0) 
             running_loss_prior += loss_prior.item() * xb.size(0)
@@ -554,7 +622,7 @@ def train(
         if verbose and (epoch % log_every == 0):
             logger.info(f"loss_prox: {True if train_loss_prox != 0 else False}")
             logger.info(
-                f"Epoch {epoch:3d} | reg_scale={reg_scale:.3f} | lr={opt.param_groups[0]["lr"]:.2e} | "
+                f"Epoch {epoch:3d} | reg_scale={reg_scale:.3f} | lr={opt.param_groups[0]['lr']:.2e} | "
                 f"train: loss={train_loss:.4f}, loss_prox={train_loss_prox:.4f}, ratio_loss_prox={(train_loss_prox/train_loss):.4f}, loss_prior={train_loss_prior:.4f}, ratio_loss_prior={(train_loss_prior/train_loss):.4f} "
                 f"acc={train_metrics['accuracy']:.4f}, "
                 f"bal_acc={train_metrics['balanced_accuracy']:.4f}, "
@@ -566,7 +634,7 @@ def train(
 
         # Early stopping on validation loss (lower is better)
         val_score = val_metrics["balanced_accuracy"]
-        if val_score > best_metric - es_min_delta:
+        if val_score > best_metric + es_min_delta:
             best_metric = val_score
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             patience_left = es_patience

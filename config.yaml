@@ -3,6 +3,30 @@
 # Command-line arguments take precedence over these values.
 
 experiments:
+  - dataset: "mimic"
+    n_rounds: 500
+    local_epochs: 500
+    lr: 0.001
+    lambda_prox: 0.1
+    frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
+    target_column: ""
+    splitting_perc_train_test: 0.6
+    splitting_perc_test_val: 0.5
+    optimizer: "sgd"
+
+  - dataset: "bank_marketing"
+    n_rounds: 500
+    local_epochs: 500
+    lr: 0.001
+    lambda_prox: 1.0
+    frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
+    target_column: ""
+    splitting_perc_train_test: 0.8
+    splitting_perc_test_val: 0.5
+    optimizer: "sgd"
+
   - dataset: "adult"
     n_rounds: 500
     local_epochs: 500
@@ -24,6 +48,7 @@ experiments:
     target_column: ""
     splitting_perc_train_test: 0.8
     splitting_perc_test_val: 0.5
+    optimizer: "sgd"
 
   - dataset: "breast_cancer"
     n_rounds: 500
@@ -35,6 +60,7 @@ experiments:
     target_column: ""
     splitting_perc_train_test: 0.8
     splitting_perc_test_val: 0.5
+    optimizer: "sgd"
 
   - dataset: "mushroom"
     n_rounds: 500
@@ -46,6 +72,7 @@ experiments:
     target_column: ""
     splitting_perc_train_test: 0.8
     splitting_perc_test_val: 0.5
+    optimizer: "sgd"
 
   - dataset: "iris"
     n_rounds: 500
@@ -68,15 +95,16 @@ experiments:
     target_column: ""
     splitting_perc_train_test: 0.8
     splitting_perc_test_val: 0.5
+    optimizer: "sgd"
 
 data_poisoning:
-  methods: ["noise", "flipping", "nan", "all"]
-  features_percentage: [0.1, 0.2, 0.4, 0.6, 0.8]
-  poisoning_percentage: [0.1, 0.2, 0.4, 0.6, 0.8]
+  methods: ["clean", "noise", "flipping", "nan", "all"]
+  features_percentage: [0.2, 0.4, 0.6]
+  poisoning_percentage: [0.2, 0.4, 0.6]
 
-models: ["mlp", "linear"]
-frogdq_modes: ["none", "temp_cos", "temp", "inertia", "gaussian", "dirichlet"]
-seeds: [42, 56, 221, 800, 1258, 2, 121, 4200, 444, 500]
+models: ["mlp"]
+frogdq_modes: ["none", "temp_cos", "inertia", "inertia_q", "gaussian", "dirichlet", "gaussian_q", "dirichlet_q", "sample_wise"]
+seeds: [42, 56, 221, 800, 1258]
     
 
   

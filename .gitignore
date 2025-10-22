@@ -2,7 +2,7 @@
 .venv
 /venv
 
-.json
+*.json
 
 __pycache__/
 
