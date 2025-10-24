@@ -242,8 +242,15 @@ if __name__ == "__main__":
                     random_state=seeds[exp_iteration]
                 )
 
-                for model_type, poisoning_type, frogdq_mode in product(models, data_poisoning_methods, frogdq_modes):
-                    logger.info(f"----- Start Training ----- Arch: {model_type}/Poisoning Type: {poisoning_type}/FrogDQ Mode: {frogdq_mode}")
+                for model_type, poisoning_type, frogdq_mode_raw in product(models, data_poisoning_methods, frogdq_modes):
+                    parsed_mode = parse_frogdq_mode(frogdq_mode_raw)
+                    frogdq_mode = parsed_mode.canonical
+                    requested_modules = set(parsed_mode.requested)
+                    active_modules = set(parsed_mode.active)
+                    logger.info(
+                        f"----- Start Training ----- Arch: {model_type}/Poisoning Type: {poisoning_type}/"
+                        f"FrogDQ Mode: {frogdq_mode} (requested={parsed_mode.requested})"
+                    )
 
                     # Create unique experiment ID for checkpoint tracking
                     experiment_id = f"{dataset}_{exp_iteration+1}_{feat_pct}_{pois_pct}_{model_type}_{poisoning_type}_{frogdq_mode}_{seeds[exp_iteration]}"
@@ -259,8 +266,8 @@ if __name__ == "__main__":
                         output_dim=torch.unique(data_dct['y_train']).numel(),
                         random_state=seeds[exp_iteration],
                         arch=model_type,
-                        use_frogdq=True if frogdq_mode != "none" else False,
-                        gate_init_vector=data_dct[poisoning_type]['q'] if (frogdq_mode == "inertia_q" or frogdq_mode == "gaussian_q" or frogdq_mode == "dirichlet_q") else None
+                        use_frogdq="inertia" in active_modules,
+                        gate_init_vector=data_dct[poisoning_type]['q'] if "q" in requested_modules else None
                     )
 
                     #Train Model
@@ -271,7 +278,7 @@ if __name__ == "__main__":
                         X_val=data_dct[poisoning_type]['X_val'],
                         y_val=data_dct['y_val'],
                         q_vec=data_dct[poisoning_type]['q'],
-                        r_vec=data_dct[poisoning_type]['r'],
+                        r_vec=data_dct[poisoning_type]['r'] if "samplewise" in active_modules else None,
                         fetch_g_every=10,
                         frogdq_mode=frogdq_mode,
                         epochs=epochs,

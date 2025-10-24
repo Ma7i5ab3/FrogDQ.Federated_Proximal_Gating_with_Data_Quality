@@ -1,6 +1,7 @@
 # pylint: disable=too-many-arguments,too-many-locals,too-many-statements,invalid-name
 
 import random
+from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
 import numpy as np
@@ -12,7 +13,109 @@ from loguru import logger
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import DataLoader, TensorDataset
 
-__all__ = ["build_model", "train", "evaluate"]
+__all__ = ["build_model", "train", "evaluate", "parse_frogdq_mode"]
+
+# -------------------------
+# FrogDQ module parsing
+# -------------------------
+
+FROGDQ_ALLOWED_MODULES: tuple[str, ...] = (
+    "inertia",
+    "temp",
+    "cosine",
+    "gaussian",
+    "dirichlet",
+    "samplewise",
+    "q",
+)
+_MODULE_ORDER = {name: idx for idx, name in enumerate(FROGDQ_ALLOWED_MODULES)}
+_GATE_RELEVANT_MODULES = frozenset({"inertia", "gaussian", "dirichlet", "temp", "cosine", "q"})
+_ALIASES = {
+    "sample-wise": "samplewise",
+    "sample_wise": "samplewise",
+    "sample": "samplewise",
+    "samplew": "samplewise",
+    "sampleweights": "samplewise",
+    "tempcos": "cosine",
+    "cos": "cosine",
+    "cosine": "cosine",
+    "qinit": "q",
+    "quality": "q",
+}
+_DISPLAY_NAMES = {
+    "cosine": "temp_cos",
+}
+
+
+@dataclass(frozen=True)
+class FrogDQModules:
+    """Structured representation of requested/active FrogDQ modules."""
+
+    requested: tuple[str, ...]
+    active: frozenset[str]
+    canonical: str
+
+
+def parse_frogdq_mode(mode: str) -> FrogDQModules:
+    """
+    Parse a FrogDQ mode string into modular components.
+
+    Parameters
+    ----------
+    mode : str
+        Mode string composed by joining module names with underscores.
+
+    Returns
+    -------
+    FrogDQModules
+        requested : tuple[str, ...]
+            Normalized module names explicitly requested by the user.
+        active : frozenset[str]
+            Module set closed under dependencies (e.g., 'temp' enables 'inertia').
+        canonical : str
+            Canonical underscore-joined representation of the requested modules,
+            or "none" when no module is active.
+    """
+
+    if mode is None:
+        mode = "none"
+    normalized = mode.strip().lower()
+    if not normalized or normalized == "none":
+        return FrogDQModules(requested=tuple(), active=frozenset(), canonical="none")
+
+    # Normalise separators/aliases before splitting.
+    normalized = normalized.replace("-", "_")
+    # Legacy combined names.
+    normalized = normalized.replace("temp_cos", "cosine")
+
+    raw_tokens = [tok for tok in normalized.split("_") if tok]
+    resolved: list[str] = []
+    for token in raw_tokens:
+        token = _ALIASES.get(token, token)
+        if token not in FROGDQ_ALLOWED_MODULES:
+            if token == "none":
+                continue
+            raise ValueError(
+                f"Unknown FrogDQ module '{token}' derived from mode '{mode}'. "
+                f"Allowed modules: {', '.join(FROGDQ_ALLOWED_MODULES)}"
+            )
+        if token not in resolved:
+            resolved.append(token)
+
+    requested = tuple(sorted(resolved, key=lambda name: _MODULE_ORDER[name]))
+    if not requested:
+        return FrogDQModules(requested=tuple(), active=frozenset(), canonical="none")
+
+    if "temp" in requested and "cosine" in requested:
+        raise ValueError("Modules 'temp' (exponential schedule) and 'cosine' are mutually exclusive.")
+
+    active = set(requested)
+    if active & {"temp", "cosine", "gaussian", "dirichlet", "samplewise", "q"}:
+        active.add("inertia")
+
+    canonical_parts = [_DISPLAY_NAMES.get(name, name) for name in requested]
+    canonical = "_".join(canonical_parts)
+    return FrogDQModules(requested=requested, active=frozenset(active), canonical=canonical)
 
 # -------------------------
 # Reproducibility
@@ -314,18 +417,7 @@ def train(
     q_vec: Optional[torch.Tensor] = None,
     r_vec: Optional[torch.Tensor] = None,
     fetch_g_every: int = 1,
-    frogdq_mode: Literal[
-        "none",
-        "temp",
-        "temp_cos",
-        "inertia",
-        "inertia_q",
-        "gaussian",
-        "dirichlet",
-        "gaussian_q",
-        "dirichlet_q",
-        "sample_wise",
-    ] = "none",
+    frogdq_mode: str = "none",
     lambda_prox: float = 0.1,
     lambda_gaussian_prior: float = 0.1,
     lambda_dirichlet_kl: float = 0.1,
@@ -338,6 +430,11 @@ def train(
     frog_temp_tau: float = 1.0,
     # For frogdq_mode="temp": μ_n = μ * η^n (n = epoch-1)
     frog_temp_eta: float = 1.0,
+    sample_weight_norm: Literal["none", "mean", "mean_rms"] = "mean_rms",
+    r_clip_min: float = 0.0,          
+    use_kappa_ema: bool = True,     
+    kappa_ema_beta: float = 0.9,     
+    detach_weight_norm: bool = True,  
 ) -> dict[str, list]:
     """
     Train a classifier with optional FrogDQ losses. Early stopping uses validation loss.
@@ -393,13 +490,17 @@ def train(
     random_state : int, default=42
         Seed for deterministic training.
     q_vec : Tensor or None, default=None
-        Feature-quality vector for FrogDQ (length = D).
+        Feature-quality vector for FrogDQ (length = D). Required when any gate-dependent
+        module is active (e.g., inertia/gaussian/dirichlet/q).
     r_vec : Tensor or None, default=None
-        Sample-quality vector for FrogDQ (length = N); required for frogdq_mode="sample_wise".
+        Sample-quality vector for FrogDQ (length = N); required when module "samplewise"
+        is requested.
     fetch_g_every : int, default = 1
-        How frequently g_prev must be fetched
-    frogdq_mode : {"none","temp","temp_cos","inertia","gaussian","dirichlet","sample_wise"}, default="none"
-        Which FrogDQ regularization to apply.
+        How frequently g_prev must be fetched.
+    frogdq_mode : str, default="none"
+        Underscore-joined list of FrogDQ modules (e.g., "dirichlet_q", "gaussian_temp").
+        Supported atomic modules: {"inertia","temp","cosine","gaussian","dirichlet",
+        "samplewise","q"}. Use "none" to disable.
     lambda_prox : float, default=0.1
         Strength of inertia (trust region) term.
     lambda_gaussian_prior : float, default=0.1
@@ -413,13 +514,26 @@ def train(
     normalize_inertia_by_mean : bool, default=True
         If True, scale inertia weights by their mean.
     frog_temperature : float, default=1.0
-        Global scale applied to ALL FrogDQ regularization terms.
+        Global scale applied to FrogDQ regularization terms.
     frog_temp_invert : bool, default=False
-        For mode "temp_cos": invert schedule (low→high→low instead of high→low→high).
+        When module "cosine" is active, invert schedule (low→high→low instead of high→low→high).
     frog_temp_tau : float, default=1.0
-        For mode "temp_cos": speed/shape control (τ>1 compresses early change).
+        For module "cosine": speed/shape control (τ>1 compresses early change).
     frog_temp_eta : float, default=1.0
-        For mode "temp": exponential factor η in μ_n = μ * η^n (n = epoch-1).
+        For module "temp": exponential factor η in μ_n = μ * η^n (n = epoch-1).
+    sample_weight_norm : {"none","mean","mean_rms"}, default="mean_rms"
+        Normalization strategy for per-sample weights r when using module "samplewise".
+        "none"     -> use r as provided
+        "mean"     -> r_hat = B * r / sum(r)  (preserve mean scale)
+        "mean_rms" -> r_hat, then divide by κ = sqrt(mean(r_hat^2)) (preserve gradient energy)
+    r_clip_min : float, default=0.0
+        Minimum value to clip r before normalization (e.g., 0.05).
+    use_kappa_ema : bool, default=True
+        If True, smooth κ with EMA across batches to avoid jitter.
+    kappa_ema_beta : float, default=0.9
+        EMA coefficient for κ smoothing.
+    detach_weight_norm : bool, default=True
+        If True, detach normalized r* from autograd graph.  
 
     Returns
     -------
@@ -429,6 +543,10 @@ def train(
                val_bal_acc, train_f1, val_f1, train_auc, val_auc, lr, frog_gates.
     """
     _set_seed(random_state)
+    modules = parse_frogdq_mode(frogdq_mode)
+    frogdq_mode = modules.canonical
+    requested_modules = set(modules.requested)
+    active_modules = set(modules.active)
 
     if device is None:
         if torch.cuda.is_available():
@@ -438,10 +556,13 @@ def train(
         else:
             device = torch.device("cpu")
     model.to(device)
-    use_sample_weights = frogdq_mode == "sample_wise"
+
+    needs_gating = bool(active_modules & _GATE_RELEVANT_MODULES)
+    use_sample_weights = "samplewise" in active_modules
+
     if use_sample_weights:
         if r_vec is None:
-            raise ValueError("frogdq_mode='sample_wise' requires r_vec with per-sample qualities.")
+            raise ValueError("Module 'samplewise' requires r_vec with per-sample qualities.")
         r_vec = r_vec.view(-1).detach().to(dtype=torch.float32)
         if r_vec.numel() != X_train.size(0):
             raise ValueError("Length of r_vec must match the number of training samples.")
@@ -502,91 +623,141 @@ def train(
         "val_f1": [],
         "train_auc": [],
         "val_auc": [],
-        # Per-epoch snapshot of FrogDQ gates (np.ndarray); None when FrogDQ is off.
-        "frog_gates": (
-            [] if (hasattr(model, "gate") and q_vec is not None and frogdq_mode != "none") else None
-        ),
+        "frog_gates": [] if (needs_gating and hasattr(model, "gate")) else None,
     }
 
     best_metric = -float("inf")
     best_state = None
     patience_left = es_patience
 
+    logger.info(f"FrogDQ requested modules: {modules.requested} | active: {sorted(active_modules)}")
     logger.info(f"qvec: {q_vec}")
-    use_frog = hasattr(model, "gate") and q_vec is not None and frogdq_mode != "none"
+    use_frog = needs_gating
     logger.info(f"Use_frog: {use_frog}")
+
     if use_frog:
+        if not hasattr(model, "gate"):
+            raise ValueError(
+                "FrogDQ modules requiring gating were requested, but the model has no gate. "
+                "Instantiate the model with use_frogdq=True."
+            )
+        if q_vec is None:
+            raise ValueError("FrogDQ modules require q_vec (feature quality vector).")
         q_vec = q_vec.to(device)
         g_prev = model.gate.gates.detach().clone()
         w_inertia = 1.0 - q_vec
         if normalize_inertia_by_mean:
             w_inertia = w_inertia / (w_inertia.mean() + eps)
+    else:
+        if q_vec is not None:
+            q_vec = q_vec.to(device)
+        g_prev = None
+        w_inertia = None
 
-    # Helper for temperature schedule
-    def _reg_scale_for_epoch(e: int) -> float:
-        # Mode "temp": μ_n = μ * η^n, with n = epoch-1
-        if frogdq_mode == "temp":
+    kappa_ema: Optional[torch.Tensor] = None
+
+    def _inertia_scale_for_epoch(e: int) -> float:
+        if "inertia" not in active_modules:
+            return 0.0
+        base = frog_temperature
+        if "temp" in requested_modules:
             n = max(0, e - 1)
-            return float(frog_temperature * (float(frog_temp_eta) ** n))
-        # Mode "temp_cos": cosine schedule over epochs
-        if epochs <= 1:
-            phase = 1.0
-        else:
-            phase = ((e - 1) / (epochs - 1)) ** max(1e-8, frog_temp_tau)
-        alpha = 0.5 * (1.0 + np.cos(2.0 * np.pi * phase))  # in [0,1], high→low→high
-        if frog_temp_invert:
-            alpha = 1.0 - alpha
-        return float(frog_temperature * alpha)
+            return float(base * (float(frog_temp_eta) ** n))
+        if "cosine" in requested_modules:
+            if epochs <= 1:
+                phase = 1.0
+            else:
+                phase = ((e - 1) / (epochs - 1)) ** max(1e-8, frog_temp_tau)
+            alpha = 0.5 * (1.0 + np.cos(2.0 * np.pi * phase))
+            if frog_temp_invert:
+                alpha = 1.0 - alpha
+            return float(base * alpha)
+        return float(base)
 
     for epoch in range(1, epochs + 1):
         model.train()
-        running_loss, running_loss_prox, running_loss_prior, nobs = 0.0, 0.0, 0.0, 0
-        reg_scale = _reg_scale_for_epoch(epoch)
-        if use_frog and (epoch == 1 or epoch % fetch_g_every == 0):
+        running_loss = 0.0
+        running_loss_prox = 0.0
+        running_loss_prior = 0.0
+        nobs = 0
+        reg_scale = _inertia_scale_for_epoch(epoch)
+
+        if use_frog and "inertia" in active_modules and (epoch == 1 or epoch % fetch_g_every == 0):
             g_prev = model.gate.gates.detach().clone()
 
         for batch in train_loader:
             if use_sample_weights:
                 xb, yb, rb = batch
                 rb = rb.to(device).view(-1)
+                if r_clip_min > 0.0:
+                    rb = torch.clamp(rb, min=r_clip_min, max=1.0)
+
+                if sample_weight_norm != "none":
+                    B = rb.numel()
+                    denom = rb.sum().clamp_min(eps)
+                    r_hat = (B * rb) / denom
+
+                    if sample_weight_norm == "mean":
+                        r_eff = r_hat
+                    elif sample_weight_norm == "mean_rms":
+                        kappa = (r_hat.pow(2).mean().clamp_min(eps)).sqrt()
+                        if use_kappa_ema:
+                            if kappa_ema is None:
+                                kappa_ema = kappa.detach()
+                            else:
+                                kappa_ema = kappa_ema * kappa_ema_beta + kappa.detach() * (1.0 - kappa_ema_beta)
+                            kappa_use = kappa_ema
+                        else:
+                            kappa_use = kappa
+                        r_eff = r_hat / kappa_use
+                    else:
+                        r_eff = rb
+                else:
+                    r_eff = rb
+
+                if detach_weight_norm:
+                    r_eff = r_eff.detach()
             else:
                 xb, yb = batch
                 rb = None
+                r_eff = None
+
             xb, yb = xb.to(device), yb.to(device)
             opt.zero_grad()
             logits = model(xb)
             if rb is not None:
                 per_sample_loss = F.cross_entropy(logits, yb, weight=class_weights, reduction="none")
-                loss = torch.mean(rb * per_sample_loss)
+                loss = torch.mean(r_eff * per_sample_loss)
             else:
                 loss = criterion(logits, yb)
-            loss_prox  = torch.tensor(0.0, device=device)
+
+            loss_prox = torch.tensor(0.0, device=device)
             loss_prior = torch.tensor(0.0, device=device)
 
-            if use_frog and reg_scale > 0.0:
+            if use_frog:
                 g_curr = model.gate.gates
-                if frogdq_mode in {"inertia_q", "temp", "temp_cos", "inertia", "gaussian", "dirichlet", "gaussian_q", "dirichlet_q", "sample_wise"}:
-                    if frogdq_mode in {"temp", "temp_cos"}:
-                        loss_prox = reg_scale * lambda_prox * (((g_curr - g_prev) ** 2) * w_inertia).sum()
-                        loss = loss + loss_prox
-                    else:
-                        loss_prox = lambda_prox * (((g_curr - g_prev) ** 2) * w_inertia).sum()
-                        loss = loss + loss_prox
-                if frogdq_mode == "gaussian" or frogdq_mode == "gaussian_q":
-                    loss_prior = lambda_gaussian_prior * ((g_curr - q_vec) ** 2).sum()
-                    loss = loss + loss_prior
-                if frogdq_mode == "dirichlet" or frogdq_mode == "dirichlet_q":
-                    loss_prior = lambda_dirichlet_kl * _dirichlet_kl_prior_loss(
+                if "inertia" in active_modules and reg_scale > 0.0:
+                    inertia_term = (((g_curr - g_prev) ** 2) * w_inertia).sum()
+                    loss_prox = lambda_prox * reg_scale * inertia_term
+                    loss = loss + loss_prox
+                if "gaussian" in active_modules:
+                    gaussian_term = ((g_curr - q_vec) ** 2).sum()
+                    gaussian_loss = frog_temperature * lambda_gaussian_prior * gaussian_term
+                    loss_prior = loss_prior + gaussian_loss
+                    loss = loss + gaussian_loss
+                if "dirichlet" in active_modules:
+                    dirichlet_term = _dirichlet_kl_prior_loss(
                         g_curr, q_vec, tau=kl_temperature, eps=eps
                     )
-                    loss = loss + loss_prior
-                
+                    dirichlet_loss = frog_temperature * lambda_dirichlet_kl * dirichlet_term
+                    loss_prior = loss_prior + dirichlet_loss
+                    loss = loss + dirichlet_loss
+
             loss.backward()
             opt.step()
-            '''if use_frog:
-                g_prev = model.gate.gates.detach().clone()'''
+
             running_loss += loss.item() * xb.size(0)
-            running_loss_prox += loss_prox.item() * xb.size(0) 
+            running_loss_prox += loss_prox.item() * xb.size(0)
             running_loss_prior += loss_prior.item() * xb.size(0)
             nobs += xb.size(0)
 
@@ -596,7 +767,6 @@ def train(
         train_metrics = _eval_on_loader(model, train_loader, criterion, device)
         val_metrics = _eval_on_loader(model, val_loader, criterion, device)
 
-        # --- History (metrics)
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_metrics["loss"])
         history["train_acc"].append(train_metrics["accuracy"])
@@ -614,16 +784,17 @@ def train(
             else:
                 scheduler.step()
 
-        # --- History (FrogDQ gates per epoch, as NumPy)
         if use_frog and history["frog_gates"] is not None:
             g_now = model.gate.gates.detach().cpu().numpy().copy()
             history["frog_gates"].append(g_now)
 
         if verbose and (epoch % log_every == 0):
-            logger.info(f"loss_prox: {True if train_loss_prox != 0 else False}")
+            prox_ratio = (train_loss_prox / train_loss) if train_loss != 0 else 0.0
+            prior_ratio = (train_loss_prior / train_loss) if train_loss != 0 else 0.0
             logger.info(
-                f"Epoch {epoch:3d} | reg_scale={reg_scale:.3f} | lr={opt.param_groups[0]['lr']:.2e} | "
-                f"train: loss={train_loss:.4f}, loss_prox={train_loss_prox:.4f}, ratio_loss_prox={(train_loss_prox/train_loss):.4f}, loss_prior={train_loss_prior:.4f}, ratio_loss_prior={(train_loss_prior/train_loss):.4f} "
+                f"Epoch {epoch:3d} | mode={frogdq_mode} | reg_scale={reg_scale:.3f} | lr={opt.param_groups[0]['lr']:.2e} | "
+                f"train: loss={train_loss:.4f}, loss_prox={train_loss_prox:.4f}, ratio_loss_prox={prox_ratio:.4f}, "
+                f"loss_prior={train_loss_prior:.4f}, ratio_loss_prior={prior_ratio:.4f} "
                 f"acc={train_metrics['accuracy']:.4f}, "
                 f"bal_acc={train_metrics['balanced_accuracy']:.4f}, "
                 f"f1={train_metrics['f1']:.4f}, auc={train_metrics['auc_roc']:.4f} | "
@@ -632,7 +803,6 @@ def train(
                 f"f1={val_metrics['f1']:.4f}, auc={val_metrics['auc_roc']:.4f}"
             )
 
-        # Early stopping on validation loss (lower is better)
         val_score = val_metrics["balanced_accuracy"]
         if val_score > best_metric + es_min_delta:
             best_metric = val_score

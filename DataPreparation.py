@@ -6,6 +6,7 @@ from ucimlrepo import fetch_ucirepo
 from imblearn.over_sampling import SMOTENC
 from sklearn.datasets import fetch_openml, load_breast_cancer, load_iris
 from sklearn.model_selection import train_test_split
+from loguru import logger
 from data_poisoning import *
 
 pd.set_option("display.max_columns", None)  # Show all columns
@@ -240,6 +241,13 @@ class DataPreparation:
             features_to_poison=features_to_poison,
             random_state=random_state,
         )
+        if (
+            any(x < 1 for x in data_dct['flipping']['r']) and
+            any(x < 1 for x in data_dct['noise']['r']) and
+            any(x < 1 for x in data_dct['nan']['r'])
+        ):
+            # your code here
+            logger.info(f"Row-wise quality correctly computed for all poisoning types.")
         data_dct['all']['X_train'], data_dct['all']['q'], data_dct['all']['r'] = combined_poisoning(
             X=X_train,
             features_percentage=features_percentage,
