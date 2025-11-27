@@ -15,6 +15,7 @@ import json
 from datetime import datetime
 
 import warnings
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 warnings.filterwarnings("ignore")
 

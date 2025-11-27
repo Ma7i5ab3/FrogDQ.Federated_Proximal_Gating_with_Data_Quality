@@ -8,28 +8,25 @@ from loguru import logger
 def auc_conv(
     metric_values: Sequence[float],
     window_size: int = 50, 
-    variance_threshold: float = 0.01,
+    delta_threshold: float = 0.001,
     normalization: bool = True
 ) -> float:
     """
     Compute the discrete area under a validation metric curve until convergence.
 
-    Convergence is considered reached when the variance of the most recent
-    `window_size` values falls below or equals `variance_threshold`. The
-    function integrates the metric values (one per epoch) up to and including
-    the first window that satisfies the convergence criterion. When the metric
-    never converges, the full series is used. Missing or non-finite values are
-    ignored.
+    Convergence is considered reached when the absolute difference between
+    successive values within the most recent `window_size` epochs
+    falls below or equals `delta_threshold`.
 
     Parameters
     ----------
-
     metric_values : sequence of float
         Per-epoch validation scores for the selected metric.
     window_size : int
         Number of trailing values considered for the convergence check.
-    variance_threshold : float
-        Maximum allowed variance of the trailing window to mark convergence.
+    delta_threshold : float
+        Maximum allowed absolute change between consecutive metric values
+        to mark convergence.
     normalization : bool, optional
         If True, normalize the AUC by the number of epochs considered
         (default is True).
@@ -40,22 +37,15 @@ def auc_conv(
         Area under the validation curve up to convergence (inclusive).
     """
 
-    if window_size <= 0:
-        raise ValueError(f"'window_size' must be a positive integer, got {window_size}.")
-    if variance_threshold < 0:
-        raise ValueError(f"'variance_threshold' must be non-negative, got {variance_threshold}.")
-
+    if window_size <= 1:
+        raise ValueError(f"'window_size' must be > 1, got {window_size}.")
+    if delta_threshold < 0:
+        raise ValueError(f"'delta_threshold' must be non-negative, got {delta_threshold}.")
     if not metric_values:
         return 0.0
 
-    values = np.asarray(metric_values, dtype=float)
-    if values.ndim != 1:
-        values = values.reshape(-1)
-
-    # Drop NaNs/Infs that may appear due to metric computation issues.
-    finite_mask = np.isfinite(values)
-    if not np.all(finite_mask):
-        values = values[finite_mask]
+    values = np.asarray(metric_values, dtype=float).flatten()
+    values = values[np.isfinite(values)]
     if values.size == 0:
         return 0.0
 
@@ -63,10 +53,12 @@ def auc_conv(
     if window_size <= values.size:
         for idx in range(window_size, values.size + 1):
             window = values[idx - window_size : idx]
-            if np.var(window) <= variance_threshold:
+            diffs = np.abs(np.diff(window))
+            if np.all(diffs <= delta_threshold):
                 stop_idx = idx
                 break
-    logger.info(f"Convergence reached at index {stop_idx} out of {values.size}.")
+
+    print(f"Convergence reached at index {stop_idx} out of {values.size}.")
 
     segment = values[:stop_idx]
     if segment.size == 1:

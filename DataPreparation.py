@@ -257,7 +257,8 @@ class DataPreparation:
         if (
             any(x < 1 for x in data_dct['flipping']['r']) and
             any(x < 1 for x in data_dct['noise']['r']) and
-            any(x < 1 for x in data_dct['nan']['r'])
+            any(x < 1 for x in data_dct['nan']['r']) and
+            any(x < 1 for x in data_dct['all']['r'])
         ):
             # your code here
             logger.info(f"Row-wise quality correctly computed for all poisoning types.")
