@@ -74,9 +74,15 @@ class DataPreparation:
                 else ds.target.astype(str).astype(int).to_numpy()
             )
         elif lname == "diabates":
-            cdc_diabetes_health_indicators = fetch_ucirepo(id=891)
-            X = cdc_diabetes_health_indicators.data.features
-            y = cdc_diabetes_health_indicators.data.targets
+            # fetch dataset 
+            diabetes_130_us_hospitals_for_years_1999_2008 = fetch_ucirepo(id=296) 
+            
+            # data (as pandas dataframes) 
+            X = diabetes_130_us_hospitals_for_years_1999_2008.data.features 
+            y = diabetes_130_us_hospitals_for_years_1999_2008.data.targets
+
+            y = y.replace({"NO": 0, "<30": 1, ">30": 1})
+            y = y.squeeze()
         elif lname == "bank_marketing":
             bank_marketing_ds = fetch_ucirepo(id=222)
             X, y = bank_marketing_ds.data.features.copy(), bank_marketing_ds.data.targets.copy()
@@ -105,6 +111,13 @@ class DataPreparation:
             X = X.drop(columns=["time", "event"])
             y = X["time_bin"].values
             X = X.drop(columns=["time_bin"])
+        elif lname == "credit_cards":
+            # fetch dataset 
+            default_of_credit_card_clients = fetch_ucirepo(id=350) 
+            # data (as pandas dataframes) 
+            X = default_of_credit_card_clients.data.features 
+            y = default_of_credit_card_clients.data.targets
+            y = y.squeeze() 
         else:
             raise ValueError(f"Unknown dataset '{self.dataset_name}'")
 
@@ -248,6 +261,7 @@ class DataPreparation:
         ):
             # your code here
             logger.info(f"Row-wise quality correctly computed for all poisoning types.")
+            
         data_dct['all']['X_train'], data_dct['all']['q'], data_dct['all']['r'] = combined_poisoning(
             X=X_train,
             features_percentage=features_percentage,

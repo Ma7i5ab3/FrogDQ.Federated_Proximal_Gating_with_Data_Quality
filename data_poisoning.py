@@ -207,7 +207,7 @@ def noise_poisoning(
     features_percentage: float,
     poisoning_percentage: float,
     noise_type: str = 'gaussian',
-    noise_scale: float = 0.5,
+    noise_scale: float = 0.8,
     random_state: int = None, 
     *,
     continuous_features: Optional[list[str]] = None,
@@ -639,11 +639,14 @@ def combined_poisoning(
         total_poisoning = min(1.0, total_poisoning)
         quality_by_feature[col] = max(0.0, 1.0 - total_poisoning)
 
-    # Build row-wise quality vector r (aligned to X.index): TODO: add tracking row-wise quality for this poisoning
-    r_index_order = list(X.index)
-    r = []
-    for _ in r_index_order:
-        r.append(1.0)
+    # Build row-wise quality vector r (aligned to X.index) based on actual changed cells
+    # Treat NaNs as equal to avoid counting untouched missing values as poisoned
+    same_mask = X_poisoned.eq(X) | (X_poisoned.isna() & X.isna())
+    changed_mask = ~same_mask
+    row_changes = changed_mask.sum(axis=1).reindex(X.index).fillna(0)
+    n_features = X.shape[1]
+    r = [max(0.0, 1.0 - (float(cnt) / n_features)) for cnt in row_changes]
 
     q = [quality_by_feature[col] for col in X.columns]
+    
     return X_poisoned, q, r

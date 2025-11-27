@@ -52,7 +52,7 @@ def load_checkpoint(checkpoint_file="experiment_checkpoint.json"):
     Parameters
     ----------
     checkpoint_file : str
-        Path to the checkpoint file
+        Path to the checkpoint file (can include dataset-specific directories)
         
     Returns
     -------
@@ -78,9 +78,13 @@ def save_checkpoint(experiment_id, checkpoint_file="experiment_checkpoint.json")
     experiment_id : str
         Unique identifier for the completed experiment
     checkpoint_file : str
-        Path to the checkpoint file
+        Path to the checkpoint file (can include dataset-specific directories)
     """
     # Load existing checkpoint data
+    checkpoint_dir = os.path.dirname(checkpoint_file)
+    if checkpoint_dir:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
     if os.path.exists(checkpoint_file):
         try:
             with open(checkpoint_file, 'r') as f:
@@ -122,7 +126,7 @@ def is_experiment_completed(experiment_id, completed_experiments):
     """
     return experiment_id in completed_experiments
 
-def save_experiment_results(experiment_data):
+def save_experiment_results(experiment_data, json_filename="experiment_results.json"):
     """
     Save experiment results to a JSON file, appending new results to existing data.
     
@@ -130,13 +134,18 @@ def save_experiment_results(experiment_data):
     ----------
     experiment_data : dict
         Dictionary containing all experiment results and metadata
+    json_filename : str
+        Path to the results file (can include dataset-specific directories)
     """
-    json_filename = "experiment_results.json"
     
     # Convert numpy types to JSON-serializable types
     experiment_data = convert_numpy_types(experiment_data)
     
     # Load existing results if file exists
+    results_dir = os.path.dirname(json_filename)
+    if results_dir:
+        os.makedirs(results_dir, exist_ok=True)
+
     if os.path.exists(json_filename):
         try:
             with open(json_filename, 'r') as f:
@@ -174,9 +183,7 @@ if __name__ == "__main__":
         logger.info("Falling back to CPU")
 
 
-    # Load checkpoint data to resume from previous runs
-    completed_experiments = load_checkpoint()
-    logger.info(f"Loaded checkpoint: {len(completed_experiments)} experiments already completed")
+    completed_experiments_by_dataset = {}
 
     # Load all experiment setups from config.yaml
     config = {}
@@ -213,6 +220,17 @@ if __name__ == "__main__":
 
         # Extract hyperparameters for the current dataset
         dataset = exp.get("dataset", "Unnamed")
+        dataset_dir = dataset
+        os.makedirs(dataset_dir, exist_ok=True)
+        checkpoint_file = os.path.join(dataset_dir, "experiment_checkpoint.json")
+        results_file = os.path.join(dataset_dir, "experiment_results.json")
+
+        completed_experiments = load_checkpoint(checkpoint_file)
+        completed_experiments_by_dataset[dataset] = completed_experiments
+        logger.info(
+            f"Loaded checkpoint for '{dataset}': {len(completed_experiments)} experiments already completed"
+        )
+
         lr = exp.get("lr", 0.2)
         optimizer = exp.get("optimizer", "sgd")
         lambda_prox = exp.get("lambda_prox", 1.0)
@@ -338,10 +356,10 @@ if __name__ == "__main__":
                     }
 
                     # Save experiment results to JSON file
-                    save_experiment_results(experiment_data)
+                    save_experiment_results(experiment_data, json_filename=results_file)
 
                     # Save checkpoint to mark this experiment as completed
-                    save_checkpoint(experiment_id)
+                    save_checkpoint(experiment_id, checkpoint_file=checkpoint_file)
                     completed_experiments.add(experiment_id)
 
                     logger.info(f"----- Experiment completed and checkpointed: {experiment_id} -----")
@@ -349,13 +367,18 @@ if __name__ == "__main__":
 
 # Final summary
 total_experiments = len(experiments) * n_repeat_exps * len(features_percentage) * len(poisoning_percentage) * len(models) * len(data_poisoning_methods) * len(frogdq_modes)
-completed_count = len(completed_experiments)
+completed_count = sum(len(exp_set) for exp_set in completed_experiments_by_dataset.values())
 logger.info(f"\n===== EXPERIMENT SUMMARY =====")
 logger.info(f"Total experiments configured: {total_experiments}")
 logger.info(f"Completed experiments: {completed_count}")
 logger.info(f"Remaining experiments: {total_experiments - completed_count}")
-logger.info(f"Checkpoint file: experiment_checkpoint.json")
-logger.info(f"Results file: experiment_results.json")
+if completed_experiments_by_dataset:
+    logger.info("Checkpoint files per dataset:")
+    for dataset_name in completed_experiments_by_dataset.keys():
+        logger.info(f"  - {dataset_name}: {os.path.join(dataset_name, 'experiment_checkpoint.json')}")
+    logger.info("Results files per dataset:")
+    for dataset_name in completed_experiments_by_dataset.keys():
+        logger.info(f"  - {dataset_name}: {os.path.join(dataset_name, 'experiment_results.json')}")
 logger.info("================================\n")
                 
 
