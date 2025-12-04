@@ -2,119 +2,33 @@
 # You can override any of these parameters by editing this file.
 # Command-line arguments take precedence over these values.
 
-experiments:
-  - dataset: "credit_cards"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.00015
-    lambda_prox: 0.1
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.7
-    splitting_perc_test_val: 0.5
-    optimizer: "sgd"
+#Training Config
+n_rounds: 500
+local_epochs: 500
+lr: 0.001
+lambda_prox: 0.1
+frog_temp_tau: 2.0
+frog_temp_eta: 1.01
+target_column: ""
+splitting_perc_train_test: 0.8
+splitting_perc_test_val: 0.5
+optimizer: "sgd"
 
-  - dataset: "bank_marketing"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.001
-    lambda_prox: 0.1
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.8
-    splitting_perc_test_val: 0.5
-    optimizer: "sgd"
-
-  - dataset: "mimic"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.001
-    lambda_prox: 0.1
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.6
-    splitting_perc_test_val: 0.5
-    optimizer: "sgd"
-
-  - dataset: "adult"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.00015
-    lambda_prox: 0.1
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.8
-    splitting_perc_test_val: 0.5
-
-  - dataset: "heart"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.001
-    lambda_prox: 0.1
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.8
-    splitting_perc_test_val: 0.5
-    optimizer: "sgd"
-
-  - dataset: "breast_cancer"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.001
-    lambda_prox: 0.001
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.8
-    splitting_perc_test_val: 0.5
-    optimizer: "sgd"
-
-  - dataset: "mushroom"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.001
-    lambda_prox: 0.1
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.8
-    splitting_perc_test_val: 0.5
-    optimizer: "sgd"
-
-  - dataset: "iris"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.001
-    lambda_prox: 0.1
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.8
-    splitting_perc_test_val: 0.5
-
-  - dataset: "mnist"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.001
-    lambda_prox: 0.001
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.8
-    splitting_perc_test_val: 0.5
-    optimizer: "sgd"
+#Data Fetch Config
+min_samples: 0
+max_samples: 1000000
+min_features: 0
+max_features: 1000000
+allow_multiclass_binarization: 1
+allow_missing: 0
+max_openml: 500
 
 data_poisoning:
   methods: ["clean", "noise", "flipping", "nan", "all"]
   features_percentage: [0.2, 0.4, 0.6]
-  poisoning_percentage: [0.2, 0.4, 0.6]
+  poisoning_percentage: [0.2, 0.4, 0.6, 0.8]
 
-models: ["linear", "mlp"]
+models: ["mlp"]
 frogdq_modes: [
   "none",
   "inertia",

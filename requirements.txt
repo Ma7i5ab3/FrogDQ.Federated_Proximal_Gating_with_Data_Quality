@@ -15,3 +15,4 @@ loguru
 joblib
 matplotlib
 medmnist
+openml

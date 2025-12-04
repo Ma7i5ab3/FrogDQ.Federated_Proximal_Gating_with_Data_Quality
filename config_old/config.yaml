@@ -1,0 +1,145 @@
+# Configuration file for Federated Proximal Gating with Data Quality
+# You can override any of these parameters by editing this file.
+# Command-line arguments take precedence over these values.
+
+experiments:
+  - dataset: "credit_cards"
+    n_rounds: 500
+    local_epochs: 500
+    lr: 0.00015
+    lambda_prox: 0.1
+    frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
+    target_column: ""
+    splitting_perc_train_test: 0.7
+    splitting_perc_test_val: 0.5
+    optimizer: "sgd"
+
+  - dataset: "bank_marketing"
+    n_rounds: 500
+    local_epochs: 500
+    lr: 0.001
+    lambda_prox: 0.1
+    frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
+    target_column: ""
+    splitting_perc_train_test: 0.8
+    splitting_perc_test_val: 0.5
+    optimizer: "sgd"
+
+  - dataset: "mimic"
+    n_rounds: 500
+    local_epochs: 500
+    lr: 0.001
+    lambda_prox: 0.1
+    frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
+    target_column: ""
+    splitting_perc_train_test: 0.6
+    splitting_perc_test_val: 0.5
+    optimizer: "sgd"
+
+  - dataset: "adult"
+    n_rounds: 500
+    local_epochs: 500
+    lr: 0.00015
+    lambda_prox: 0.1
+    frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
+    target_column: ""
+    splitting_perc_train_test: 0.8
+    splitting_perc_test_val: 0.5
+
+  - dataset: "heart"
+    n_rounds: 500
+    local_epochs: 500
+    lr: 0.001
+    lambda_prox: 0.1
+    frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
+    target_column: ""
+    splitting_perc_train_test: 0.8
+    splitting_perc_test_val: 0.5
+    optimizer: "sgd"
+
+  - dataset: "breast_cancer"
+    n_rounds: 500
+    local_epochs: 500
+    lr: 0.001
+    lambda_prox: 0.001
+    frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
+    target_column: ""
+    splitting_perc_train_test: 0.8
+    splitting_perc_test_val: 0.5
+    optimizer: "sgd"
+
+  - dataset: "mushroom"
+    n_rounds: 500
+    local_epochs: 500
+    lr: 0.001
+    lambda_prox: 0.1
+    frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
+    target_column: ""
+    splitting_perc_train_test: 0.8
+    splitting_perc_test_val: 0.5
+    optimizer: "sgd"
+
+  - dataset: "iris"
+    n_rounds: 500
+    local_epochs: 500
+    lr: 0.001
+    lambda_prox: 0.1
+    frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
+    target_column: ""
+    splitting_perc_train_test: 0.8
+    splitting_perc_test_val: 0.5
+
+  - dataset: "mnist"
+    n_rounds: 500
+    local_epochs: 500
+    lr: 0.001
+    lambda_prox: 0.001
+    frog_temp_tau: 2.0
+    frog_temp_eta: 1.01
+    target_column: ""
+    splitting_perc_train_test: 0.8
+    splitting_perc_test_val: 0.5
+    optimizer: "sgd"
+
+data_poisoning:
+  methods: ["clean", "noise", "flipping", "nan", "all"]
+  features_percentage: [0.2, 0.4, 0.6]
+  poisoning_percentage: [0.2, 0.4, 0.6, 0.8]
+
+models: ["linear", "mlp"]
+frogdq_modes: [
+  "none",
+  "inertia",
+  "inertia_cosine",
+  "inertia_gaussian",
+  "inertia_dirichlet",
+  "inertia_samplewise",
+  "inertia_cosine_gaussian",
+  "inertia_cosine_dirichlet",
+  "inertia_cosine_samplewise",
+  "inertia_cosine_gaussian_q",
+  "inertia_cosine_dirichlet_q",
+  "inertia_cosine_samplewise_q",
+  "inertia_samplewise_gaussian",
+  "inertia_samplewise_dirichlet",
+  "inertia_cosine_samplewise_gaussian",
+  "inertia_cosine_samplewise_dirichlet",
+  "inertia_cosine_samplewise_gaussian_q",
+  "inertia_cosine_samplewise_dirichlet_q"
+]
+seeds: [42, 56, 221, 800, 1258]
+    
+
+  
+
+
+
+  

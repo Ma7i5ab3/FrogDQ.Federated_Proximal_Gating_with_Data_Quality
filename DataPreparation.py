@@ -27,7 +27,7 @@ class DataPreparation:
         """
         self.dataset_name = dataset_name
 
-    def load(self):
+    def load(self, local: bool = False):
         """Load the selected dataset into memory.
 
         Notes
@@ -48,78 +48,83 @@ class DataPreparation:
         ValueError
             If `dataset_name` is not one of the supported values.
         """
-        lname = self.dataset_name.lower()
-        if lname == "adult":
-            ds = fetch_openml(name="adult", version=2, as_frame=True, parser="auto")
-            X = ds.data.copy()
-            y = (ds.target.astype(str).str.contains(">")).astype(int).to_numpy()
-        elif lname == "mushroom":
-            ds = fetch_openml(name="mushroom", version=1, as_frame=True, parser="auto")
-            X = ds.data.copy()
-            y = (ds.target.astype(str) == "p").astype(int).to_numpy()
-        elif lname == "breast_cancer":
-            ds = load_breast_cancer(as_frame=True)
-            X = ds.frame.drop(columns=["target"]).copy()
-            y = ds.target.to_numpy()
-        elif lname == "iris":
-            ds = load_iris(as_frame=True)
-            X = ds.frame.drop(columns=["target"]).copy()
-            y = ds.target.to_numpy()
-        elif lname == "mnist":
-            ds = fetch_openml(name="mnist_784", version=1, as_frame=True, parser="auto")
-            X = ds.data.copy()
-            y = (
-                ds.target.astype(int).to_numpy()
-                if ds.target.dtype.kind in "iu"
-                else ds.target.astype(str).astype(int).to_numpy()
-            )
-        elif lname == "diabates":
-            # fetch dataset 
-            diabetes_130_us_hospitals_for_years_1999_2008 = fetch_ucirepo(id=296) 
-            
-            # data (as pandas dataframes) 
-            X = diabetes_130_us_hospitals_for_years_1999_2008.data.features 
-            y = diabetes_130_us_hospitals_for_years_1999_2008.data.targets
+        if not local:
+            lname = self.dataset_name.lower()
+            if lname == "adult":
+                ds = fetch_openml(name="adult", version=2, as_frame=True, parser="auto")
+                X = ds.data.copy()
+                y = (ds.target.astype(str).str.contains(">")).astype(int).to_numpy()
+            elif lname == "mushroom":
+                ds = fetch_openml(name="mushroom", version=1, as_frame=True, parser="auto")
+                X = ds.data.copy()
+                y = (ds.target.astype(str) == "p").astype(int).to_numpy()
+            elif lname == "breast_cancer":
+                ds = load_breast_cancer(as_frame=True)
+                X = ds.frame.drop(columns=["target"]).copy()
+                y = ds.target.to_numpy()
+            elif lname == "iris":
+                ds = load_iris(as_frame=True)
+                X = ds.frame.drop(columns=["target"]).copy()
+                y = ds.target.to_numpy()
+            elif lname == "mnist":
+                ds = fetch_openml(name="mnist_784", version=1, as_frame=True, parser="auto")
+                X = ds.data.copy()
+                y = (
+                    ds.target.astype(int).to_numpy()
+                    if ds.target.dtype.kind in "iu"
+                    else ds.target.astype(str).astype(int).to_numpy()
+                )
+            elif lname == "diabates":
+                # fetch dataset 
+                diabetes_130_us_hospitals_for_years_1999_2008 = fetch_ucirepo(id=296) 
+                
+                # data (as pandas dataframes) 
+                X = diabetes_130_us_hospitals_for_years_1999_2008.data.features 
+                y = diabetes_130_us_hospitals_for_years_1999_2008.data.targets
 
-            y = y.replace({"NO": 0, "<30": 1, ">30": 1})
-            y = y.squeeze()
-        elif lname == "bank_marketing":
-            bank_marketing_ds = fetch_ucirepo(id=222)
-            X, y = bank_marketing_ds.data.features.copy(), bank_marketing_ds.data.targets.copy()
+                y = y.replace({"NO": 0, "<30": 1, ">30": 1})
+                y = y.squeeze()
+            elif lname == "bank_marketing":
+                bank_marketing_ds = fetch_ucirepo(id=222)
+                X, y = bank_marketing_ds.data.features.copy(), bank_marketing_ds.data.targets.copy()
 
-            # Fill missing values using a mapping for clarity and maintainability
-            fill_values = {
-                "contact": "none",
-                "pdays": -1,
-                "poutcome": "nonexistent",
-            }
-            X.fillna(value=fill_values, inplace=True)
+                # Fill missing values using a mapping for clarity and maintainability
+                fill_values = {
+                    "contact": "none",
+                    "pdays": -1,
+                    "poutcome": "nonexistent",
+                }
+                X.fillna(value=fill_values, inplace=True)
 
-            # Convert target labels from strings to integers
-            y = y.replace({"yes": 1, "no": 0})
-            y = y.squeeze()
-        elif lname == "heart":
-            X = pd.read_csv("data/real/heart.csv")
-            y = X["target"]
-            X = X.drop(columns=["target"])
-        elif lname == "mimic":
-            X = pd.read_csv("data/real//mimic.csv")
-            bins = 4
-            time_bins = pd.qcut(X.loc[X["event"] == 1, "time"], q=bins, labels=False, duplicates='drop')
-            X.loc[X["event"] == 1, "time_bin"] = time_bins
-            X.loc[X["event"] == 0, "time_bin"] = bins
-            X = X.drop(columns=["time", "event"])
-            y = X["time_bin"].values
-            X = X.drop(columns=["time_bin"])
-        elif lname == "credit_cards":
-            # fetch dataset 
-            default_of_credit_card_clients = fetch_ucirepo(id=350) 
-            # data (as pandas dataframes) 
-            X = default_of_credit_card_clients.data.features 
-            y = default_of_credit_card_clients.data.targets
-            y = y.squeeze() 
+                # Convert target labels from strings to integers
+                y = y.replace({"yes": 1, "no": 0})
+                y = y.squeeze()
+            elif lname == "heart":
+                X = pd.read_csv("data/real/heart.csv")
+                y = X["target"]
+                X = X.drop(columns=["target"])
+            elif lname == "mimic":
+                X = pd.read_csv("data/real//mimic.csv")
+                bins = 4
+                time_bins = pd.qcut(X.loc[X["event"] == 1, "time"], q=bins, labels=False, duplicates='drop')
+                X.loc[X["event"] == 1, "time_bin"] = time_bins
+                X.loc[X["event"] == 0, "time_bin"] = bins
+                X = X.drop(columns=["time", "event"])
+                y = X["time_bin"].values
+                X = X.drop(columns=["time_bin"])
+            elif lname == "credit_cards":
+                # fetch dataset 
+                default_of_credit_card_clients = fetch_ucirepo(id=350) 
+                # data (as pandas dataframes) 
+                X = default_of_credit_card_clients.data.features 
+                y = default_of_credit_card_clients.data.targets
+                y = y.squeeze() 
+            else:
+                raise ValueError(f"Unknown dataset '{self.dataset_name}'")
         else:
-            raise ValueError(f"Unknown dataset '{self.dataset_name}'")
+            X = pd.read_csv(f"results/{self.dataset_name}/{self.dataset_name}_X.csv")
+            y = pd.read_csv(f"results/{self.dataset_name}/{self.dataset_name}_y.csv")
+            y = y.squeeze()
 
         self.__X = X
         self.__y = y
@@ -254,15 +259,7 @@ class DataPreparation:
             features_to_poison=features_to_poison,
             random_state=random_state,
         )
-        if (
-            any(x < 1 for x in data_dct['flipping']['r']) and
-            any(x < 1 for x in data_dct['noise']['r']) and
-            any(x < 1 for x in data_dct['nan']['r']) and
-            any(x < 1 for x in data_dct['all']['r'])
-        ):
-            # your code here
-            logger.info(f"Row-wise quality correctly computed for all poisoning types.")
-            
+        
         data_dct['all']['X_train'], data_dct['all']['q'], data_dct['all']['r'] = combined_poisoning(
             X=X_train,
             features_percentage=features_percentage,
@@ -271,6 +268,15 @@ class DataPreparation:
             incompleteness_percentage=poisoning_percentage,
             random_state=random_state
         )
+
+        if (
+            any(x < 1 for x in data_dct['flipping']['r']) and
+            any(x < 1 for x in data_dct['noise']['r']) and
+            any(x < 1 for x in data_dct['nan']['r']) and
+            any(x < 1 for x in data_dct['all']['r'])
+        ):
+            # your code here
+            logger.info(f"Row-wise quality correctly computed for all poisoning types.")
 
         # Select continuous features to be normalized
         numeric_cols = X_train.select_dtypes(include=["number"]).columns

@@ -1,5 +1,6 @@
 from data_poisoning import *
 from DataPreparation import DataPreparation
+from data.data_fetch import iter_all_binary_tabular_datasets
 import torch
 import os
 import yaml
@@ -171,6 +172,180 @@ def save_experiment_results(experiment_data, json_filename="experiment_results.j
     except Exception as e:
         logger.error(f"Failed to save experiment results: {e}")
 
+def set_seed(seed: int = 42):
+        print(f"Seed: {seed}")
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.use_deterministic_algorithms(True)
+
+def single_dataset_run(ds_name, checkpoint_file, results_file):
+    """Execute the full experiment grid for a single dataset.
+
+    This function starts from the checkpoint-loading logic so only lightweight
+    metadata (dataset name and file paths) must be provided by the caller.
+    """
+
+    completed_experiments = load_checkpoint(checkpoint_file)
+    logger.info(
+        f"Loaded checkpoint for '{ds_name}': {len(completed_experiments)} experiments already completed"
+    )
+
+    seeds = config.get("seeds", [])
+    n_repeat_exps = len(seeds)
+    models = config.get("models", [])
+    frogdq_modes = config.get("frogdq_modes", [])
+    data_poisoning_cfg = config.get("data_poisoning", {})
+    data_poisoning_methods = data_poisoning_cfg.get("methods", [])
+    features_percentage = data_poisoning_cfg.get("features_percentage", [])
+    poisoning_percentage = data_poisoning_cfg.get("poisoning_percentage", [])
+
+    lr = config.get("lr", 0.2)
+    optimizer = config.get("optimizer", "sgd")
+    lambda_prox = config.get("lambda_prox", 1.0)
+    frog_temp_tau = config.get("frog_temp_tau", 1.0)
+    frog_temp_eta = config.get("frog_temp_eta", 1.01)
+    epochs = config.get("local_epochs", 200)
+    splitting_perc_train_test = config.get("splitting_perc_train_test", "")
+    splitting_perc_test_val = config.get("splitting_perc_test_val", "")
+
+    for exp_iteration in range(n_repeat_exps):
+        logger.info(
+            f"\n===== Loop {exp_iteration} of {n_repeat_exps} / Seed: {seeds[exp_iteration]} ====="
+        )
+        set_seed(seed=seeds[exp_iteration])
+
+        # Iterate over each combination of features_percentage and poisoning_percentage
+        for feat_pct, pois_pct in product(features_percentage, poisoning_percentage):
+            logger.info(
+                f"----- Features percentage: {feat_pct}, Poisoning Percentage={pois_pct} -----"
+            )
+
+            data_prep = DataPreparation(dataset_name=ds_name)
+            data_prep.load(local=True)
+            data_dct = data_prep.run_preprocessing(
+                splitting_perc_train_test=splitting_perc_train_test,
+                splitting_perc_test_val=splitting_perc_test_val,
+                features_percentage=feat_pct,
+                poisoning_percentage=pois_pct,
+                random_state=seeds[exp_iteration],
+            )
+
+            for model_type, poisoning_type, frogdq_mode_raw in product(
+                models, data_poisoning_methods, frogdq_modes
+            ):
+                parsed_mode = parse_frogdq_mode(frogdq_mode_raw)
+                frogdq_mode = parsed_mode.canonical
+                requested_modules = set(parsed_mode.requested)
+                active_modules = set(parsed_mode.active)
+                logger.info(
+                    f"----- Start Training ----- Arch: {model_type}/Poisoning Type: {poisoning_type}/"
+                    f"FrogDQ Mode: {frogdq_mode} (requested={parsed_mode.requested})"
+                )
+
+                # Create unique experiment ID for checkpoint tracking
+                experiment_id = (
+                    f"{ds_name}_{exp_iteration+1}_{feat_pct}_{pois_pct}_{model_type}_"
+                    f"{poisoning_type}_{frogdq_mode}_{seeds[exp_iteration]}"
+                )
+
+                # Check if this experiment has already been completed
+                if is_experiment_completed(experiment_id, completed_experiments):
+                    logger.info(f"----- Skipping completed experiment: {experiment_id} -----")
+                    continue
+
+                # Load Model
+                model = build_model(
+                    input_dim=data_dct[poisoning_type]['X_train'].shape[1],
+                    output_dim=torch.unique(data_dct['y_train']).numel(),
+                    random_state=seeds[exp_iteration],
+                    arch=model_type,
+                    use_frogdq="inertia" in active_modules,
+                    gate_init_vector=data_dct[poisoning_type]['q'] if "q" in requested_modules else None
+                )
+
+                # Train Model
+                history = train(
+                    model=model,
+                    X_train=data_dct[poisoning_type]['X_train'],
+                    y_train=data_dct['y_train'],
+                    X_val=data_dct[poisoning_type]['X_val'],
+                    y_val=data_dct['y_val'],
+                    q_vec=data_dct[poisoning_type]['q'],
+                    r_vec=data_dct[poisoning_type]['r'] if "samplewise" in active_modules else None,
+                    fetch_g_every=10,
+                    frogdq_mode=frogdq_mode,
+                    epochs=epochs,
+                    lr=lr,
+                    lr_scheduler="plateau",
+                    weight_decay=1e-3 if model_type == "mlp" else 0.0,
+                    optimizer=optimizer,
+                    lambda_prox=lambda_prox,
+                    frog_temp_tau=frog_temp_tau,
+                    frog_temp_eta=frog_temp_eta,
+                    verbose=True,
+                    random_state=seeds[exp_iteration],
+                    device=device
+                )
+
+                # Test Model
+                test_metrics = evaluate(
+                    model=model,
+                    X=data_dct[poisoning_type]['X_test'],
+                    y=data_dct['y_test'],
+                    random_state=seeds[exp_iteration],
+                    device=device
+                )
+
+                logger.info(
+                    f"Test: loss={test_metrics['loss']:.4f}, acc={test_metrics['accuracy']:.4f}, "
+                    f"bal_acc={test_metrics['balanced_accuracy']:.4f}, "
+                    f"f1={test_metrics['f1']:.4f}, auc={test_metrics['auc_roc']:.4f}"
+                )
+
+                # Save Test results in history
+                history["test_loss"] = test_metrics['loss']
+                history["test_acc"] = test_metrics["accuracy"]
+                history["test_bal_acc"] = test_metrics["balanced_accuracy"]
+                history["test_f1"] = test_metrics["f1"]
+                history["test_auc"] = test_metrics["auc_roc"]
+
+                # Prepare experiment data for JSON saving
+                experiment_data = {
+                    "experiment_id": (
+                        f"{ds_name}_{exp_iteration+1}_{feat_pct}_{pois_pct}_{model_type}_"
+                        f"{poisoning_type}_{frogdq_mode}_{seeds[exp_iteration]}"
+                    ),
+                    "timestamp": datetime.now().isoformat(),
+                    "dataset": ds_name,
+                    "seed": seeds[exp_iteration],
+                    "iteration": exp_iteration,
+                    "model_type": model_type,
+                    "poisoning_method": poisoning_type,
+                    "frogdq_mode": frogdq_mode,
+                    "features_percentage": feat_pct,
+                    "poisoning_percentage": pois_pct,
+                    "hyperparameters": {
+                        "learning_rate": lr,
+                        "lambda_prox": lambda_prox,
+                        "frog_temp_tau": frog_temp_tau,
+                        "epochs": epochs,
+                    },
+                    "history": history
+                }
+
+                # Save experiment results to JSON file
+                save_experiment_results(experiment_data, json_filename=results_file)
+
+                # Save checkpoint to mark this experiment as completed
+                save_checkpoint(experiment_id, checkpoint_file=checkpoint_file)
+                completed_experiments.add(experiment_id)
+
+                logger.info(f"----- Experiment completed and checkpointed: {experiment_id} -----")
+
+    return completed_experiments
+
+
 if __name__ == "__main__":
     # Set device
     if torch.cuda.is_available():
@@ -200,171 +375,44 @@ if __name__ == "__main__":
     seeds = config.get("seeds")
     models = config.get("models")
     frogdq_modes = config.get("frogdq_modes")
+    #Get Config Fetch Data values
+    data_fetch_config = dict(
+        min_samples = config.get("min_samples"),
+        max_samples = config.get("max_samples"),
+        min_features = config.get("min_samples"),
+        max_features = config.get("max_features"),
+        allow_multiclass_binarization = bool(config.get("allow_multiclass_binarization")),
+        max_openml = config.get("max_datasets"),
+        allow_missing = bool(config.get("allow_missing"))
+    )  
 
     n_repeat_exps = len(seeds)
-    if not experiments:
-        print("No experiments found in config.yaml under 'experiments'. Exiting.")
-        sys.exit(1)
 
-    def set_seed(seed: int = 42):
-        print(f"Seed: {seed}")
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.use_deterministic_algorithms(True)
-
-    #Running Experiment for each Dataset define in the config.yaml
-    for exp in experiments:
+    #Fetching Data
+    for ds_name, X, y in iter_all_binary_tabular_datasets(
+        verbose=True,
+        **data_fetch_config,
+    ):
         logger.info(
-            f"\n===== Running Experiment for Dataset: {exp.get('dataset', 'Unnamed')} ====="
+            f"\n===== Running Experiment for Dataset: {ds_name} ====="
         )
+        logger.info(f"X shape: {X.shape}, y shape: {y.shape}")
 
-        # Extract hyperparameters for the current dataset
-        dataset = exp.get("dataset", "Unnamed")
-        dataset_dir = dataset
-        os.makedirs(dataset_dir, exist_ok=True)
-        checkpoint_file = os.path.join(dataset_dir, "experiment_checkpoint.json")
-        results_file = os.path.join(dataset_dir, "experiment_results.json")
+        dataset_dir = ds_name
+        os.makedirs("results", exist_ok=True)
+        results_dataset_dir = os.path.join("results", dataset_dir)
+        os.makedirs(results_dataset_dir, exist_ok=True)
 
-        completed_experiments = load_checkpoint(checkpoint_file)
-        completed_experiments_by_dataset[dataset] = completed_experiments
-        logger.info(
-            f"Loaded checkpoint for '{dataset}': {len(completed_experiments)} experiments already completed"
+        checkpoint_file = os.path.join(results_dataset_dir, "experiment_checkpoint.json")
+        results_file = os.path.join(results_dataset_dir, "experiment_results.json")
+        X.to_csv(os.path.join(results_dataset_dir, f"{ds_name}_X.csv"), index=False)
+        y.to_csv(os.path.join(results_dataset_dir, f"{ds_name}_y.csv"), index=False)
+
+        completed_experiments_by_dataset[ds_name] = single_dataset_run(
+            ds_name=ds_name,
+            checkpoint_file=checkpoint_file,
+            results_file=results_file,
         )
-
-        lr = exp.get("lr", 0.2)
-        optimizer = exp.get("optimizer", "sgd")
-        lambda_prox = exp.get("lambda_prox", 1.0)
-        frog_temp_tau = exp.get("frog_temp_tau", 1.0)
-        frog_temp_eta = exp.get("frog_temp_eta", 1.01)
-        epochs = exp.get("local_epochs", 200)
-        label_col = exp.get("target_column", "")
-        splitting_perc_train_test = exp.get("splitting_perc_train_test", "")
-        splitting_perc_test_val = exp.get("splitting_perc_test_val", "")
-
-
-        for exp_iteration in range(n_repeat_exps):
-            logger.info(f"\n===== Loop {exp_iteration} of {n_repeat_exps} / Seed: {seeds[exp_iteration]} =====")
-            set_seed(seed=seeds[exp_iteration])
-
-            # Iterate over each combination of features_percentage and poisoning_percentage
-            for feat_pct, pois_pct in product(features_percentage, poisoning_percentage):
-                logger.info(f"----- Features percentage: {feat_pct}, Poisoning Percentage={pois_pct} -----")
-
-                data_prep = DataPreparation(dataset_name=dataset)
-                data_prep.load()
-                data_dct = data_prep.run_preprocessing(
-                    splitting_perc_train_test = splitting_perc_train_test,
-                    splitting_perc_test_val = splitting_perc_test_val,
-                    features_percentage = feat_pct,
-                    poisoning_percentage = pois_pct,
-                    random_state=seeds[exp_iteration]
-                )
-
-                for model_type, poisoning_type, frogdq_mode_raw in product(models, data_poisoning_methods, frogdq_modes):
-                    parsed_mode = parse_frogdq_mode(frogdq_mode_raw)
-                    frogdq_mode = parsed_mode.canonical
-                    requested_modules = set(parsed_mode.requested)
-                    active_modules = set(parsed_mode.active)
-                    logger.info(
-                        f"----- Start Training ----- Arch: {model_type}/Poisoning Type: {poisoning_type}/"
-                        f"FrogDQ Mode: {frogdq_mode} (requested={parsed_mode.requested})"
-                    )
-
-                    # Create unique experiment ID for checkpoint tracking
-                    experiment_id = f"{dataset}_{exp_iteration+1}_{feat_pct}_{pois_pct}_{model_type}_{poisoning_type}_{frogdq_mode}_{seeds[exp_iteration]}"
-                    
-                    # Check if this experiment has already been completed
-                    if is_experiment_completed(experiment_id, completed_experiments):
-                        logger.info(f"----- Skipping completed experiment: {experiment_id} -----")
-                        continue
-                
-                    # Load Model
-                    model = build_model(
-                        input_dim=data_dct[poisoning_type]['X_train'].shape[1],
-                        output_dim=torch.unique(data_dct['y_train']).numel(),
-                        random_state=seeds[exp_iteration],
-                        arch=model_type,
-                        use_frogdq="inertia" in active_modules,
-                        gate_init_vector=data_dct[poisoning_type]['q'] if "q" in requested_modules else None
-                    )
-
-                    #Train Model
-                    history = train(
-                        model=model,
-                        X_train=data_dct[poisoning_type]['X_train'],
-                        y_train=data_dct['y_train'],
-                        X_val=data_dct[poisoning_type]['X_val'],
-                        y_val=data_dct['y_val'],
-                        q_vec=data_dct[poisoning_type]['q'],
-                        r_vec=data_dct[poisoning_type]['r'] if "samplewise" in active_modules else None,
-                        fetch_g_every=10,
-                        frogdq_mode=frogdq_mode,
-                        epochs=epochs,
-                        lr=lr,
-                        lr_scheduler="plateau",
-                        weight_decay=1e-3 if model_type == "mlp" else 0.0,
-                        optimizer=optimizer,
-                        lambda_prox=lambda_prox,
-                        frog_temp_tau=frog_temp_tau,
-                        frog_temp_eta=frog_temp_eta,
-                        verbose=True,
-                        random_state=seeds[exp_iteration],
-                        device=device
-                    )
-
-                    #Test Model
-                    test_metrics = evaluate(
-                        model=model,
-                        X=data_dct[poisoning_type]['X_test'],
-                        y=data_dct['y_test'],
-                        random_state=seeds[exp_iteration],
-                        device=device
-                    )
-
-                    logger.info(
-                        f"Test: loss={test_metrics['loss']:.4f}, acc={test_metrics['accuracy']:.4f}, "
-                        f"bal_acc={test_metrics['balanced_accuracy']:.4f}, "
-                        f"f1={test_metrics['f1']:.4f}, auc={test_metrics['auc_roc']:.4f}"
-                    )
-
-                    #Save Test results in history
-                    history["test_loss"] = test_metrics['loss']
-                    history["test_acc"] = test_metrics["accuracy"]
-                    history["test_bal_acc"] = test_metrics["balanced_accuracy"]
-                    history["test_f1"] = test_metrics["f1"]
-                    history["test_auc"] = test_metrics["auc_roc"]
-
-                    # Prepare experiment data for JSON saving
-                    experiment_data = {
-                        "experiment_id": f"{dataset}_{exp_iteration+1}_{feat_pct}_{pois_pct}_{model_type}_{poisoning_type}_{frogdq_mode}_{seeds[exp_iteration]}",
-                        "timestamp": datetime.now().isoformat(),
-                        "dataset": dataset,
-                        "seed": seeds[exp_iteration],
-                        "iteration": exp_iteration,
-                        "model_type": model_type,
-                        "poisoning_method": poisoning_type,
-                        "frogdq_mode": frogdq_mode,
-                        "features_percentage": feat_pct,
-                        "poisoning_percentage": pois_pct,
-                        "hyperparameters": {
-                            "learning_rate": lr,
-                            "lambda_prox": lambda_prox,
-                            "frog_temp_tau": frog_temp_tau,
-                            "epochs": epochs,
-                        },
-                        "history": history
-                    }
-
-                    # Save experiment results to JSON file
-                    save_experiment_results(experiment_data, json_filename=results_file)
-
-                    # Save checkpoint to mark this experiment as completed
-                    save_checkpoint(experiment_id, checkpoint_file=checkpoint_file)
-                    completed_experiments.add(experiment_id)
-
-                    logger.info(f"----- Experiment completed and checkpointed: {experiment_id} -----")
-
 
 # Final summary
 total_experiments = len(experiments) * n_repeat_exps * len(features_percentage) * len(poisoning_percentage) * len(models) * len(data_poisoning_methods) * len(frogdq_modes)
@@ -374,12 +422,16 @@ logger.info(f"Total experiments configured: {total_experiments}")
 logger.info(f"Completed experiments: {completed_count}")
 logger.info(f"Remaining experiments: {total_experiments - completed_count}")
 if completed_experiments_by_dataset:
-    logger.info("Checkpoint files per dataset:")
-    for dataset_name in completed_experiments_by_dataset.keys():
-        logger.info(f"  - {dataset_name}: {os.path.join(dataset_name, 'experiment_checkpoint.json')}")
-    logger.info("Results files per dataset:")
-    for dataset_name in completed_experiments_by_dataset.keys():
-        logger.info(f"  - {dataset_name}: {os.path.join(dataset_name, 'experiment_results.json')}")
+        logger.info("Checkpoint files per dataset:")
+        for dataset_name in completed_experiments_by_dataset.keys():
+            logger.info(
+                f"  - {dataset_name}: {os.path.join('results', dataset_name, 'experiment_checkpoint.json')}"
+            )
+        logger.info("Results files per dataset:")
+        for dataset_name in completed_experiments_by_dataset.keys():
+            logger.info(
+                f"  - {dataset_name}: {os.path.join('results', dataset_name, 'experiment_results.json')}"
+            )
 logger.info("================================\n")
                 
 
