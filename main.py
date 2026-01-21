@@ -1,344 +1,377 @@
-from data_poisoning import *
-from DataPreparation import DataPreparation
-import torch
-import os
-import yaml
-import pandas as pd
-import random
-import numpy as np
+#!/usr/bin/env python3
+"""
+Main entry point for running FrogDQ hyperparameter optimization experiments.
+
+This script provides a command-line interface for running Optuna-based
+hyperparameter optimization across different model configurations, data
+quality modes, and datasets.
+
+Usage:
+    # Run with default config file
+    python main.py
+
+    # Run with custom config file
+    python main.py --config my_config.yaml
+
+    # Run quick test (overrides config)
+    python main.py --quick-test
+
+    # List available datasets
+    python main.py --list-datasets
+
+Examples:
+    # Full experiment run
+    python main.py --config config.yaml
+
+    # Quick test on iris dataset
+    python main.py --quick-test --datasets iris
+
+    # Run on specific datasets with custom settings
+    python main.py --config config.yaml --datasets iris wine --n-trials 10
+"""
+
+import argparse
 import sys
-import random
-from loguru import logger
-from model import *
-from itertools import product
-import json
-from datetime import datetime
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+from pathlib import Path
 
-import warnings
+import pandas as pd
 
-warnings.filterwarnings("ignore")
+from frogdq.data import get_datasets
+from frogdq.optimization import OptunaExperiment, load_config
 
-def convert_numpy_types(obj):
-    """
-    Convert numpy types to native Python types for JSON serialization.
-    
-    Parameters
-    ----------
-    obj : any
-        Object that may contain numpy types
-        
-    Returns
-    -------
-    any
-        Object with numpy types converted to Python types
-    """
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, np.integer):
-        return int(obj)
-    elif isinstance(obj, np.floating):
-        return float(obj)
-    elif isinstance(obj, dict):
-        return {key: convert_numpy_types(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_numpy_types(item) for item in obj]
-    else:
-        return obj
-    
-def load_checkpoint(checkpoint_file="experiment_checkpoint.json"):
-    """
-    Load checkpoint data to track completed experiments.
-    
-    Parameters
-    ----------
-    checkpoint_file : str
-        Path to the checkpoint file
-        
-    Returns
-    -------
-    set
-        Set of experiment IDs that have been completed
-    """
-    if os.path.exists(checkpoint_file):
-        try:
-            with open(checkpoint_file, 'r') as f:
-                checkpoint_data = json.load(f)
-                return set(checkpoint_data.get("completed_experiments", []))
-        except (json.JSONDecodeError, FileNotFoundError):
-            logger.warning(f"Could not load checkpoint file {checkpoint_file}. Starting fresh.")
-            return set()
-    return set()
 
-def save_checkpoint(experiment_id, checkpoint_file="experiment_checkpoint.json"):
-    """
-    Save experiment ID to checkpoint file.
-    
-    Parameters
-    ----------
-    experiment_id : str
-        Unique identifier for the completed experiment
-    checkpoint_file : str
-        Path to the checkpoint file
-    """
-    # Load existing checkpoint data
-    if os.path.exists(checkpoint_file):
-        try:
-            with open(checkpoint_file, 'r') as f:
-                checkpoint_data = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            checkpoint_data = {"completed_experiments": [], "metadata": {"created": datetime.now().isoformat()}}
-    else:
-        checkpoint_data = {"completed_experiments": [], "metadata": {"created": datetime.now().isoformat()}}
-    
-    # Add new experiment ID if not already present
-    if experiment_id not in checkpoint_data["completed_experiments"]:
-        checkpoint_data["completed_experiments"].append(experiment_id)
-        checkpoint_data["metadata"]["last_updated"] = datetime.now().isoformat()
-        checkpoint_data["metadata"]["total_completed"] = len(checkpoint_data["completed_experiments"])
-        
-        # Save updated checkpoint
-        try:
-            with open(checkpoint_file, 'w') as f:
-                json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
-            logger.info(f"Checkpoint updated: {experiment_id}")
-        except Exception as e:
-            logger.error(f"Failed to save checkpoint: {e}")
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description='Run FrogDQ hyperparameter optimization experiments',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
 
-def is_experiment_completed(experiment_id, completed_experiments):
-    """
-    Check if an experiment has already been completed.
-    
-    Parameters
-    ----------
-    experiment_id : str
-        Unique identifier for the experiment
-    completed_experiments : set
-        Set of completed experiment IDs
-        
-    Returns
-    -------
-    bool
-        True if experiment is completed, False otherwise
-    """
-    return experiment_id in completed_experiments
+    parser.add_argument(
+        '--config',
+        type=str,
+        default='config.yaml',
+        help='Path to YAML configuration file (default: config.yaml)'
+    )
 
-def save_experiment_results(experiment_data):
-    """
-    Save experiment results to a JSON file, appending new results to existing data.
-    
-    Parameters
-    ----------
-    experiment_data : dict
-        Dictionary containing all experiment results and metadata
-    """
-    json_filename = "experiment_results.json"
-    
-    # Convert numpy types to JSON-serializable types
-    experiment_data = convert_numpy_types(experiment_data)
-    
-    # Load existing results if file exists
-    if os.path.exists(json_filename):
-        try:
-            with open(json_filename, 'r') as f:
-                all_results = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            # If file is corrupted or doesn't exist, start fresh
-            all_results = {"experiments": [], "metadata": {"created": datetime.now().isoformat(), "last_updated": None}}
-    else:
-        # Create new structure if file doesn't exist
-        all_results = {"experiments": [], "metadata": {"created": datetime.now().isoformat(), "last_updated": None}}
-    
-    # Add new experiment data
-    all_results["experiments"].append(experiment_data)
-    all_results["metadata"]["last_updated"] = datetime.now().isoformat()
-    all_results["metadata"]["total_experiments"] = len(all_results["experiments"])
-    
-    # Save updated results
+    parser.add_argument(
+        '--list-datasets',
+        action='store_true',
+        help='List all available datasets and exit'
+    )
+
+    parser.add_argument(
+        '--quick-test',
+        action='store_true',
+        help='Run a quick test with minimal trials (overrides config)'
+    )
+
+    # Override options (override config file settings)
+    parser.add_argument(
+        '--datasets',
+        nargs='+',
+        help='Override datasets to run on (space-separated list)'
+    )
+
+    parser.add_argument(
+        '--data-modes',
+        nargs='+',
+        choices=['clean', 'ar', 'nar'],
+        help='Override data quality modes to test'
+    )
+
+    parser.add_argument(
+        '--model-types',
+        nargs='+',
+        choices=['linear', 'mlp'],
+        help='Override model types to test'
+    )
+
+    parser.add_argument(
+        '--n-trials',
+        type=int,
+        help='Override number of Optuna trials per configuration'
+    )
+
+    parser.add_argument(
+        '--n-seeds',
+        type=int,
+        help='Override number of random seeds to evaluate per trial'
+    )
+
+    parser.add_argument(
+        '--n-jobs-seeds',
+        type=int,
+        help='Override number of parallel jobs for seed evaluation'
+    )
+
+    parser.add_argument(
+        '--n-jobs-optuna',
+        type=int,
+        help='Override number of parallel jobs for Optuna trials'
+    )
+
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        help='Override output directory for results'
+    )
+
+    parser.add_argument(
+        '--verbose',
+        type=int,
+        choices=[0, 1, 2],
+        help='Override verbosity level (0=silent, 1=progress, 2=detailed)'
+    )
+
+    parser.add_argument(
+        '--warm-start',
+        action='store_true',
+        help='Resume from previous incomplete runs (uses database checkpoints)'
+    )
+
+    parser.add_argument(
+        '--no-warm-start',
+        action='store_true',
+        help='Always start fresh, ignoring previous runs'
+    )
+
+    parser.add_argument(
+        '--reuse-params',
+        action='store_true',
+        help='For MLP with curriculum/gates on AR/NAR, reuse baseline (no curr/gate) hyperparameters from same data mode. Reduces trials for curriculum-only (3 params) and combined (8 params).'
+    )
+
+    parser.add_argument(
+        '--reuse-top-n',
+        type=int,
+        default=5,
+        help='Number of top baseline trials to sample from (default: 5, requires --reuse-params)'
+    )
+
+    return parser.parse_args()
+
+
+def list_datasets():
+    """List all available datasets with their properties."""
     try:
-        with open(json_filename, 'w') as f:
-            json.dump(all_results, f, indent=2, ensure_ascii=False)
-        logger.info(f"Experiment results saved to {json_filename}")
+        datasets_df = get_datasets()
+        print("\n" + "="*80)
+        print("Available Datasets")
+        print("="*80 + "\n")
+
+        # Display key columns
+        display_cols = [
+            'dataset_name', 'uci_id', 'n_samples', 'n_features',
+            'n_classes', 'task_type', 'has_ar', 'has_nar'
+        ]
+
+        # Filter to existing columns
+        display_cols = [col for col in display_cols if col in datasets_df.columns]
+
+        print(datasets_df[display_cols].to_string(index=False))
+        print(f"\nTotal: {len(datasets_df)} datasets")
+        print("\nTo use a dataset, add its dataset_name to the config file.")
+        print("Example: datasets: ['iris', 'wine', 'adult']")
+
     except Exception as e:
-        logger.error(f"Failed to save experiment results: {e}")
-
-if __name__ == "__main__":
-    # Load checkpoint data to resume from previous runs
-    completed_experiments = load_checkpoint()
-    logger.info(f"Loaded checkpoint: {len(completed_experiments)} experiments already completed")
-
-    # Load all experiment setups from config.yaml
-    config = {}
-    if os.path.exists("config.yaml"):
-        with open("config.yaml", "r") as f:
-            config = yaml.safe_load(f)
-
-    #Get Configuration values
-    experiments = config.get("experiments", [])
-    data_poisoning_methods = config.get("data_poisoning").get("methods")
-    features_percentage = config.get("data_poisoning").get("features_percentage")
-    poisoning_percentage = config.get("data_poisoning").get("poisoning_percentage")
-    seeds = config.get("seeds")
-    models = config.get("models")
-    frogdq_modes = config.get("frogdq_modes")
-
-    n_repeat_exps = len(seeds)
-    if not experiments:
-        print("No experiments found in config.yaml under 'experiments'. Exiting.")
+        print(f"Error listing datasets: {e}")
+        print("Make sure the data directory exists and contains CSV files.")
         sys.exit(1)
 
-    def set_seed(seed: int = 42):
-        print(f"Seed: {seed}")
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.use_deterministic_algorithms(True)
 
-    #Running Experiment for each Dataset define in the config.yaml
-    for exp in experiments:
-        logger.info(
-            f"\n===== Running Experiment for Dataset: {exp.get('dataset', 'Unnamed')} ====="
-        )
-
-        # Extract hyperparameters for the current dataset
-        dataset = exp.get("dataset", "Unnamed")
-        lr = exp.get("lr", 0.2)
-        lambda_prox = exp.get("lambda_prox", 1.0)
-        frog_temp_tau = exp.get("frog_temp_tau", 1.0)
-        frog_temp_eta = exp.get("frog_temp_eta", 1.01)
-        epochs = exp.get("local_epochs", 200)
-        label_col = exp.get("target_column", "")
-        splitting_perc_train_test = exp.get("splitting_perc_train_test", "")
-        splitting_perc_test_val = exp.get("splitting_perc_test_val", "")
+def get_quick_test_config():
+    """Get configuration for quick testing."""
+    return {
+        'datasets': ['iris'],
+        'data_modes': ['clean'],
+        'model_types': ['linear', 'mlp'],
+        'curriculum_settings': [False],
+        'gate_settings': [False],
+        'n_trials': 5,
+        'n_seeds': 2,
+        'seed_start': 42,
+        'top_m': 3,
+        'n_jobs_seeds': 2,
+        'n_jobs_optuna': 1,
+        'clean_val': True,
+        'clean_test': True,
+        'output_dir': 'results_quick_test',
+        'verbose': 1,
+        'optuna_sampler_seed': 42,
+    }
 
 
-        for exp_iteration in range(n_repeat_exps):
-            # Log which device is running this iteration
-            if torch.cuda.is_available():
-                _curr_dev = torch.cuda.current_device()
-                _device_str = f"cuda:{_curr_dev} ({torch.cuda.get_device_name(_curr_dev)})"
-            else:
-                _device_str = "cpu"
-            logger.info(f"Running on device: {_device_str}")
-            logger.info(f"\n===== Loop {exp_iteration} of {n_repeat_exps} / Seed: {seeds[exp_iteration]} =====")
-            set_seed(seed=seeds[exp_iteration])
+def main():
+    """Main entry point."""
+    args = parse_args()
 
-            # Iterate over each combination of features_percentage and poisoning_percentage
-            for feat_pct, pois_pct in product(features_percentage, poisoning_percentage):
-                logger.info(f"----- Features percentage: {feat_pct}, Poisoning Percentage={pois_pct} -----")
+    # Handle --list-datasets
+    if args.list_datasets:
+        list_datasets()
+        return
 
-                data_prep = DataPreparation(dataset_name=dataset)
-                data_prep.load()
-                data_dct = data_prep.run_preprocessing(
-                    splitting_perc_train_test = splitting_perc_train_test,
-                    splitting_perc_test_val = splitting_perc_test_val,
-                    features_percentage = feat_pct,
-                    poisoning_percentage = pois_pct,
-                    random_state=seeds[exp_iteration]
-                )
+    # Load configuration
+    if args.quick_test:
+        print("\n" + "="*80)
+        print("Running QUICK TEST mode")
+        print("="*80)
+        config = get_quick_test_config()
+    else:
+        config_path = Path(args.config)
+        if not config_path.exists():
+            print(f"Error: Configuration file not found: {config_path}")
+            print(f"Create a config file or use --quick-test for testing.")
+            sys.exit(1)
 
-                for model_type, poisoning_type, frogdq_mode in product(models, data_poisoning_methods, frogdq_modes):
-                    logger.info(f"----- Start Training ----- Arch: {model_type}/Poisoning Type: {poisoning_type}/FrogDQ Mode: {frogdq_mode}")
+        print(f"\nLoading configuration from: {config_path}")
+        config = load_config(config_path)
 
-                    # Create unique experiment ID for checkpoint tracking
-                    experiment_id = f"{dataset}_{exp_iteration+1}_{feat_pct}_{pois_pct}_{model_type}_{poisoning_type}_{frogdq_mode}_{seeds[exp_iteration]}"
-                    
-                    # Check if this experiment has already been completed
-                    if is_experiment_completed(experiment_id, completed_experiments):
-                        logger.info(f"----- Skipping completed experiment: {experiment_id} -----")
-                        continue
-                
-                    # Load Model
-                    model = build_model(
-                        input_dim=data_dct[poisoning_type]['X_train'].shape[1],
-                        output_dim=torch.unique(data_dct['y_train']).numel(),
-                        random_state=seeds[exp_iteration],
-                        arch=model_type,
-                        use_frogdq=True if frogdq_mode != "none" else False,
-                    )
+    # Apply command-line overrides
+    if args.datasets:
+        config['datasets'] = args.datasets
+    if args.data_modes:
+        config['data_modes'] = args.data_modes
+    if args.model_types:
+        config['model_types'] = args.model_types
+    if args.n_trials is not None:
+        config['n_trials'] = args.n_trials
+    if args.n_seeds is not None:
+        config['n_seeds'] = args.n_seeds
+    if args.n_jobs_seeds is not None:
+        config['n_jobs_seeds'] = args.n_jobs_seeds
+    if args.n_jobs_optuna is not None:
+        config['n_jobs_optuna'] = args.n_jobs_optuna
+    if args.output_dir:
+        config['output_dir'] = args.output_dir
+    if args.verbose is not None:
+        config['verbose'] = args.verbose
+    if args.warm_start:
+        config['warm_start'] = True
+    if args.no_warm_start:
+        config['warm_start'] = False
+    if args.reuse_params:
+        config['reuse_params'] = True
+        config['reuse_top_n'] = args.reuse_top_n
 
-                    #Train Model
-                    history = train(
-                        model=model,
-                        X_train=data_dct[poisoning_type]['X_train'],
-                        y_train=data_dct['y_train'],
-                        X_val=data_dct[poisoning_type]['X_val'],
-                        y_val=data_dct['y_val'],
-                        q_vec=data_dct[poisoning_type]['q'],
-                        frogdq_mode=frogdq_mode,
-                        epochs=epochs,
-                        lr=lr,
-                        lr_scheduler="plateau",
-                        lambda_prox=lambda_prox,
-                        frog_temp_tau=frog_temp_tau,
-                        frog_temp_eta=frog_temp_eta,
-                        verbose=True,
-                        random_state=seeds[exp_iteration],
-                        device=_curr_dev
-                    )
+    # Validate configuration
+    if not config.get('datasets'):
+        print("Error: No datasets specified in configuration.")
+        print("Use --datasets to specify datasets or --list-datasets to see available options.")
+        sys.exit(1)
+    
+    if config.get('datasets') == 'all':
+        datasets_df = get_datasets()
+        config['datasets'] = datasets_df['dataset_name'].tolist()
 
-                    #Test Model
-                    test_metrics = evaluate(
-                        model=model,
-                        X=data_dct[poisoning_type]['X_test'],
-                        y=data_dct['y_test'],
-                        random_state=seeds[exp_iteration]
-                    )
+    # Print experiment summary
+    print("\n" + "="*80)
+    print("Experiment Configuration")
+    print("="*80)
+    print(f"Datasets: {config['datasets']}")
+    print(f"Data modes: {config['data_modes']}")
+    print(f"Model types: {config['model_types']}")
+    print(f"Curriculum settings: {config['curriculum_settings']} (only for MLP on AR/NAR)")
+    print(f"Gate settings: {config['gate_settings']} (only for MLP on AR/NAR)")
+    print(f"Trials per config: {config['n_trials']}")
+    print(f"Seeds per trial: {config['n_seeds']}")
+    print(f"Parallel jobs (seeds): {config['n_jobs_seeds']}")
+    print(f"Parallel jobs (Optuna): {config.get('n_jobs_optuna', 1)}")
+    print(f"Output directory: {config['output_dir']}")
+    print(f"Warm start (resume): {config.get('warm_start', False)}")
+    print(f"Reuse baseline params: {config.get('reuse_params', False)}")
+    if config.get('reuse_params'):
+        print(f"  - Sample from top-{config.get('reuse_top_n', 5)} baseline trials (AR/NAR baseline)")
+        print(f"  - Reduced trials: curriculum-only (3), combined ({config['n_trials']})")
 
-                    logger.info(
-                        f"Test: loss={test_metrics['loss']:.4f}, acc={test_metrics['accuracy']:.4f}, "
-                        f"bal_acc={test_metrics['balanced_accuracy']:.4f}, "
-                        f"f1={test_metrics['f1']:.4f}, auc={test_metrics['auc_roc']:.4f}"
-                    )
+    # Calculate total configurations according to experimental design:
+    # 1. Baselines: linear (all modes) + mlp (all modes)
+    # 2. State-of-art: mlp + curriculum on ar/nar
+    # 3. Proposed: mlp + gate on ar/nar, mlp + gate + curriculum on ar/nar
 
-                    #Save Test results in history
-                    history["test_loss"] = test_metrics['loss']
-                    history["test_acc"] = test_metrics["accuracy"]
-                    history["test_bal_acc"] = test_metrics["balanced_accuracy"]
-                    history["test_f1"] = test_metrics["f1"]
-                    history["test_auc"] = test_metrics["auc_roc"]
+    n_datasets = len(config['datasets'])
+    n_modes = len(config['data_modes'])
+    n_clean = sum(1 for m in config['data_modes'] if m == 'clean')
+    n_ar_nar = sum(1 for m in config['data_modes'] if m in ['ar', 'nar'])
+    has_linear = 'linear' in config['model_types']
+    has_mlp = 'mlp' in config['model_types']
 
-                    # Prepare experiment data for JSON saving
-                    experiment_data = {
-                        "experiment_id": f"{dataset}_{exp_iteration+1}_{feat_pct}_{pois_pct}_{model_type}_{poisoning_type}_{frogdq_mode}_{seeds[exp_iteration]}",
-                        "timestamp": datetime.now().isoformat(),
-                        "dataset": dataset,
-                        "seed": seeds[exp_iteration],
-                        "iteration": exp_iteration,
-                        "model_type": model_type,
-                        "poisoning_method": poisoning_type,
-                        "frogdq_mode": frogdq_mode,
-                        "features_percentage": feat_pct,
-                        "poisoning_percentage": pois_pct,
-                        "hyperparameters": {
-                            "learning_rate": lr,
-                            "lambda_prox": lambda_prox,
-                            "frog_temp_tau": frog_temp_tau,
-                            "epochs": epochs,
-                        },
-                        "history": history
-                    }
+    baseline_configs = 0
+    mlp_ar_nar_configs = 0
 
-                    # Save experiment results to JSON file
-                    save_experiment_results(experiment_data)
+    # Baselines
+    if has_linear:
+        # Linear on all modes (clean, ar, nar)
+        baseline_configs += n_datasets * n_modes * 1
+    if has_mlp:
+        # MLP on all modes (clean, ar, nar) - baseline only
+        baseline_configs += n_datasets * n_modes * 1
 
-                    # Save checkpoint to mark this experiment as completed
-                    save_checkpoint(experiment_id)
-                    completed_experiments.add(experiment_id)
+    # MLP on AR/NAR with techniques (4 configs per ar/nar mode)
+    if has_mlp and n_ar_nar > 0:
+        # For each ar/nar mode: baseline + curriculum + gate + gate+curriculum = 4 configs
+        # But baseline already counted above, so add 3 more per ar/nar mode
+        mlp_ar_nar_configs += n_datasets * n_ar_nar * 3
 
-                    logger.info(f"----- Experiment completed and checkpointed: {experiment_id} -----")
+    total_configs = baseline_configs + mlp_ar_nar_configs
+    total_trials = total_configs * config['n_trials']
+    total_evaluations = total_trials * config['n_seeds']
+
+    print(f"\nConfiguration breakdown:")
+    print(f"  Baselines (linear + mlp on all modes): {baseline_configs} configs")
+    print(f"  MLP techniques on AR/NAR:")
+    if has_mlp and n_ar_nar > 0:
+        print(f"    - MLP + curriculum: {n_datasets * n_ar_nar} configs")
+        print(f"    - MLP + gate: {n_datasets * n_ar_nar} configs")
+        print(f"    - MLP + gate + curriculum: {n_datasets * n_ar_nar} configs")
+    print(f"  Total configurations: {total_configs}")
+    print(f"  Total trials: {total_trials}")
+    print(f"  Total evaluations: {total_evaluations}")
+    print("="*80)
+
+    # Confirm before starting
+    if not args.quick_test and config.get('verbose', 1) > 0:
+        response = input("\nProceed with experiments? [y/N]: ")
+        if response.lower() not in ['y', 'yes']:
+            print("Cancelled.")
+            return
+
+    # Run experiments
+    try:
+        experiment = OptunaExperiment(config)
+        results = experiment.run_all_experiments()
+
+        # Print summary
+        if len(results) > 0:
+            print("\n" + "="*80)
+            print("Experiment Summary")
+            print("="*80)
+
+            # Group by configuration
+            summary = results.groupby(['dataset', 'data_mode', 'model_type',
+                                      'use_curriculum', 'use_gate']).agg({
+                'trial_value': ['mean', 'std', 'max'],
+                'trial_number': 'count'
+            }).round(4)
+
+            print(summary)
+
+            print(f"\n\nDetailed results saved to: {config['output_dir']}/")
+            print(f"Combined results: {config['output_dir']}/all_experiments_results.csv")
+
+        else:
+            print("\nNo results generated. Check for errors above.")
+
+    except KeyboardInterrupt:
+        print("\n\nExperiments interrupted by user.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\nError running experiments: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
-# Final summary
-total_experiments = len(experiments) * n_repeat_exps * len(features_percentage) * len(poisoning_percentage) * len(models) * len(data_poisoning_methods) * len(frogdq_modes)
-completed_count = len(completed_experiments)
-logger.info(f"\n===== EXPERIMENT SUMMARY =====")
-logger.info(f"Total experiments configured: {total_experiments}")
-logger.info(f"Completed experiments: {completed_count}")
-logger.info(f"Remaining experiments: {total_experiments - completed_count}")
-logger.info(f"Checkpoint file: experiment_checkpoint.json")
-logger.info(f"Results file: experiment_results.json")
-logger.info("================================\n")
-                
-
-            
+if __name__ == '__main__':
+    main()

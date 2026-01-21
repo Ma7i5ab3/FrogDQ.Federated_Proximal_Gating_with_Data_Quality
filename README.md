@@ -1,1 +1,1 @@
-# FrogDQ: Federated Proximal Gating with Data Quality
+# frog-dq

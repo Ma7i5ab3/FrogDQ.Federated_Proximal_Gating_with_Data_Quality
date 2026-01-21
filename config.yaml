@@ -1,86 +1,169 @@
-# Configuration file for Federated Proximal Gating with Data Quality
-# You can override any of these parameters by editing this file.
-# Command-line arguments take precedence over these values.
+# FrogDQ Hyperparameter Optimization Configuration
+# =================================================
+# This file configures the Optuna-based hyperparameter optimization experiments
+# for testing model performance across different configurations.
 
-experiments:
-  - dataset: "adult"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.00015
-    lambda_prox: 0.1
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.8
-    splitting_perc_test_val: 0.5
+# Experiment Settings
+# -------------------
 
-  - dataset: "heart"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.001
-    lambda_prox: 0.1
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.8
-    splitting_perc_test_val: 0.5
+# Datasets to run experiments on
+# Options:
+#   - 'all': Run on all available datasets from data/ directory
+#   - List of dataset names: e.g., ['iris', 'wine', 'adult']
+# To see available datasets, run: python -c "from frogdq.data import get_datasets; print(get_datasets())"
 
-  - dataset: "breast_cancer"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.001
-    lambda_prox: 0.001
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.8
-    splitting_perc_test_val: 0.5
+datasets: ['iris']
 
-  - dataset: "mushroom"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.001
-    lambda_prox: 0.1
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.8
-    splitting_perc_test_val: 0.5
+# (ALL DATASETS)
+# datasets: ['iris', 'breast_cancer_wisconsin_diagnostic', 'bank_marketing', 'adult', 'wine', 'car_evaluation', 'predict_students_dropout_and_academic_success', 'default_of_credit_card_clients', 'mushroom', 'statlog_german_credit_data', 'estimation_of_obesity_levels_based_on_eating_habits_and_physical_condition', 'spambase', 'online_shoppers_purchasing_intention_dataset', 'magic_gamma_telescope', 'breast_cancer_wisconsin_original', 'breast_cancer', 'dry_bean', 'heart_failure_clinical_records', 'credit_approval', 'chronic_kidney_disease', 'wholesale_customers', 'seoul_bike_sharing_demand', 'rice_cammeo_and_osmancik', 'optical_recognition_of_handwritten_digits', 'glass_identification', 'zoo', 'higher_education_students_performance_evaluation', 'maternal_health_risk', 'early_stage_diabetes_risk_prediction', 'letter_recognition', 'national_poll_on_healthy_aging_npha', 'hepatitis', 'aids_clinical_trials_group_study_175', 'iranian_churn']
 
-  - dataset: "iris"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.001
-    lambda_prox: 0.1
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.8
-    splitting_perc_test_val: 0.5
+# (REGRESSION DATASETS)
+# datasets: ['heart_disease', 'wine_quality', 'automobile', 'abalone', 'bike_sharing', 'auto_mpg', 'forest_fires', 'real_estate_valuation', 'concrete_compressive_strength', 'parkinsons', 'phishing_websites', 'appliances_energy_prediction', 'banknote_authentication', 'productivity_prediction_of_garment_employees', 'combined_cycle_power_plant', 'liver_disorders']
 
-  - dataset: "mnist"
-    n_rounds: 500
-    local_epochs: 500
-    lr: 0.001
-    lambda_prox: 0.001
-    frog_temp_tau: 2.0
-    frog_temp_eta: 1.01
-    target_column: ""
-    splitting_perc_train_test: 0.8
-    splitting_perc_test_val: 0.5
-
-data_poisoning:
-  methods: ["noise", "flipping", "nan", "all"]
-  features_percentage: [0.1, 0.2, 0.4, 0.6, 0.8]
-  poisoning_percentage: [0.1, 0.2, 0.4, 0.6, 0.8]
-
-models: ["mlp", "linear"]
-frogdq_modes: ["none", "temp_cos", "temp", "inertia", "gaussian", "dirichlet"]
-seeds: [42, 56, 221, 800, 1258, 2, 121, 4200, 444, 500]
-    
-
-  
+# (CLASSIFICATION DATASETS)
+# datasets: ['breast_cancer_wisconsin_original', 'chronic_kidney_disease', 'dry_bean', 'glass', 'heart_failure', 'hepatitis', 'higher_education_students_performance_evaluation']
 
 
+# Data quality modes to test
+# Options: 'clean', 'ar' (At Random poisoning), 'nar' (Not At Random poisoning)
+data_modes:
+  - clean
+  - ar
+  - nar
 
-  
+# Model architectures to test
+# Options: 'linear' (no hidden layers), 'mlp' (multi-layer perceptron)
+model_types:
+  - linear
+  - mlp
+
+# Curriculum learning settings to test
+# true: Enable curriculum learning (prioritize high-quality samples)
+# false: Standard random sampling
+curriculum_settings:
+  - false
+  - true
+
+# Gate layer settings to test
+# true: Enable learnable input gate layer
+# false: No gating
+gate_settings:
+  - false
+  - true
+
+# Data Split Settings
+# -------------------
+
+# Whether to use clean validation data even when training on poisoned data
+# true: Always validate on clean data (recommended for measuring real performance)
+# false: Use same mode as training data
+clean_val: true
+
+# Whether to use clean test data even when training on poisoned data
+# true: Always test on clean data (recommended for final evaluation)
+# false: Use same mode as training data
+clean_test: true
+
+# Optuna Settings
+# ---------------
+
+# Number of Optuna trials per configuration
+# Each trial tests a different hyperparameter combination
+n_trials: 256
+
+# Number of random seeds to evaluate per trial
+# The best hyperparameters are those with the best average validation metric
+n_seeds: 5
+
+# Starting seed for incremental seed generation
+# Seeds will be: seed_start, seed_start+1, seed_start+2, ...
+seed_start: 42
+
+# Number of top trials to log (with all seeds)
+# The top-M trials will be saved with full train/val/test metrics
+top_m: 5
+
+# Parallel Processing
+# -------------------
+
+# Number of parallel jobs for evaluating seeds within each trial
+# Higher values = faster per trial, but more CPU/memory usage
+# Set to 1 for debugging, or number of CPU cores for speed
+n_jobs_seeds: 16
+
+# Random seed for Optuna sampler (for reproducibility)
+# This ensures the hyperparameter sampling order is deterministic
+optuna_sampler_seed: 42
+
+n_jobs_optuna: 16
+
+# Warm Start / Resume Settings
+# ----------------------------
+
+# Whether to resume from previous incomplete runs
+# true: Load existing studies from database and resume from last checkpoint
+#       - Skips completed studies (n_trials reached)
+#       - Continues incomplete studies from last trial
+#       - Creates new study if not found
+# false: Always start fresh (ignores any previous runs)
+warm_start: true
+
+# Reuse Parameter Settings
+# ------------------------------
+# Whether to reuse best hyperparameters
+# for training on poisoned data.
+# true: Sample hyperparameters from top-N trials
+# false: Do not reuse parameters
+reuse_params: true
+
+# Number of top trials to sample from when reusing parameters
+reuse_top_n: 8
+
+# Output Settings
+# ---------------
+
+# Directory to save results
+output_dir: results
+
+# Whether to save training histories as .npz files
+# true: Save detailed per-trial and top-M histories to .npz files
+# false: Skip saving .npz files (saves disk space)
+save_npz_histories: false
+
+# Verbosity level
+# 0: Silent (only errors)
+# 1: Progress bars and summary (recommended)
+# 2: Detailed output per trial
+verbose: 1
+
+# Hyperparameter Ranges
+# ---------------------
+# You can customize the search space for hyperparameters
+# Format: [min, max] for ranges, or list of choices for categorical
+
+hyperparameter_ranges:
+  # Common hyperparameters (linear and MLP)
+  epochs: [256, 256]
+  batch_size_choices: [64, 128, 256]
+  learning_rate: [0.0005, 0.05, 'log']  # 'log' for log-uniform sampling
+  optimizer_choices: ['adam', 'adamw', 'sgd']
+  weight_decay: [0.000001, 0.01, 'log']
+  early_stopping_patience: [16, 16]
+  lr_scheduler_choices: ['none', 'plateau', 'cosine', 'step']
+
+  # MLP-specific hyperparameters
+  hidden_neurons_choices: [4, 8, 16, 32, 64]
+  num_layers: [1, 4]
+  dropout: [0.0, 0.5]
+  activation_choices: ['relu', 'gelu', 'elu']
+  use_batch_norm: [true, false]
+
+  # Curriculum learning hyperparameters
+  curriculum_strategy_choices: ['linear', 'exponential', 'step']
+
+  # Gate layer hyperparameters
+  gate_init_choices: ['random', 'ones', 'quality']
+  gate_loss_weight: [0.0001, 0.1, 'log']
+  gate_anchor_interval: [1, 20]
+  gate_quality_weighting_choices: ['linear', 'quadratic', 'exp', 'inv_exp']
+  gate_loss_scheduler_choices: ['none', 'decay', 'cosine']
