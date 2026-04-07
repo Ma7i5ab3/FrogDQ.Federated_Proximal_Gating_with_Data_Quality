@@ -27,6 +27,7 @@ FROGDQ_ALLOWED_MODULES: tuple[str, ...] = (
     "dirichlet",
     "samplewise",
     "q",
+    "lasso",
 )
 _MODULE_ORDER = {name: idx for idx, name in enumerate(FROGDQ_ALLOWED_MODULES)}
 _GATE_RELEVANT_MODULES = frozenset({"inertia", "gaussian", "dirichlet", "temp", "cosine", "q"})
@@ -41,6 +42,7 @@ _ALIASES = {
     "cosine": "cosine",
     "qinit": "q",
     "quality": "q",
+    "l1": "lasso",
 }
 _DISPLAY_NAMES = {
     "cosine": "temp_cos",
@@ -421,9 +423,10 @@ def train(
     lambda_prox: float = 0.1,
     lambda_gaussian_prior: float = 0.1,
     lambda_dirichlet_kl: float = 0.1,
+    lambda_lasso: float = 0.0,
     kl_temperature: float = 1.0,
     eps: float = 1e-8,
-    normalize_inertia_by_mean: bool = True,
+    normalize_inertia_by_mean: bool = False,
     # NEW: temperature scheduling for Frog regularization
     frog_temperature: float = 1.0,
     frog_temp_invert: bool = False,
@@ -500,13 +503,15 @@ def train(
     frogdq_mode : str, default="none"
         Underscore-joined list of FrogDQ modules (e.g., "dirichlet_q", "gaussian_temp").
         Supported atomic modules: {"inertia","temp","cosine","gaussian","dirichlet",
-        "samplewise","q"}. Use "none" to disable.
+        "samplewise","q","lasso"}. Use "none" to disable.
     lambda_prox : float, default=0.1
         Strength of inertia (trust region) term.
     lambda_gaussian_prior : float, default=0.1
         Strength of Gaussian prior (L2 to q_vec).
     lambda_dirichlet_kl : float, default=0.1
         Strength of Dirichlet/KL prior.
+    lambda_lasso : float, default=0.0
+        Strength of L1 (lasso) penalty applied when module "lasso" is requested.
     kl_temperature : float, default=1.0
         Temperature for softmax in KL prior.
     eps : float, default=1e-8
@@ -734,10 +739,19 @@ def train(
             loss_prox = torch.tensor(0.0, device=device)
             loss_prior = torch.tensor(0.0, device=device)
 
+            if "lasso" in active_modules and lambda_lasso > 0.0:
+                l1_term = torch.zeros((), device=device)
+                for param in model.parameters():
+                    if param.requires_grad and param.dim() > 1:
+                        l1_term = l1_term + param.abs().sum()
+                lasso_loss = lambda_lasso * l1_term
+                loss_prior = loss_prior + lasso_loss
+                loss = loss + lasso_loss
+
             if use_frog:
                 g_curr = model.gate.gates
                 if "inertia" in active_modules and reg_scale > 0.0:
-                    inertia_term = (((g_curr - g_prev) ** 2) * w_inertia).sum()
+                    inertia_term = (((g_curr - g_prev) ** 2) * (w_inertia)).sum()
                     loss_prox = lambda_prox * reg_scale * inertia_term
                     loss = loss + loss_prox
                 if "gaussian" in active_modules:

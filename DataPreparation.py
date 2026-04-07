@@ -58,6 +58,22 @@ class DataPreparation:
                 ds = fetch_openml(name="mushroom", version=1, as_frame=True, parser="auto")
                 X = ds.data.copy()
                 y = (ds.target.astype(str) == "p").astype(int).to_numpy()
+            elif lname == "bioresponse":
+                ds = fetch_openml("bioresponse", version=3, parser="auto", as_frame=True)
+                X = ds.data.copy()
+                y = ds.target.copy().astype("int64").to_numpy()
+            elif lname == "diabates130us":
+                ds = fetch_openml(data_id=45022, parser="auto", as_frame=True)
+                X = ds.data.copy()
+                y = ds.target.copy().astype("int64").to_numpy()
+            elif lname == "jannis":
+                ds = fetch_openml(data_id=45021, parser="auto", as_frame=True)
+                X = ds.data.copy()
+                y = ds.target.copy().astype("int64").to_numpy()
+            elif lname == "miniboone":
+                ds = fetch_openml(data_id=44128, parser="auto", as_frame=True)
+                X = ds.data.copy()
+                y = ds.target.copy().to_numpy()
             elif lname == "breast_cancer":
                 ds = load_breast_cancer(as_frame=True)
                 X = ds.frame.drop(columns=["target"]).copy()
@@ -118,7 +134,15 @@ class DataPreparation:
                 # data (as pandas dataframes) 
                 X = default_of_credit_card_clients.data.features 
                 y = default_of_credit_card_clients.data.targets
-                y = y.squeeze() 
+                y = y.squeeze()
+            elif lname == "har":
+                # fetch dataset
+                X = pd.read_csv("data/real/UCI_HAR_train.csv")
+                y = X["label"]
+                X = X.drop(columns=["label"])
+                # Values from 1 to 3 convert them to 0 and rest to 1
+                y = y.replace({1: 0, 2: 0, 3: 0, 4: 1, 5: 1, 6: 1})
+                y = y.squeeze()
             else:
                 raise ValueError(f"Unknown dataset '{self.dataset_name}'")
         else:

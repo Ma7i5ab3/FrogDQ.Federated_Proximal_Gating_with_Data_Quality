@@ -203,6 +203,7 @@ def single_dataset_run(ds_name, checkpoint_file, results_file):
     lr = config.get("lr", 0.2)
     optimizer = config.get("optimizer", "sgd")
     lambda_prox = config.get("lambda_prox", 1.0)
+    lambda_lasso = config.get("lambda_lasso", 0.0)
     frog_temp_tau = config.get("frog_temp_tau", 1.0)
     frog_temp_eta = config.get("frog_temp_eta", 1.01)
     epochs = config.get("local_epochs", 200)
@@ -281,6 +282,7 @@ def single_dataset_run(ds_name, checkpoint_file, results_file):
                     weight_decay=1e-3 if model_type == "mlp" else 0.0,
                     optimizer=optimizer,
                     lambda_prox=lambda_prox,
+                    lambda_lasso=lambda_lasso,
                     frog_temp_tau=frog_temp_tau,
                     frog_temp_eta=frog_temp_eta,
                     verbose=True,
@@ -326,10 +328,11 @@ def single_dataset_run(ds_name, checkpoint_file, results_file):
                     "features_percentage": feat_pct,
                     "poisoning_percentage": pois_pct,
                     "hyperparameters": {
-                        "learning_rate": lr,
-                        "lambda_prox": lambda_prox,
-                        "frog_temp_tau": frog_temp_tau,
-                        "epochs": epochs,
+                    "learning_rate": lr,
+                    "lambda_prox": lambda_prox,
+                    "lambda_lasso": lambda_lasso,
+                    "frog_temp_tau": frog_temp_tau,
+                    "epochs": epochs,
                     },
                     "history": history
                 }

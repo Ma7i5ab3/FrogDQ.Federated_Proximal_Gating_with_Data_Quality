@@ -7,6 +7,7 @@ n_rounds: 500
 local_epochs: 500
 lr: 0.001
 lambda_prox: 0.1
+lambda_lasso: 0.001
 frog_temp_tau: 2.0
 frog_temp_eta: 1.01
 target_column: ""
@@ -31,6 +32,7 @@ data_poisoning:
 models: ["mlp"]
 frogdq_modes: [
   "none",
+  "lasso",
   "inertia",
   "inertia_cosine",
   "inertia_gaussian",
