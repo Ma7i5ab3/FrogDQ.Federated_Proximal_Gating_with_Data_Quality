@@ -2,6 +2,8 @@ data/*
 data_poisoned/*
 data_preprocessed/*
 results/*
+data_cleaned/*
+data_visualization/
 .local
 .config
 .cache

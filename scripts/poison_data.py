@@ -706,19 +706,19 @@ if __name__ == "__main__":
         description="Apply data poisoning to ML datasets using AR and NAR modes",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  python poison_data.py data data_poisoned
-  python poison_data.py data data_poisoned --dataset my_dataset
-  python poison_data.py data data_poisoned --severe-frac 0.1 --severe-rate 0.50
-  python poison_data.py data data_poisoned --no-ar-numerical --no-nar-correlated
+            Examples:
+            python poison_data.py data data_poisoned
+            python poison_data.py data data_poisoned --dataset my_dataset
+            python poison_data.py data data_poisoned --severe-frac 0.1 --severe-rate 0.50
+            python poison_data.py data data_poisoned --no-ar-numerical --no-nar-correlated
 
-Poisoning Modes:
-  AR (At Random): Random poisoning with stratified column distribution
-  NAR (Not At Random): Advanced non-random poisoning mechanisms
+            Poisoning Modes:
+            AR (At Random): Random poisoning with stratified column distribution
+            NAR (Not At Random): Advanced non-random poisoning mechanisms
 
-Note:
-  Target columns (cls_*, reg_*) are NEVER poisoned to preserve labels.
-        """,
+            Note:
+            Target columns (cls_*, reg_*) are NEVER poisoned to preserve labels.
+                """,
     )
     parser.add_argument(
         "--input_dir", type=str, help="Directory containing clean CSV files", default="data"
