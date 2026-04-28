@@ -12,7 +12,7 @@
 #   - List of dataset names: e.g., ['iris', 'wine', 'adult']
 # To see available datasets, run: python -c "from frogdq.data import get_datasets; print(get_datasets())"
 
-datasets: ['iris']
+# datasets: ['iris']
 
 # (ALL DATASETS)
 # datasets: ['iris', 'breast_cancer_wisconsin_diagnostic', 'bank_marketing', 'adult', 'wine', 'car_evaluation', 'predict_students_dropout_and_academic_success', 'default_of_credit_card_clients', 'mushroom', 'statlog_german_credit_data', 'estimation_of_obesity_levels_based_on_eating_habits_and_physical_condition', 'spambase', 'online_shoppers_purchasing_intention_dataset', 'magic_gamma_telescope', 'breast_cancer_wisconsin_original', 'breast_cancer', 'dry_bean', 'heart_failure_clinical_records', 'credit_approval', 'chronic_kidney_disease', 'wholesale_customers', 'seoul_bike_sharing_demand', 'rice_cammeo_and_osmancik', 'optical_recognition_of_handwritten_digits', 'glass_identification', 'zoo', 'higher_education_students_performance_evaluation', 'maternal_health_risk', 'early_stage_diabetes_risk_prediction', 'letter_recognition', 'national_poll_on_healthy_aging_npha', 'hepatitis', 'aids_clinical_trials_group_study_175', 'iranian_churn']
@@ -118,6 +118,25 @@ reuse_params: true
 
 # Number of top trials to sample from when reusing parameters
 reuse_top_n: 8
+
+# AutoGluon Benchmark Settings
+# -----------------------------
+
+# Whether to include AutoGluon as a data-preparation benchmark.
+# When true, Optuna experiments are also run on AR/NAR modes using pre-computed
+# AutoGluon-transformed features (no further preprocessing inside the experiment).
+# These act as baselines: linear and MLP models trained on AutoGluon features.
+#
+# IMPORTANT: run the preparation script first:
+#   python scripts/autogluon.py [--datasets ...] [--data-modes ar nar]
+#
+# false: skip AutoGluon benchmark (default)
+# true:  include AutoGluon benchmark experiments
+run_autogluon: false
+
+# Directory containing pre-computed AutoGluon features produced by scripts/autogluon.py.
+# Structure: data_autogluon/{mode}/{model_type}/{dataset_name}/seed_{seed}.npz
+autogluon_data_dir: data_autogluon
 
 # Output Settings
 # ---------------

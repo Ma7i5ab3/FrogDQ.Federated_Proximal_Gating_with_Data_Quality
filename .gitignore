@@ -1,9 +1,13 @@
 data/*
 data_poisoned/*
 data_preprocessed/*
+data_cleaned_saga/*
 results/*
 data_cleaned/*
 data_visualization/
+*/ar
+*/nar
+*/_ag_tmp
 .local
 .config
 .cache

@@ -389,22 +389,23 @@ class DataPoisoner:
                     continue
                 poison_idx = np.random.choice(df.index, size=n_poison, replace=False)
 
-                for idx in poison_idx:
-                    if pd.notna(df_poison.loc[idx, col]):
-                        normalized_val = (df_poison.loc[idx, col] - min_val) / (max_val - min_val)
+                std_signal = values.std()
+                if std_signal == 0:
+                    std_signal = abs(values.mean()) * 0.1 if values.mean() != 0 else 1.0
+                snr_db = 15
+                base_noise_std = std_signal / (10 ** (snr_db / 20))
 
-                        noise_multiplier = 1 + 3 * normalized_val
-
-                        std_signal = values.std()
-                        if std_signal == 0:
-                            std_signal = abs(values.mean()) * 0.1 if values.mean() != 0 else 1.0
-
-                        snr_db = 15
-                        noise_std = std_signal / (10 ** (snr_db / 20)) * noise_multiplier
-
-                        noise = np.random.normal(0, noise_std)
-                        df_poison.loc[idx, col] = df_poison.loc[idx, col] + noise
-                        poison_mask.loc[idx, col] = True
+                candidate_vals = df_poison.loc[poison_idx, col]
+                valid_mask = candidate_vals.notna()
+                valid_idx = poison_idx[valid_mask.values]
+                if len(valid_idx) == 0:
+                    continue
+                vals = df_poison.loc[valid_idx, col].values
+                normalized_vals = (vals - min_val) / (max_val - min_val)
+                noise_stds = base_noise_std * (1 + 3 * normalized_vals)
+                noise = np.random.normal(0, noise_stds)
+                df_poison.loc[valid_idx, col] = vals + noise
+                poison_mask.loc[valid_idx, col] = True
 
         # 2. Numerical features: MNAR (Missing Not At Random)
         if enable_mnar:
@@ -428,14 +429,13 @@ class DataPoisoner:
 
                 median = values.median()
 
-                for idx in df.index:
-                    if pd.notna(df_poison.loc[idx, col]):
-                        distance_from_median = abs(df_poison.loc[idx, col] - median)
-                        prob_missing = min(0.5, (distance_from_median / (2 * iqr)) * poison_rate)
-
-                        if np.random.random() < prob_missing:
-                            df_poison.loc[idx, col] = np.nan
-                            poison_mask.loc[idx, col] = True
+                valid = df_poison[col].notna()
+                col_vals = df_poison.loc[valid, col]
+                prob = ((col_vals - median).abs() / (2 * iqr) * poison_rate).clip(upper=0.5)
+                missing_mask = np.random.random(valid.sum()) < prob.values
+                missing_idx = col_vals.index[missing_mask]
+                df_poison.loc[missing_idx, col] = np.nan
+                poison_mask.loc[missing_idx, col] = True
 
         # 3. Categorical features: Systematic flips with patterns
         if enable_systematic_flips:
@@ -488,19 +488,23 @@ class DataPoisoner:
                     if df_poison[other_col].dtype in ["int64", "int32", "int16", "int8"]:
                         df_poison[other_col] = df_poison[other_col].astype("float64")
 
-                    for idx in poisoned_rows:
-                        if np.random.random() < 0.6 and pd.notna(df_poison.loc[idx, other_col]):
-                            values = df[other_col].dropna()
-                            if len(values) > 0:
-                                std_signal = values.std()
-                                if std_signal > 0:
-                                    snr_db = 15
-                                    noise_std = std_signal / (10 ** (snr_db / 20))
-                                    noise = np.random.normal(0, noise_std)
-                                    df_poison.loc[idx, other_col] = (
-                                        df_poison.loc[idx, other_col] + noise
-                                    )
-                                    poison_mask.loc[idx, other_col] = True
+                    values = df[other_col].dropna()
+                    if len(values) == 0:
+                        continue
+                    std_signal = values.std()
+                    if std_signal <= 0:
+                        continue
+                    snr_db = 15
+                    noise_std = std_signal / (10 ** (snr_db / 20))
+
+                    col_at_rows = df_poison.loc[poisoned_rows, other_col]
+                    eligible = col_at_rows.notna().values & (np.random.random(len(poisoned_rows)) < 0.6)
+                    selected = poisoned_rows[eligible]
+                    if len(selected) == 0:
+                        continue
+                    noise = np.random.normal(0, noise_std, size=len(selected))
+                    df_poison.loc[selected, other_col] += noise
+                    poison_mask.loc[selected, other_col] = True
 
         # 5. Value-dependent missingness for categorical
         for col in col_types["categorical"]:
@@ -518,16 +522,15 @@ class DataPoisoner:
             if total == 0:
                 continue
 
-            for idx in df.index:
-                if pd.notna(df_poison.loc[idx, col]):
-                    val = df_poison.loc[idx, col]
-                    frequency = value_counts.get(val, 0) / total
-
-                    prob_missing = poison_rate * (1 - frequency)
-
-                    if np.random.random() < prob_missing:
-                        df_poison.loc[idx, col] = np.nan
-                        poison_mask.loc[idx, col] = True
+            valid = df_poison[col].notna()
+            col_vals = df_poison.loc[valid, col]
+            freq_series = value_counts / total
+            frequencies = col_vals.map(freq_series).fillna(0)
+            prob = poison_rate * (1 - frequencies)
+            missing_mask = np.random.random(valid.sum()) < prob.values
+            missing_idx = col_vals.index[missing_mask]
+            df_poison.loc[missing_idx, col] = np.nan
+            poison_mask.loc[missing_idx, col] = True
 
         logger.success(f"NAR poisoning complete: {poison_mask.sum().sum()} values poisoned")
         return df_poison, poison_mask
@@ -573,6 +576,7 @@ def check_dataset_complete(csv_file: Path, output_dir: str) -> bool:
         os.path.join(output_dir, "nar", csv_file.name),
         os.path.join(output_dir, "nar", csv_file.stem + "_mask.csv"),
         os.path.join(output_dir, "metrics", csv_file.stem + "_nar_metrics.csv"),
+        os.path.join(output_dir, "test", csv_file.name),
     ]
 
     return all(os.path.exists(f) for f in required_files)
@@ -585,6 +589,7 @@ def process_all_datasets(
     noise_percentages: dict = None,
     ar_mechanisms: dict = None,
     nar_mechanisms: dict = None,
+    test_size: float = 0.4,
 ):
     """
     Process all datasets and create poisoned versions.
@@ -596,11 +601,13 @@ def process_all_datasets(
         noise_percentages: Optional custom noise distribution percentages
         ar_mechanisms: Dict of enabled AR mechanisms
         nar_mechanisms: Dict of enabled NAR mechanisms
+        test_size: Fraction of data to hold out as clean test set (default 0.4)
     """
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.join(output_dir, "ar"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "nar"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "metrics"), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "test"), exist_ok=True)
 
     poisoner = DataPoisoner(seed=42, noise_percentages=noise_percentages)
 
@@ -640,14 +647,27 @@ def process_all_datasets(
             df = pd.read_csv(csv_file, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "])
             logger.info(f"  Loaded: {df.shape[0]} rows × {df.shape[1]} columns")
 
+            # Split into train (1 - test_size) and test (test_size)
+            df_test = df.sample(frac=test_size, random_state=42)
+            df_train = df.drop(df_test.index).reset_index(drop=True)
+            df_test = df_test.reset_index(drop=True)
+            logger.info(
+                f"  Split: {len(df_train)} train rows, {len(df_test)} test rows "
+                f"({test_size*100:.0f}% test)"
+            )
+
+            # Save clean test split
+            test_path = os.path.join(output_dir, "test", csv_file.name)
+            df_test.to_csv(test_path, index=False)
+
             # Calculate column noise distribution once for both AR and NAR modes
-            # Only poison features, never targets
-            col_types = poisoner.identify_column_types(df)
+            # Only poison features, never targets — computed on train only
+            col_types = poisoner.identify_column_types(df_train)
             all_data_cols = col_types["numerical"] + col_types["categorical"]
             column_noise_dist = poisoner._create_stratified_noise_distribution(all_data_cols)
 
             df_ar, mask_ar = poisoner.poison_ar(
-                df, column_noise_dist=column_noise_dist, **ar_mechanisms
+                df_train, column_noise_dist=column_noise_dist, **ar_mechanisms
             )
             metrics_ar = poisoner.calculate_cleanliness_metrics(mask_ar)
 
@@ -668,7 +688,7 @@ def process_all_datasets(
             logger.info(f"  AR: {metrics_ar['overall_cleanliness']:.2f}% clean overall")
 
             df_nar, mask_nar = poisoner.poison_nar(
-                df, column_noise_dist=column_noise_dist, **nar_mechanisms
+                df_train, column_noise_dist=column_noise_dist, **nar_mechanisms
             )
             metrics_nar = poisoner.calculate_cleanliness_metrics(mask_nar)
 
@@ -728,6 +748,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--dataset", type=str, help="Process only this specific dataset (name without .csv)"
+    )
+    parser.add_argument(
+        "--test-size", type=float, default=0.4, help="Fraction of data held out as clean test set (default 0.4)"
     )
 
     noise_group = parser.add_argument_group("Noise Distribution")
@@ -816,4 +839,5 @@ if __name__ == "__main__":
         noise_percentages,
         ar_mechanisms,
         nar_mechanisms,
+        test_size=args.test_size,
     )

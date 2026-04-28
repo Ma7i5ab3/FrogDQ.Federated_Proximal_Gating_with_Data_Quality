@@ -2,11 +2,11 @@
 Data loading utilities for FrogDQ datasets.
 
 This module provides functions to list and load preprocessed datasets with various
-poisoning modes (clean, AR, NAR).
+poisoning modes (clean, AR, NAR), as well as pre-computed AutoGluon features.
 """
 
 from pathlib import Path
-from typing import Dict, Literal, Tuple
+from typing import Dict, Literal, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -146,8 +146,10 @@ def load_data(
     clean_test: bool = True,
     data_dir: str = "data",
     poisoned_dir: str = "data_poisoned",
-    test_size: float = 0.2,
+    test_dir: str = "data_poisoned",
     val_size: float = 0.2,
+    test_sample_size: float = 0.8,
+    poison_test_size: float = 0.4,
     **preprocessor_kwargs,
 ) -> Tuple[
     Tuple[np.ndarray, np.ndarray, np.ndarray],
@@ -177,15 +179,27 @@ def load_data(
     clean_val : bool, default=False
         If True, use clean data for validation set (even when mode is ar/nar).
     clean_test : bool, default=True
-        If True, use clean data for test set (even when mode is ar/nar).
+        Kept for API compatibility; the test set is always the clean split
+        saved in ``test_dir/test/``, so this flag has no effect.
     data_dir : str, default="data"
         Path to the directory containing clean CSV files.
     poisoned_dir : str, default="data_poisoned"
-        Path to the directory containing poisoned data subdirectories.
-    test_size : float, default=0.2
-        Proportion of dataset for test split.
+        Path to the directory containing poisoned data subdirectories
+        (``ar/``, ``nar/``).  Train and val splits are read from here for
+        ar/nar modes.
+    test_dir : str, default="data_poisoned"
+        Root directory that contains the ``test/`` subdirectory produced by
+        ``poison_data.py``.  Always use ``"data_poisoned"`` unless you have
+        a custom setup.
     val_size : float, default=0.2
-        Proportion of training data for validation split.
+        Fraction of the train+val data to use for validation.
+    test_sample_size : float, default=0.8
+        Fraction of ``test_dir/test/`` to use as the final test set
+        (sampled with ``random_state=seed`` for reproducibility).
+    poison_test_size : float, default=0.4
+        Fraction that was held out as test when running ``poison_data.py``
+        (default ``--test-size 0.4``).  Used in clean mode to exclude those
+        same rows from the train+val pool, preventing leakage.
     **preprocessor_kwargs
         Additional keyword arguments passed to TabularPreprocessor.
 
@@ -236,6 +250,7 @@ def load_data(
 
     data_path = Path(data_dir)
     poisoned_path = Path(poisoned_dir)
+    test_path = Path(test_dir) / "test"
 
     # Find the dataset file by matching the dataset name
     csv_files = list(data_path.glob(f"*_{dataset_name}.csv"))
@@ -254,13 +269,17 @@ def load_data(
     csv_file = csv_files[0]
     dataset_filename = csv_file.name
 
-    # Load the appropriate dataset based on mode
+    # Load train+val source data.
+    # For clean mode: use data_dir but exclude the rows held out as test by
+    # poison_data.py (same frac/seed), so there is no leakage with the test set.
+    # For ar/nar: the file in poisoned_dir already contains only the train portion.
     if mode == "clean":
-        df = pd.read_csv(csv_file, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "])
-        # For clean mode, mask is all False (no poisoned cells)
+        full_df = pd.read_csv(csv_file, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "])
+        test_rows = full_df.sample(frac=poison_test_size, random_state=42)
+        df = full_df.drop(test_rows.index).reset_index(drop=True)
         mask_df = pd.DataFrame(False, index=df.index, columns=df.columns, dtype=bool)
+        clean_trainval_df = None
     else:
-        # Load poisoned data
         poisoned_file = poisoned_path / mode / dataset_filename
         mask_file = poisoned_path / mode / f"{csv_file.stem}_mask.csv"
 
@@ -269,21 +288,32 @@ def load_data(
                 f"Poisoned data file not found: {poisoned_file}. "
                 f"Run the poison_data.py script first."
             )
-
         if not mask_file.exists():
             raise FileNotFoundError(f"Mask file not found: {mask_file}")
 
         df = pd.read_csv(poisoned_file, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "])
-        mask_df = pd.read_csv(mask_file)
-        # Convert mask to boolean
-        mask_df = mask_df.astype(bool)
+        mask_df = pd.read_csv(mask_file).astype(bool)
 
-    # Load clean data for validation/test if requested
-    clean_df = None
-    if (clean_val or clean_test) and mode != "clean":
-        clean_df = pd.read_csv(
-            csv_file, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "]
+        # Build clean train+val counterpart (same rows as poisoned file) for clean_val.
+        clean_trainval_df = None
+        if clean_val:
+            full_clean_df = pd.read_csv(
+                csv_file, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "]
+            )
+            test_rows = full_clean_df.sample(frac=poison_test_size, random_state=42)
+            clean_trainval_df = full_clean_df.drop(test_rows.index).reset_index(drop=True)
+
+    # Load test set: always from test_dir/test/, sample test_sample_size fraction.
+    test_file = test_path / dataset_filename
+    if not test_file.exists():
+        raise FileNotFoundError(
+            f"Test file not found: {test_file}. "
+            f"Run scripts/poison_data.py first."
         )
+    df_test_full = pd.read_csv(
+        test_file, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "]
+    )
+    df_test = df_test_full.sample(frac=test_sample_size, random_state=seed).reset_index(drop=True)
 
     # Detect label column
     label_cols = [col for col in df.columns if col.startswith(("cls_", "reg_"))]
@@ -291,48 +321,32 @@ def load_data(
         raise ValueError(f"No label column found in dataset {dataset_name}")
 
     label_col = label_cols[0]
+    task_type = "classification" if label_col.startswith("cls_") else "regression"
 
-    # Split data into train/val/test using the same random seed for reproducibility
-    # We need to split indices first, then apply to data/mask separately
+    # Split train+val into train / val
     from sklearn.model_selection import train_test_split
 
     indices = np.arange(len(df))
     y_full = df[label_col].values
-
-    # Determine if stratification should be used
-    task_type = "classification" if label_col.startswith("cls_") else "regression"
     stratify_split = y_full if task_type == "classification" else None
 
-    # First split: train+val vs test
-    train_val_idx, test_idx = train_test_split(
-        indices, test_size=test_size, random_state=seed, stratify=stratify_split
-    )
-
-    # Second split: train vs val
-    val_size_adjusted = val_size / (1 - test_size)
-    stratify_split_val = y_full[train_val_idx] if task_type == "classification" else None
     train_idx, val_idx = train_test_split(
-        train_val_idx, test_size=val_size_adjusted, random_state=seed, stratify=stratify_split_val
+        indices, test_size=val_size, random_state=seed, stratify=stratify_split
     )
 
-    # Split the dataframes
+    # Build split dataframes
     df_train = df.iloc[train_idx].reset_index(drop=True)
     df_val = df.iloc[val_idx].reset_index(drop=True)
-    df_test = df.iloc[test_idx].reset_index(drop=True)
 
-    # Split masks
     mask_train = mask_df.iloc[train_idx].reset_index(drop=True)
     mask_val = mask_df.iloc[val_idx].reset_index(drop=True)
-    mask_test = mask_df.iloc[test_idx].reset_index(drop=True)
+    # Test is always the clean held-out split, so mask is all False
+    mask_test = pd.DataFrame(False, index=df_test.index, columns=df_test.columns, dtype=bool)
 
-    # Replace val/test with clean data if requested
-    if clean_val and clean_df is not None:
-        df_val = clean_df.iloc[val_idx].reset_index(drop=True)
+    # Replace val with clean data if requested (ar/nar modes only)
+    if clean_val and clean_trainval_df is not None:
+        df_val = clean_trainval_df.iloc[val_idx].reset_index(drop=True)
         mask_val = pd.DataFrame(False, index=df_val.index, columns=df_val.columns, dtype=bool)
-
-    if clean_test and clean_df is not None:
-        df_test = clean_df.iloc[test_idx].reset_index(drop=True)
-        mask_test = pd.DataFrame(False, index=df_test.index, columns=df_test.columns, dtype=bool)
 
     # Initialize and fit preprocessor on training data only
     preprocessor = TabularPreprocessor(
@@ -426,3 +440,230 @@ def load_data(
     }
 
     return (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata
+
+
+def load_saga_data(
+    dataset_name: str,
+    mode: str,
+    seed: int = 42,
+    saga_dir: str = "data_cleaned_saga",
+    clean_val: bool = True,
+    clean_test: bool = True,
+    **kwargs,
+) -> Tuple[
+    Tuple[np.ndarray, np.ndarray, np.ndarray],
+    Tuple[np.ndarray, np.ndarray, np.ndarray],
+    "TabularPreprocessor",
+    Dict,
+]:
+    """
+    Load Saga++-cleaned data for a dataset split.
+
+    Features must have been generated by ``scripts/saga.py`` before calling
+    this function.  The Saga-cleaned CSV replaces poisoned values with repaired
+    ones; the corresponding mask records which cells were originally dirty.
+    TabularPreprocessor is applied on the training split exactly as in
+    ``load_data``.
+
+    Parameters
+    ----------
+    dataset_name : str
+        Name of the dataset (e.g. "iris").
+    mode : str
+        Data quality mode used during poisoning ("ar" or "nar").
+    seed : int, default=42
+        Random seed that determines the train/val/test split.
+    saga_dir : str, default="data_cleaned_saga"
+        Root directory containing the Saga-cleaned CSVs and masks.
+    clean_val : bool, default=True
+        If True, return the clean validation split; if False, return the
+        Saga-cleaned validation split.
+    clean_test : bool, default=True
+        If True, return the clean test split; if False, return the
+        Saga-cleaned test split.
+    **kwargs
+        Additional keyword arguments forwarded to ``load_data``.
+
+    Returns
+    -------
+    Same as ``load_data``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the Saga-cleaned file does not exist; run ``scripts/saga.py`` first.
+    """
+    return load_data(
+        dataset_name=dataset_name,
+        mode=mode,
+        seed=seed,
+        clean_val=clean_val,
+        clean_test=clean_test,
+        poisoned_dir=saga_dir,
+        test_dir="data_poisoned",
+        **kwargs,
+    )
+
+
+def load_cp_data(
+    dataset_name: str,
+    mode: str,
+    seed: int = 42,
+    cp_dir: str = "data_cleaned_cp",
+    clean_val: bool = True,
+    clean_test: bool = True,
+    **kwargs,
+) -> Tuple[
+    Tuple[np.ndarray, np.ndarray, np.ndarray],
+    Tuple[np.ndarray, np.ndarray, np.ndarray],
+    "TabularPreprocessor",
+    Dict,
+]:
+    """
+    Load data cleaned by the custom pipeline (scripts/data_preparation_pipeline.py).
+
+    The CP pipeline applies MICE imputation, IQR outlier clipping, association-rule
+    categorical repair, and OOV repair, writing results to ``data_cleaned_cp/{ar,nar}/``.
+    The output format is identical to Saga's, so this is a thin wrapper over
+    ``load_data`` that redirects ``poisoned_dir`` to the CP output directory.
+
+    Parameters
+    ----------
+    dataset_name : str
+        Name of the dataset (e.g. "iris").
+    mode : str
+        Data quality mode ("ar" or "nar").
+    seed : int, default=42
+        Random seed for the train/val/test split.
+    cp_dir : str, default="data_cleaned_cp"
+        Root directory containing the CP-cleaned CSVs and masks.
+    clean_val : bool, default=True
+        If True, return the clean validation split.
+    clean_test : bool, default=True
+        If True, return the clean test split.
+    **kwargs
+        Additional keyword arguments forwarded to ``load_data``.
+
+    Returns
+    -------
+    Same as ``load_data``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the CP-cleaned file does not exist; run
+        ``scripts/data_preparation_pipeline.py`` first.
+    """
+    return load_data(
+        dataset_name=dataset_name,
+        mode=mode,
+        seed=seed,
+        clean_val=clean_val,
+        clean_test=clean_test,
+        poisoned_dir=cp_dir,
+        test_dir="data_poisoned",
+        **kwargs,
+    )
+
+
+def load_autogluon_data(
+    dataset_name: str,
+    mode: str,
+    model_type: str,
+    seed: int,
+    autogluon_dir: str = "data_autogluon",
+    clean_val: bool = True,
+    clean_test: bool = True,
+) -> Tuple[
+    Tuple[np.ndarray, np.ndarray, np.ndarray],
+    Tuple[np.ndarray, np.ndarray, np.ndarray],
+    Optional[TabularPreprocessor],
+    Dict,
+]:
+    """
+    Load pre-computed AutoGluon-transformed features for a dataset split.
+
+    Features must have been generated by ``scripts/autogluon.py`` before calling
+    this function.  No further preprocessing is applied; the arrays are used
+    directly in Optuna experiments.
+
+    Each NPZ file stores both the clean and the corrupted variant of the
+    validation and test splits (``X_val_clean`` / ``X_val_corrupted`` and
+    ``X_test_clean`` / ``X_test_corrupted``).  Use ``clean_val`` and
+    ``clean_test`` to choose which variant is returned.
+
+    Parameters
+    ----------
+    dataset_name : str
+        Name of the dataset (e.g. "iris").
+    mode : str
+        Data quality mode used during AutoGluon fitting ("ar" or "nar").
+    model_type : str
+        Model type AutoGluon was tuned for ("linear" or "mlp").
+    seed : int
+        Random seed that determines the train/val/test split.
+    autogluon_dir : str, default="data_autogluon"
+        Root directory containing the pre-computed NPZ files.
+    clean_val : bool, default=True
+        If True, return the clean validation split; if False, return the
+        corrupted (poisoned) validation split.
+    clean_test : bool, default=True
+        If True, return the clean test split; if False, return the corrupted
+        (poisoned) test split.
+
+    Returns
+    -------
+    splits : tuple of (X_train, X_val, X_test)
+        AutoGluon-transformed feature arrays as float64 numpy arrays.
+        X_val and X_test are the clean or corrupted variant according to
+        ``clean_val`` / ``clean_test``.
+    labels : tuple of (y_train, y_val, y_test)
+        Label arrays (targets are never poisoned, so these are identical
+        regardless of the clean/corrupted choice).
+    preprocessor : None
+        Always None – AutoGluon's pipeline is baked into the features.
+    metadata : dict
+        Dictionary with keys ``task_type``, ``mode``, ``dataset_name``,
+        ``preparation``, ``clean_val``, ``clean_test``,
+        ``sample_quality_train``, ``feature_quality``,
+        ``n_samples``, and ``n_features_preprocessed``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the NPZ file does not exist; run ``scripts/autogluon.py`` first.
+    """
+    out_file = Path(autogluon_dir) / mode / model_type / dataset_name / f"seed_{seed}.npz"
+
+    if not out_file.exists():
+        raise FileNotFoundError(
+            f"AutoGluon features not found: {out_file}\n"
+            "Run 'python scripts/autogluon.py' to pre-compute them."
+        )
+
+    data = np.load(out_file, allow_pickle=True)
+
+    X_train = data["X_train"].astype(np.float64)
+    X_val   = data["X_val_clean" if clean_val else "X_val_corrupted"].astype(np.float64)
+    X_test  = data["X_test_clean" if clean_test else "X_test_corrupted"].astype(np.float64)
+
+    y_train = data["y_train"]
+    y_val   = data["y_val"]
+    y_test  = data["y_test"]
+    task_type = str(data["task_type"][0])
+
+    metadata: Dict = {
+        "task_type": task_type,
+        "mode": mode,
+        "dataset_name": dataset_name,
+        "preparation": "autogluon",
+        "clean_val": clean_val,
+        "clean_test": clean_test,
+        # Curriculum/gate quality scores are not available for this baseline
+        "sample_quality_train": np.ones(len(X_train)) * 100.0,
+        "feature_quality": {},
+        "n_samples": {"train": len(X_train), "val": len(X_val), "test": len(X_test)},
+        "n_features_preprocessed": X_train.shape[1],
+    }
+
+    return (X_train, X_val, X_test), (y_train, y_val, y_test), None, metadata

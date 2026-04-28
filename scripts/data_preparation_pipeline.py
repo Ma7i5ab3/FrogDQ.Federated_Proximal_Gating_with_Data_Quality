@@ -941,7 +941,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="data_cleaned",
+        default="data_cleaned_cp",
         help="Root directory for cleaned output (default: data_cleaned)",
     )
     parser.add_argument(

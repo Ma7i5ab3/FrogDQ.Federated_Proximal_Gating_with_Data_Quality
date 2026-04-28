@@ -150,6 +150,55 @@ def parse_args():
         help='Number of top baseline trials to sample from (default: 5, requires --reuse-params)'
     )
 
+    parser.add_argument(
+        '--run-autogluon',
+        action='store_true',
+        help=(
+            'Include AutoGluon as a data-preparation benchmark. '
+            'Runs experiments on AR/NAR modes using pre-computed AutoGluon features. '
+            'Requires running scripts/autogluon.py first.'
+        )
+    )
+
+    parser.add_argument(
+        '--autogluon-data-dir',
+        type=str,
+        help='Directory containing pre-computed AutoGluon features (default: data_autogluon)'
+    )
+
+    parser.add_argument(
+        '--run-cp',
+        action='store_true',
+        help=(
+            'Include the custom pipeline (CP) as a data-preparation benchmark. '
+            'Runs experiments on AR/NAR modes using CP-cleaned data (MICE + IQR + '
+            'association-rule repair). '
+            'Requires running scripts/data_preparation_pipeline.py first.'
+        )
+    )
+
+    parser.add_argument(
+        '--cp-data-dir',
+        type=str,
+        help='Directory containing CP-cleaned data (default: data_cleaned_cp)'
+    )
+
+    parser.add_argument(
+        '--run-saga',
+        action='store_true',
+        help=(
+            'Include Saga++ as a data-preparation benchmark. '
+            'Runs experiments on AR/NAR modes using Saga++-cleaned data. '
+            'Requires running scripts/saga.py first.'
+        )
+    )
+
+    parser.add_argument(
+        '--saga-data-dir',
+        type=str,
+        help='Directory containing Saga++-cleaned data (default: data_cleaned_saga)'
+    )
+
     return parser.parse_args()
 
 
@@ -254,6 +303,18 @@ def main():
     if args.reuse_params:
         config['reuse_params'] = True
         config['reuse_top_n'] = args.reuse_top_n
+    if args.run_autogluon:
+        config['run_autogluon'] = True
+    if args.autogluon_data_dir:
+        config['autogluon_data_dir'] = args.autogluon_data_dir
+    if args.run_cp:
+        config['run_cp'] = True
+    if args.cp_data_dir:
+        config['cp_data_dir'] = args.cp_data_dir
+    if args.run_saga:
+        config['run_saga'] = True
+    if args.saga_data_dir:
+        config['saga_data_dir'] = args.saga_data_dir
 
     # Validate configuration
     if not config.get('datasets'):
@@ -272,8 +333,8 @@ def main():
     print(f"Datasets: {config['datasets']}")
     print(f"Data modes: {config['data_modes']}")
     print(f"Model types: {config['model_types']}")
-    print(f"Curriculum settings: {config['curriculum_settings']} (only for MLP on AR/NAR)")
-    print(f"Gate settings: {config['gate_settings']} (only for MLP on AR/NAR)")
+    print(f"Curriculum settings: {config['curriculum_settings']} (applied to all model types on AR/NAR)")
+    print(f"Gate settings: {config['gate_settings']} (applied to all model types on AR/NAR)")
     print(f"Trials per config: {config['n_trials']}")
     print(f"Seeds per trial: {config['n_seeds']}")
     print(f"Parallel jobs (seeds): {config['n_jobs_seeds']}")
@@ -284,47 +345,53 @@ def main():
     if config.get('reuse_params'):
         print(f"  - Sample from top-{config.get('reuse_top_n', 5)} baseline trials (AR/NAR baseline)")
         print(f"  - Reduced trials: curriculum-only (3), combined ({config['n_trials']})")
+    print(f"AutoGluon benchmark: {config.get('run_autogluon', False)}")
+    if config.get('run_autogluon'):
+        print(f"  - Pre-computed features dir: {config.get('autogluon_data_dir', 'data_autogluon')}")
+        print(f"  - To pre-compute: python scripts/autogluon.py")
+    print(f"Custom pipeline (CP) benchmark: {config.get('run_cp', False)}")
+    if config.get('run_cp'):
+        print(f"  - Cleaned data dir: {config.get('cp_data_dir', 'data_cleaned_cp')}")
+        print(f"  - To pre-compute: python scripts/data_preparation_pipeline.py")
+    print(f"Saga benchmark: {config.get('run_saga', False)}")
+    if config.get('run_saga'):
+        print(f"  - Cleaned data dir: {config.get('saga_data_dir', 'data_cleaned_saga')}")
+        print(f"  - To pre-compute: python scripts/saga.py")
 
-    # Calculate total configurations according to experimental design:
-    # 1. Baselines: linear (all modes) + mlp (all modes)
-    # 2. State-of-art: mlp + curriculum on ar/nar
-    # 3. Proposed: mlp + gate on ar/nar, mlp + gate + curriculum on ar/nar
-
+    # Calculate total configurations per model × n_models × n_datasets,
+    # adjusted for which optional benchmarks are enabled.
     n_datasets = len(config['datasets'])
-    n_modes = len(config['data_modes'])
-    n_clean = sum(1 for m in config['data_modes'] if m == 'clean')
     n_ar_nar = sum(1 for m in config['data_modes'] if m in ['ar', 'nar'])
-    has_linear = 'linear' in config['model_types']
-    has_mlp = 'mlp' in config['model_types']
+    has_clean = 'clean' in config['data_modes']
+    n_models = len(config['model_types'])
 
-    baseline_configs = 0
-    mlp_ar_nar_configs = 0
+    # Per model per AR/NAR mode: poisoned + curriculum + gate + gate+curriculum = 4 standard
+    # + autogluon (opt) + cp (opt) + saga (opt)
+    per_model_ar_nar = 4
+    if config.get('run_autogluon'):
+        per_model_ar_nar += 1
+    if config.get('run_cp'):
+        per_model_ar_nar += 1
+    if config.get('run_saga'):
+        per_model_ar_nar += 1
 
-    # Baselines
-    if has_linear:
-        # Linear on all modes (clean, ar, nar)
-        baseline_configs += n_datasets * n_modes * 1
-    if has_mlp:
-        # MLP on all modes (clean, ar, nar) - baseline only
-        baseline_configs += n_datasets * n_modes * 1
-
-    # MLP on AR/NAR with techniques (4 configs per ar/nar mode)
-    if has_mlp and n_ar_nar > 0:
-        # For each ar/nar mode: baseline + curriculum + gate + gate+curriculum = 4 configs
-        # But baseline already counted above, so add 3 more per ar/nar mode
-        mlp_ar_nar_configs += n_datasets * n_ar_nar * 3
-
-    total_configs = baseline_configs + mlp_ar_nar_configs
+    clean_configs = n_datasets * n_models * int(has_clean)
+    ar_nar_configs = n_datasets * n_models * n_ar_nar * per_model_ar_nar
+    total_configs = clean_configs + ar_nar_configs
     total_trials = total_configs * config['n_trials']
     total_evaluations = total_trials * config['n_seeds']
 
-    print(f"\nConfiguration breakdown:")
-    print(f"  Baselines (linear + mlp on all modes): {baseline_configs} configs")
-    print(f"  MLP techniques on AR/NAR:")
-    if has_mlp and n_ar_nar > 0:
-        print(f"    - MLP + curriculum: {n_datasets * n_ar_nar} configs")
-        print(f"    - MLP + gate: {n_datasets * n_ar_nar} configs")
-        print(f"    - MLP + gate + curriculum: {n_datasets * n_ar_nar} configs")
+    print(f"\nConfiguration breakdown (per model: Linear + MLP):")
+    print(f"  Clean baseline: {clean_configs} configs")
+    print(f"  Per AR/NAR mode per model:")
+    print(f"    - Poisoned baseline, curriculum, gate, gate+curriculum: 4 standard configs")
+    if config.get('run_autogluon'):
+        print(f"    - AutoGluon baseline: 1 config")
+    if config.get('run_cp'):
+        print(f"    - Custom pipeline (CP) baseline: 1 config")
+    if config.get('run_saga'):
+        print(f"    - Saga baseline: 1 config")
+    print(f"  AR/NAR configs total: {ar_nar_configs}")
     print(f"  Total configurations: {total_configs}")
     print(f"  Total trials: {total_trials}")
     print(f"  Total evaluations: {total_evaluations}")
