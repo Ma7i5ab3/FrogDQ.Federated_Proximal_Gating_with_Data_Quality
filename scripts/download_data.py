@@ -30,7 +30,7 @@ def get_prefix(feature_type, is_target):
     raise ValueError(f"Unknown feature type: {feature_type}")
 
 
-def download_all(output_dir):
+def download_all(output_dir, max_rows, max_columns):
     os.makedirs(output_dir, exist_ok=True)
 
     suite = openml.study.get_suite(OPENML_CC18_SUITE_ID)
@@ -56,6 +56,10 @@ def download_all(output_dir):
             )
 
             df = pd.concat([X, y], axis=1)
+
+            # Filter out datasets that exceed maximum number of rows and columns
+            if df.shape[0] > max_rows and df.shape[1] > max_columns:
+                continue
 
             # Build rename map using OpenML feature metadata
             features_meta = {f.name: f for f in dataset.features.values()}
@@ -87,6 +91,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "dir", type=str, help="Directory to save CSV files.", default="data", nargs="?"
     )
+    parser.add_argument(
+        "max_rows", type=str, help="Filter out datasets that have a number of rows higher 'max_rows'", default=100000000
+    )
+    parser.add_argument(
+        "max_columns", type=str, help="Filter out datasets that have a number of columns higher 'max_columns'", default=100000000
+    )
     args = parser.parse_args()
 
-    download_all(args.dir)
+    download_all(args.dir, args.max_rows, args.max_columns)
