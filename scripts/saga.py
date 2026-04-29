@@ -142,6 +142,9 @@ STAGE0_PRIMITIVES = {"correctTypos"}
 # Train-only primitives (apply() is a no-op)
 TRAIN_ONLY_PRIMITIVES = {"underSampling", "abstain"}
 
+# Outlier-detection primitives (skipped when applying pipeline to test data)
+OUTLIER_PRIMITIVES = {"outlierByIQR", "outlierBySd", "winsorize"}
+
 ALL_PRIMITIVES = list(PRIMITIVE_DEFAULTS.keys())
 
 
@@ -705,7 +708,7 @@ class SagaPP:
         self,
         df_poisoned: pd.DataFrame,
         mask_df: pd.DataFrame,
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict]:
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict, Dict]:
         """
         Apply the Saga++ top-K cleaning pipeline to a poisoned dataset.
 
@@ -720,6 +723,8 @@ class SagaPP:
         df_cleaned    : cleaned dataframe
         residual_mask : boolean mask (True = originally poisoned, still NaN)
         perf_metrics  : timing / memory metrics dict
+        pipeline_info : dict with keys "pipeline", "states", "col_types" for
+                        reapplying the fitted pipeline to held-out data
         """
         proc = psutil.Process()
         ram_before_mb = proc.memory_info().rss / 1024 / 1024
@@ -756,6 +761,13 @@ class SagaPP:
 
         # Fit the best pipeline on the full dataset
         states, X_cleaned, _ = self.fit_pipeline(best_pipeline, X, y, col_types)
+
+        # Pipeline info for later reapplication to held-out (test) data
+        pipeline_info: Dict = {
+            "pipeline": best_pipeline,
+            "states": states,
+            "col_types": col_types,
+        }
 
         # Reconstruct the full dataframe
         df_clean = df_poisoned.copy()
@@ -796,7 +808,7 @@ class SagaPP:
             "best_score": round(best_score, 6),
         }
 
-        return df_clean, residual_mask, perf_metrics
+        return df_clean, residual_mask, perf_metrics, pipeline_info
 
     # ------------------------------------------------------------------
     # Internal: pipeline scoring
@@ -1154,27 +1166,47 @@ def calculate_residual_metrics(residual_mask: pd.DataFrame) -> Dict:
 
 
 # ---------------------------------------------------------------------------
+# Pipeline persistence helpers
+# ---------------------------------------------------------------------------
+
+def save_pipeline_info(path: str, pipeline_info: Dict) -> None:
+    """Persist pipeline steps, fitted states and column types to a pickle file."""
+    import pickle as _pickle
+    with open(path, "wb") as f:
+        _pickle.dump(pipeline_info, f)
+
+
+# ---------------------------------------------------------------------------
 # Dataset processing (mirrors process_all_datasets in data_preparation_pipeline.py)
 # ---------------------------------------------------------------------------
 
-def check_dataset_complete(csv_file: Path, output_dir: str) -> bool:
-    required_files = [
-        os.path.join(output_dir, "ar", csv_file.name),
-        os.path.join(output_dir, "ar", csv_file.stem + "_mask.csv"),
-        os.path.join(output_dir, "metrics", csv_file.stem + "_ar_metrics.csv"),
-        os.path.join(output_dir, "metrics", csv_file.stem + "_ar_perf_metrics.csv"),
-        os.path.join(output_dir, "nar", csv_file.name),
-        os.path.join(output_dir, "nar", csv_file.stem + "_mask.csv"),
-        os.path.join(output_dir, "metrics", csv_file.stem + "_nar_metrics.csv"),
-        os.path.join(output_dir, "metrics", csv_file.stem + "_nar_perf_metrics.csv"),
-    ]
-    return all(os.path.exists(f) for f in required_files)
+def check_dataset_complete(
+    csv_file: Path,
+    output_dir: str,
+    model_types: Optional[List[str]] = None,
+) -> bool:
+    if model_types is None:
+        model_types = ["linear", "mlp"]
+    for mode in ("ar", "nar"):
+        for model in model_types:
+            model_dir = os.path.join(output_dir, mode, model)
+            required = [
+                os.path.join(model_dir, csv_file.name),
+                os.path.join(model_dir, csv_file.stem + "_mask.csv"),
+                os.path.join(model_dir, csv_file.stem + "_pipeline.pkl"),
+                os.path.join(output_dir, "metrics", f"{csv_file.stem}_{mode}_{model}_metrics.csv"),
+                os.path.join(output_dir, "metrics", f"{csv_file.stem}_{mode}_{model}_perf_metrics.csv"),
+            ]
+            if not all(os.path.exists(f) for f in required):
+                return False
+    return True
 
 
 def process_all_datasets(
     input_dir: str,
     output_dir: str,
     dataset_name: Optional[str] = None,
+    model_types: Optional[List[str]] = None,
     K: int = 3,
     max_iter: int = 15,
     resources: int = 20,
@@ -1183,23 +1215,30 @@ def process_all_datasets(
     """
     Apply the Saga++ cleaning pipeline to all poisoned datasets.
 
-    Reads poisoned CSVs and their masks from ``input_dir/{ar,nar}/`` and
-    writes cleaned CSVs, residual masks, and cleanliness metrics to
-    ``output_dir/{ar,nar}/``.
+    For each (dataset, mode) pair the pipeline search is run once; the
+    resulting cleaned CSV, residual mask and fitted pipeline state are then
+    written to ``output_dir/{mode}/{model}/`` for every model in
+    ``model_types``.  This keeps the output directory layout consistent with
+    the other baselines (autogluon, cp) while avoiding redundant computation.
 
     Args:
         input_dir    : Root poisoned-data directory (default: data_poisoned)
         output_dir   : Root output directory (default: data_cleaned_saga)
         dataset_name : If given, process only this dataset
+        model_types  : Model types to create output dirs for (default: linear, mlp)
         K            : Number of top-K pipelines to search (default 3)
         max_iter     : Evolutionary iterations for logical enumeration (default 10)
         resources    : Hyperband resource budget R (default 20)
         seed         : Random seed
     """
+    if model_types is None:
+        model_types = ["linear", "mlp"]
+
     os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(os.path.join(output_dir, "ar"), exist_ok=True)
-    os.makedirs(os.path.join(output_dir, "nar"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "metrics"), exist_ok=True)
+    for mode in ("ar", "nar"):
+        for model in model_types:
+            os.makedirs(os.path.join(output_dir, mode, model), exist_ok=True)
 
     cleaner = SagaPP(K=K, max_iter=max_iter, resources=resources, seed=seed)
 
@@ -1229,112 +1268,86 @@ def process_all_datasets(
     else:
         logger.info(f"Found {len(csv_files)} poisoned datasets to prepare")
 
-    skipped = sum(1 for f in csv_files if check_dataset_complete(f, output_dir))
+    skipped = sum(1 for f in csv_files if check_dataset_complete(f, output_dir, model_types))
     if skipped:
         logger.info(f"Skipped {skipped} already-processed dataset(s)")
 
     for csv_file in csv_files:
-        if check_dataset_complete(csv_file, output_dir):
+        if check_dataset_complete(csv_file, output_dir, model_types):
             logger.info(f"Skipping {csv_file.name} (already complete)")
             continue
 
         logger.info(f"Processing {csv_file.name}")
 
         try:
-            # ---- AR mode ----
-            ar_csv = ar_dir / csv_file.name
-            ar_mask_file = ar_dir / f"{csv_file.stem}_mask.csv"
-            ar_out_files = [
-                os.path.join(output_dir, "ar", csv_file.name),
-                os.path.join(output_dir, "ar", csv_file.stem + "_mask.csv"),
-                os.path.join(output_dir, "metrics", csv_file.stem + "_ar_metrics.csv"),
-                os.path.join(output_dir, "metrics", csv_file.stem + "_ar_perf_metrics.csv"),
-            ]
+            for mode, mode_dir in (("ar", ar_dir), ("nar", nar_dir)):
+                src_csv = mode_dir / csv_file.name
+                src_mask = mode_dir / f"{csv_file.stem}_mask.csv"
 
-            if all(os.path.exists(f) for f in ar_out_files):
-                logger.info(f"  AR already processed, skipping: {csv_file.name}")
-            elif not ar_csv.exists():
-                logger.warning(f"  AR CSV not found, skipping: {ar_csv}")
-            elif not ar_mask_file.exists():
-                logger.warning(f"  AR mask not found, skipping: {ar_mask_file}")
-            else:
-                df_ar = pd.read_csv(
-                    ar_csv, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "]
+                # Check whether all model-type outputs for this mode already exist
+                all_model_outputs_exist = all(
+                    all(os.path.exists(p) for p in [
+                        os.path.join(output_dir, mode, model, csv_file.name),
+                        os.path.join(output_dir, mode, model, csv_file.stem + "_mask.csv"),
+                        os.path.join(output_dir, mode, model, csv_file.stem + "_pipeline.pkl"),
+                    ])
+                    for model in model_types
                 )
-                mask_ar = pd.read_csv(ar_mask_file).astype(bool)
-                logger.info(f"  AR loaded: {df_ar.shape[0]} rows × {df_ar.shape[1]} columns")
+                if all_model_outputs_exist:
+                    logger.info(f"  {mode.upper()} already processed for all models, skipping")
+                    continue
 
-                df_ar_clean, residual_ar, perf_ar = cleaner.prepare(df_ar, mask_ar)
-                metrics_ar = calculate_residual_metrics(residual_ar)
+                if not src_csv.exists():
+                    logger.warning(f"  {mode.upper()} CSV not found, skipping: {src_csv}")
+                    continue
+                if not src_mask.exists():
+                    logger.warning(f"  {mode.upper()} mask not found, skipping: {src_mask}")
+                    continue
 
-                df_ar_clean.to_csv(os.path.join(output_dir, "ar", csv_file.name), index=False)
-                residual_ar.to_csv(
-                    os.path.join(output_dir, "ar", csv_file.stem + "_mask.csv"), index=False
+                df_mode = pd.read_csv(
+                    src_csv, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "]
                 )
-                pd.DataFrame({
-                    "column": list(metrics_ar["column_cleanliness"].keys()),
-                    "cleanliness_pct": list(metrics_ar["column_cleanliness"].values()),
-                }).to_csv(
-                    os.path.join(output_dir, "metrics", csv_file.stem + "_ar_metrics.csv"),
-                    index=False,
-                )
-                pd.DataFrame([{"dataset": csv_file.stem, "corruption": "ar", **perf_ar}]).to_csv(
-                    os.path.join(output_dir, "metrics", csv_file.stem + "_ar_perf_metrics.csv"),
-                    index=False,
-                )
+                mask_mode = pd.read_csv(src_mask).astype(bool)
                 logger.info(
-                    f"  AR cleaned: {metrics_ar['overall_cleanliness']:.2f}% clean overall "
-                    f"| {perf_ar['wall_time_s']:.1f}s wall | {perf_ar['cpu_time_s']:.1f}s CPU "
-                    f"| {perf_ar['ram_peak_mb']:.1f} MB peak "
-                    f"| pipeline: {perf_ar.get('best_pipeline', '?')}"
+                    f"  {mode.upper()} loaded: {df_mode.shape[0]} rows × {df_mode.shape[1]} cols"
                 )
 
-            # ---- NAR mode ----
-            nar_csv = nar_dir / csv_file.name
-            nar_mask_file = nar_dir / f"{csv_file.stem}_mask.csv"
-            nar_out_files = [
-                os.path.join(output_dir, "nar", csv_file.name),
-                os.path.join(output_dir, "nar", csv_file.stem + "_mask.csv"),
-                os.path.join(output_dir, "metrics", csv_file.stem + "_nar_metrics.csv"),
-                os.path.join(output_dir, "metrics", csv_file.stem + "_nar_perf_metrics.csv"),
-            ]
+                # Run Saga++ once per (dataset, mode); results are shared across model types
+                df_clean, residual_mask, perf, pipeline_info = cleaner.prepare(df_mode, mask_mode)
+                metrics = calculate_residual_metrics(residual_mask)
 
-            if all(os.path.exists(f) for f in nar_out_files):
-                logger.info(f"  NAR already processed, skipping: {csv_file.name}")
-            elif not nar_csv.exists():
-                logger.warning(f"  NAR CSV not found, skipping: {nar_csv}")
-            elif not nar_mask_file.exists():
-                logger.warning(f"  NAR mask not found, skipping: {nar_mask_file}")
-            else:
-                df_nar = pd.read_csv(
-                    nar_csv, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "]
-                )
-                mask_nar = pd.read_csv(nar_mask_file).astype(bool)
-                logger.info(f"  NAR loaded: {df_nar.shape[0]} rows × {df_nar.shape[1]} columns")
+                # Save cleaned data, mask and pipeline to each model-type subdirectory
+                for model in model_types:
+                    model_dir = Path(output_dir) / mode / model
+                    df_clean.to_csv(model_dir / csv_file.name, index=False)
+                    residual_mask.to_csv(model_dir / f"{csv_file.stem}_mask.csv", index=False)
+                    save_pipeline_info(str(model_dir / f"{csv_file.stem}_pipeline.pkl"), pipeline_info)
 
-                df_nar_clean, residual_nar, perf_nar = cleaner.prepare(df_nar, mask_nar)
-                metrics_nar = calculate_residual_metrics(residual_nar)
+                    # Save per-model metrics
+                    pd.DataFrame({
+                        "column": list(metrics["column_cleanliness"].keys()),
+                        "cleanliness_pct": list(metrics["column_cleanliness"].values()),
+                    }).to_csv(
+                        os.path.join(output_dir, "metrics",
+                                     f"{csv_file.stem}_{mode}_{model}_metrics.csv"),
+                        index=False,
+                    )
+                    pd.DataFrame([{
+                        "dataset": csv_file.stem,
+                        "corruption": mode,
+                        "model": model,
+                        **perf,
+                    }]).to_csv(
+                        os.path.join(output_dir, "metrics",
+                                     f"{csv_file.stem}_{mode}_{model}_perf_metrics.csv"),
+                        index=False,
+                    )
 
-                df_nar_clean.to_csv(os.path.join(output_dir, "nar", csv_file.name), index=False)
-                residual_nar.to_csv(
-                    os.path.join(output_dir, "nar", csv_file.stem + "_mask.csv"), index=False
-                )
-                pd.DataFrame({
-                    "column": list(metrics_nar["column_cleanliness"].keys()),
-                    "cleanliness_pct": list(metrics_nar["column_cleanliness"].values()),
-                }).to_csv(
-                    os.path.join(output_dir, "metrics", csv_file.stem + "_nar_metrics.csv"),
-                    index=False,
-                )
-                pd.DataFrame([{"dataset": csv_file.stem, "corruption": "nar", **perf_nar}]).to_csv(
-                    os.path.join(output_dir, "metrics", csv_file.stem + "_nar_perf_metrics.csv"),
-                    index=False,
-                )
                 logger.info(
-                    f"  NAR cleaned: {metrics_nar['overall_cleanliness']:.2f}% clean overall "
-                    f"| {perf_nar['wall_time_s']:.1f}s wall | {perf_nar['cpu_time_s']:.1f}s CPU "
-                    f"| {perf_nar['ram_peak_mb']:.1f} MB peak "
-                    f"| pipeline: {perf_nar.get('best_pipeline', '?')}"
+                    f"  {mode.upper()} cleaned: {metrics['overall_cleanliness']:.2f}% clean "
+                    f"| {perf['wall_time_s']:.1f}s wall | {perf['cpu_time_s']:.1f}s CPU "
+                    f"| {perf['ram_peak_mb']:.1f} MB peak "
+                    f"| pipeline: {perf.get('best_pipeline', '?')}"
                 )
 
             logger.success(f"  Completed {csv_file.name}")
@@ -1396,6 +1409,10 @@ if __name__ == "__main__":
         help="Process only this dataset (name without .csv, e.g. 'iris')",
     )
     parser.add_argument(
+        "--model_types", nargs="+", default=["linear", "mlp"],
+        help="Model types to create per-model output dirs for (default: linear mlp)",
+    )
+    parser.add_argument(
         "--K", type=int, default=3,
         help="Number of top-K pipelines to search (default: 3)",
     )
@@ -1418,6 +1435,7 @@ if __name__ == "__main__":
         input_dir=args.input_dir,
         output_dir=args.output_dir,
         dataset_name=args.dataset,
+        model_types=args.model_types,
         K=args.K,
         max_iter=args.max_iter,
         resources=args.resources,

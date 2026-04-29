@@ -12,19 +12,19 @@ saved in each NPZ file, so the caller can choose at load time via the
 ``clean_val`` / ``clean_test`` flags of ``load_autogluon_data()`` without
 having to re-run this script.
 
-A single seed is chosen per (dataset, mode, model_type) combination — either
-supplied via ``--seed`` or drawn at random.  This produces one canonical
-``features.npz`` per combination rather than one file per seed.
+One NPZ file is produced per (dataset, mode, model_type, seed), using the same
+split logic as ``frogdq/data.load_data()``:  train+val from ``data_poisoned/``
+and test from ``data_poisoned/test/`` (always the clean held-out split).
 
 Usage:
-    # Pre-compute features for all datasets in config.yaml (random seed)
+    # Pre-compute features for all datasets using seeds from config.yaml
     python scripts/autogluon.py
 
     # Pre-compute for specific datasets and modes
     python scripts/autogluon.py --datasets iris wine --data-modes ar nar
 
-    # Use a fixed seed for reproducibility
-    python scripts/autogluon.py --seed 42
+    # Override seed start and number of seeds
+    python scripts/autogluon.py --seed 42 --n-seeds 5
 
     # Resume previously interrupted run (already-computed files are skipped)
     python scripts/autogluon.py --resume
@@ -34,15 +34,14 @@ Output structure:
       {mode}/               # ar or nar
         {model_type}/       # linear or mlp
           {dataset_name}/
-            features.npz    # X_train
-                            # X_val_clean, X_val_corrupted
-                            # X_test_clean, X_test_corrupted
+            seed_42.npz     # X_train
+            seed_43.npz     # X_val_clean, X_val_corrupted
+            ...             # X_test_clean, X_test_corrupted
                             # y_train, y_val, y_test
                             # seed  (the integer seed used)
 """
 
 import argparse
-import random
 import shutil
 import sys
 import time
@@ -79,26 +78,29 @@ def _load_raw_splits(
     seed: int,
     data_dir: str = "data",
     poisoned_dir: str = "data_poisoned",
-    test_size: float = 0.2,
     val_size: float = 0.2,
+    test_sample_size: float = 0.8,
+    poison_test_size: float = 0.4,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str, str]:
-    """Load raw (un-preprocessed) train/val/test splits from poisoned data.
+    """Load raw (un-preprocessed) train/val/test splits mirroring load_data() exactly.
 
-    Mirrors the exact split logic in frogdq/data.load_data() so index alignment
-    is identical across benchmarks.
-
-    Returns both the corrupted and the clean versions of val and test so that
-    the caller can pass either variant through the AutoGluon pipeline and save
-    both in the NPZ without re-fitting the predictor.  For ``mode="clean"`` the
-    corrupted and clean variants are identical.
+    - Train+val pool: from ``poisoned_dir/{mode}/dataset.csv`` (already the 60%
+      non-test portion produced by ``poison_data.py``).
+    - Test: from ``poisoned_dir/test/dataset.csv`` (always the clean held-out
+      split, sampled with ``random_state=seed`` exactly as ``load_data()`` does).
+    - Both the corrupted and the clean variants of val are returned so that the
+      caller can pass either through AutoGluon and store both in the NPZ.
+      For ``mode="clean"`` the two variants are identical.
+    - Test is always clean (``data_poisoned/test/`` was split before poisoning),
+      so ``df_test_clean`` and ``df_test_corrupted`` are the same object.
 
     Returns
     -------
-    df_train          : poisoned (or clean when mode='clean') training rows
-    df_val_clean      : clean validation rows
-    df_val_corrupted  : poisoned validation rows (same as clean when mode='clean')
-    df_test_clean     : clean test rows
-    df_test_corrupted : poisoned test rows (same as clean when mode='clean')
+    df_train          : poisoned (or clean) training rows
+    df_val_clean      : clean validation rows (from original data/)
+    df_val_corrupted  : poisoned validation rows
+    df_test_clean     : clean held-out test rows (from data_poisoned/test/)
+    df_test_corrupted : same as df_test_clean (test is always clean)
     label_col         : name of the target column
     task_type         : 'classification' or 'regression'
     """
@@ -113,14 +115,14 @@ def _load_raw_splits(
 
     csv_file = csv_files[0]
     dataset_filename = csv_file.name
-
     na_vals = ["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "]
 
-    clean_df = pd.read_csv(csv_file, na_values=na_vals)
-
+    # ── Load train+val pool ───────────────────────────────────────────────────
     if mode == "clean":
-        # No poisoning: corrupted == clean for all splits
-        poisoned_df = clean_df
+        full_clean_df = pd.read_csv(csv_file, na_values=na_vals)
+        held_out = full_clean_df.sample(frac=poison_test_size, random_state=42)
+        poisoned_df = full_clean_df.drop(held_out.index).reset_index(drop=True)
+        clean_trainval_df = poisoned_df.copy()
     else:
         poisoned_file = poisoned_path / mode / dataset_filename
         if not poisoned_file.exists():
@@ -129,44 +131,42 @@ def _load_raw_splits(
                 "Run scripts/poison_data.py first."
             )
         poisoned_df = pd.read_csv(poisoned_file, na_values=na_vals)
+        full_clean_df = pd.read_csv(csv_file, na_values=na_vals)
+        held_out = full_clean_df.sample(frac=poison_test_size, random_state=42)
+        clean_trainval_df = full_clean_df.drop(held_out.index).reset_index(drop=True)
 
-    # Detect label column
+    # ── Detect label column ───────────────────────────────────────────────────
     label_cols = [c for c in poisoned_df.columns if c.startswith(("cls_", "reg_"))]
     if not label_cols:
         raise ValueError(f"No label column (cls_*/reg_*) found in dataset '{dataset_name}'")
     label_col = label_cols[0]
     task_type = "classification" if label_col.startswith("cls_") else "regression"
 
-    # Drop rows where the label is NaN (untrainable and breaks stratified split)
-    valid_mask = poisoned_df[label_col].notna().values
-    poisoned_df = poisoned_df[valid_mask].reset_index(drop=True)
-    clean_df    = clean_df[valid_mask].reset_index(drop=True)
-
-    # Stratified split for classification — identical seeds as load_data()
+    # ── Per-seed train/val split (identical to load_data) ────────────────────
     indices = np.arange(len(poisoned_df))
     y_full = poisoned_df[label_col].values
     stratify = y_full if task_type == "classification" else None
-
-    train_val_idx, test_idx = train_test_split(
-        indices, test_size=test_size, random_state=seed, stratify=stratify
-    )
-    val_size_adj = val_size / (1 - test_size)
-    stratify_val = y_full[train_val_idx] if task_type == "classification" else None
     train_idx, val_idx = train_test_split(
-        train_val_idx, test_size=val_size_adj, random_state=seed, stratify=stratify_val
+        indices, test_size=val_size, random_state=seed, stratify=stratify
     )
 
-    df_train = poisoned_df.iloc[train_idx].reset_index(drop=True)
+    df_train         = poisoned_df.iloc[train_idx].reset_index(drop=True)
+    df_val_corrupted = poisoned_df.iloc[val_idx].reset_index(drop=True)
+    df_val_clean     = clean_trainval_df.iloc[val_idx].reset_index(drop=True)
 
-    df_val_clean      = clean_df.iloc[val_idx].reset_index(drop=True)
-    df_val_corrupted  = poisoned_df.iloc[val_idx].reset_index(drop=True)
-    df_test_clean     = clean_df.iloc[test_idx].reset_index(drop=True)
-    df_test_corrupted = poisoned_df.iloc[test_idx].reset_index(drop=True)
+    # ── Test: always from data_poisoned/test/ (always clean) ─────────────────
+    test_file = poisoned_path / "test" / dataset_filename
+    if not test_file.exists():
+        raise FileNotFoundError(
+            f"Test file not found: {test_file}. Run scripts/poison_data.py first."
+        )
+    df_test_full = pd.read_csv(test_file, na_values=na_vals)
+    df_test = df_test_full.sample(frac=test_sample_size, random_state=seed).reset_index(drop=True)
 
     return (
         df_train,
         df_val_clean, df_val_corrupted,
-        df_test_clean, df_test_corrupted,
+        df_test, df_test,  # test is always clean; both variants identical
         label_col, task_type,
     )
 
@@ -243,7 +243,7 @@ def extract_features_for_seed(
     Returns True on success, False on failure.  Already-computed seeds are
     skipped automatically.
     """
-    out_file = output_dir / mode / model_type / dataset_name / "features.npz"
+    out_file = output_dir / mode / model_type / dataset_name / f"seed_{seed}.npz"
     if out_file.exists():
         return True
 
@@ -451,7 +451,11 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--seed", type=int, default=None,
-        help="Seed for the data split (default: random integer)",
+        help="Starting seed (overrides config seed_start; default: config value or 42)",
+    )
+    parser.add_argument(
+        "--n-seeds", type=int, default=None,
+        help="Number of seeds to generate (overrides config n_seeds; default: config value or 5)",
     )
     parser.add_argument(
         "--time-limit", type=int, default=120,
@@ -485,7 +489,9 @@ def main() -> None:
         m for m in config.get("data_modes", ["ar", "nar"]) if m != "clean"
     ]
     model_types: List[str] = args.model_types or config.get("model_types", ["linear", "mlp"])
-    seed: int = args.seed if args.seed is not None else random.randint(0, 2**31 - 1)
+    seed_start: int = args.seed if args.seed is not None else config.get("seed_start", 42)
+    n_seeds: int = args.n_seeds if args.n_seeds is not None else config.get("n_seeds", 5)
+    seeds: List[int] = [seed_start + i for i in range(n_seeds)]
 
     if not datasets:
         datasets = _discover_datasets(args.poisoned_dir, data_modes)
@@ -509,14 +515,14 @@ def main() -> None:
     verbosity = 2 if args.verbose else 0
 
     # ── Summary ───────────────────────────────────────────────────────────────
-    total = len(datasets) * len(data_modes) * len(model_types)
+    total = len(datasets) * len(data_modes) * len(model_types) * len(seeds)
     print(f"\nAutoGluon Feature Extraction")
     print("=" * 60)
     print(f"Datasets    : {datasets}")
     print(f"Data modes  : {data_modes}")
     print(f"Model types : {model_types}")
-    print(f"Seed        : {seed}")
-    print(f"Time limit  : {args.time_limit}s per task")
+    print(f"Seeds       : {seeds}")
+    print(f"Time limit  : {args.time_limit}s per seed")
     print(f"Output      : {output_dir}/")
     print(f"Total tasks : {total}")
     print(f"Val/test    : both clean and corrupted variants saved per NPZ")
@@ -532,28 +538,29 @@ def main() -> None:
         for mode in data_modes:
             for model_type in model_types:
                 print(f"[{dataset}]  mode={mode}  model={model_type}")
-                out_file = output_dir / mode / model_type / dataset / "features.npz"
-                if out_file.exists():
-                    print(f"      already done, skipping")
-                    n_skip += 1
-                    continue
+                for seed in seeds:
+                    out_file = output_dir / mode / model_type / dataset / f"seed_{seed}.npz"
+                    if out_file.exists():
+                        print(f"      seed={seed}: already done, skipping")
+                        n_skip += 1
+                        continue
 
-                print(f"      seed={seed}: extracting …")
-                ok = extract_features_for_seed(
-                    dataset_name=dataset,
-                    mode=mode,
-                    model_type=model_type,
-                    seed=seed,
-                    output_dir=output_dir,
-                    data_dir=args.data_dir,
-                    poisoned_dir=args.poisoned_dir,
-                    time_limit=args.time_limit,
-                    verbosity=verbosity,
-                )
-                if ok:
-                    n_done += 1
-                else:
-                    n_err += 1
+                    print(f"      seed={seed}: extracting …")
+                    ok = extract_features_for_seed(
+                        dataset_name=dataset,
+                        mode=mode,
+                        model_type=model_type,
+                        seed=seed,
+                        output_dir=output_dir,
+                        data_dir=args.data_dir,
+                        poisoned_dir=args.poisoned_dir,
+                        time_limit=args.time_limit,
+                        verbosity=verbosity,
+                    )
+                    if ok:
+                        n_done += 1
+                    else:
+                        n_err += 1
 
     # ── Report ────────────────────────────────────────────────────────────────
     print(f"\n{'='*60}")

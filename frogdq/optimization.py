@@ -202,7 +202,7 @@ class OptunaExperiment:
         self.n_jobs_seeds = config.get('n_jobs_seeds', 1)
         self.n_jobs_optuna = config.get('n_jobs_optuna', 1)
 
-        self.clean_val = config.get('clean_val', True)
+        self.clean_val = config.get('clean_val', False)
         self.clean_test = config.get('clean_test', True)
 
         self.output_dir = Path(config.get('output_dir', 'results'))
@@ -418,6 +418,7 @@ class OptunaExperiment:
                 load_saga_data(
                     dataset_name=dataset_name,
                     mode=data_mode,
+                    model_type=model_type,
                     seed=seed,
                     saga_dir=self.saga_data_dir,
                     clean_val=self.clean_val,
@@ -766,6 +767,7 @@ class OptunaExperiment:
                 _, (y_train, _, _), _, metadata = load_saga_data(
                     dataset_name=dataset_name,
                     mode=data_mode,
+                    model_type=model_type,
                     seed=self.seed_start,
                     saga_dir=self.saga_data_dir,
                     clean_val=self.clean_val,
@@ -861,15 +863,20 @@ class OptunaExperiment:
                 for seed in seeds
             )
 
-        # Compute average validation metric
+        # Compute average validation and test metrics across seeds
         primary_metric = 'f1' if task == 'classification' else 'r2'
-        val_metrics = [r.get(f'val_{primary_metric}', float('-inf'))
-                       for r in results if 'error' not in r]
+        valid_results = [r for r in results if 'error' not in r]
+        val_metrics = [r.get(f'val_{primary_metric}', float('-inf')) for r in valid_results]
+        test_metrics = [
+            r[f'test_{primary_metric}'] for r in valid_results
+            if r.get(f'test_{primary_metric}') is not None
+        ]
 
         if not val_metrics:
             raise optuna.TrialPruned()
 
         avg_val_metric = np.mean(val_metrics)
+        avg_test_metric = float(np.mean(test_metrics)) if test_metrics else float('-inf')
 
         # Extract histories and create clean results for Optuna storage
         # (histories contain numpy arrays which are not JSON serializable)
@@ -887,6 +894,8 @@ class OptunaExperiment:
         trial.set_user_attr('seed_results', results_for_optuna)
         trial.set_user_attr('avg_val_metric', float(avg_val_metric))
         trial.set_user_attr('std_val_metric', float(np.std(val_metrics)))
+        trial.set_user_attr('avg_test_metric', avg_test_metric)
+        trial.set_user_attr('std_test_metric', float(np.std(test_metrics)) if test_metrics else 0.0)
 
         # Store the full results (with histories) in the trial object as a Python attribute
         # This won't be persisted to DB but will be available in memory for the current run

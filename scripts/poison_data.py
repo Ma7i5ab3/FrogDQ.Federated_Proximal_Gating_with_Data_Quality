@@ -750,7 +750,7 @@ if __name__ == "__main__":
         "--dataset", type=str, help="Process only this specific dataset (name without .csv)"
     )
     parser.add_argument(
-        "--test-size", type=float, default=0.4, help="Fraction of data held out as clean test set (default 0.4)"
+        "--test-size", type=float, default=0.3, help="Fraction of data held out as clean test set (default 0.4)"
     )
 
     noise_group = parser.add_argument_group("Noise Distribution")
