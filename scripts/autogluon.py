@@ -142,6 +142,16 @@ def _load_raw_splits(
     label_col = label_cols[0]
     task_type = "classification" if label_col.startswith("cls_") else "regression"
 
+    # Drop rows with missing labels before splitting — some datasets (e.g.
+    # analcatdata_dmft) have label values like "NA" that are parsed as NaN via
+    # na_values.  NaN in the stratify array causes train_test_split to raise
+    # "ValueError: Input contains NaN".  poisoned_df and clean_trainval_df are
+    # positionally aligned (same 60 % training split), so the same mask applies.
+    label_notna = poisoned_df[label_col].notna()
+    if not label_notna.all():
+        poisoned_df       = poisoned_df[label_notna].reset_index(drop=True)
+        clean_trainval_df = clean_trainval_df[label_notna.values].reset_index(drop=True)
+
     # ── Per-seed train/val split (identical to load_data) ────────────────────
     indices = np.arange(len(poisoned_df))
     y_full = poisoned_df[label_col].values
@@ -161,7 +171,11 @@ def _load_raw_splits(
             f"Test file not found: {test_file}. Run scripts/poison_data.py first."
         )
     df_test_full = pd.read_csv(test_file, na_values=na_vals)
-    df_test = df_test_full.sample(frac=test_sample_size, random_state=seed).reset_index(drop=True)
+    df_test = (
+        df_test_full[df_test_full[label_col].notna()]
+        .sample(frac=test_sample_size, random_state=seed)
+        .reset_index(drop=True)
+    )
 
     return (
         df_train,
