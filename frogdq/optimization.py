@@ -418,7 +418,6 @@ class OptunaExperiment:
                 load_saga_data(
                     dataset_name=dataset_name,
                     mode=data_mode,
-                    model_type=model_type,
                     seed=seed,
                     saga_dir=self.saga_data_dir,
                     clean_val=self.clean_val,
@@ -767,7 +766,6 @@ class OptunaExperiment:
                 _, (y_train, _, _), _, metadata = load_saga_data(
                     dataset_name=dataset_name,
                     mode=data_mode,
-                    model_type=model_type,
                     seed=self.seed_start,
                     saga_dir=self.saga_data_dir,
                     clean_val=self.clean_val,

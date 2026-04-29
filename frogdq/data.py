@@ -515,7 +515,6 @@ def load_saga_data(
     dataset_name: str,
     mode: str,
     seed: int = 42,
-    model_type: str = "linear",
     saga_dir: str = "data_cleaned_saga",
     clean_val: bool = True,
     clean_test: bool = True,
@@ -535,9 +534,9 @@ def load_saga_data(
     Load Saga++-cleaned data for a dataset split.
 
     Train and validation splits are read from the Saga++-cleaned CSV saved by
-    ``scripts/saga.py`` at ``saga_dir/{mode}/{model_type}/``.  The test split
-    is an 80 % random sample from ``data_poisoned/test/``; the fitted Saga++
-    pipeline (excluding outlier-detection steps) is applied to it before
+    ``scripts/saga.py`` at ``saga_dir/{mode}/``.  The test split is an 80 %
+    random sample from ``data_poisoned/test/``; the fitted Saga++ pipeline
+    (excluding outlier-detection steps) is applied to it before
     TabularPreprocessor transforms the data.
 
     Parameters
@@ -548,8 +547,6 @@ def load_saga_data(
         Poisoning mode ("ar" or "nar").
     seed : int, default=42
         Random seed for the train/val/test split.
-    model_type : str, default="linear"
-        Model type sub-directory under ``saga_dir/{mode}/``.
     saga_dir : str, default="data_cleaned_saga"
         Root directory written by ``scripts/saga.py``.
     clean_val : bool, default=True
@@ -581,7 +578,7 @@ def load_saga_data(
     import pickle
 
     data_path = Path(data_dir)
-    saga_model_path = Path(saga_dir) / mode / model_type
+    saga_model_path = Path(saga_dir) / mode
     test_path = Path(poisoned_dir) / "test"
 
     # Locate dataset file by matching name suffix
