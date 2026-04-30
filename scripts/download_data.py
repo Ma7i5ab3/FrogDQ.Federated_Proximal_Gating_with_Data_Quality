@@ -89,13 +89,13 @@ if __name__ == "__main__":
         description="Download all OpenML-CC18 benchmark suite datasets."
     )
     parser.add_argument(
-        "dir", type=str, help="Directory to save CSV files.", default="data", nargs="?"
+        "--dir", type=str, help="Directory to save CSV files.", default="data", nargs="?"
     )
     parser.add_argument(
-        "max_rows", type=str, help="Filter out datasets that have a number of rows higher 'max_rows'", default=100000000
+        "--max_rows", type=int, help="Filter out datasets that have a number of rows higher 'max_rows'", default=100000000
     )
     parser.add_argument(
-        "max_columns", type=str, help="Filter out datasets that have a number of columns higher 'max_columns'", default=100000000
+        "--max_columns", type=int, help="Filter out datasets that have a number of columns higher 'max_columns'", default=100000000
     )
     args = parser.parse_args()
 

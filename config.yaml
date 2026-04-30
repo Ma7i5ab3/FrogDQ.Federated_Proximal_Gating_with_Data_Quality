@@ -54,10 +54,15 @@ gate_settings:
 # Data Split Settings
 # -------------------
 
+# Fraction of each dataset held out as the clean test set.
+# Must be identical in poison_data.py and autogluon.py — both scripts read
+# this value from here so it never needs to be set manually in two places.
+test_size: 0.3
+
 # Whether to use clean validation data even when training on poisoned data
 # true: Always validate on clean data (recommended for measuring real performance)
 # false: Use same mode as training data
-clean_val: true
+clean_val: false
 
 # Whether to use clean test data even when training on poisoned data
 # true: Always test on clean data (recommended for final evaluation)

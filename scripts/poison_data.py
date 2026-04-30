@@ -12,6 +12,7 @@ from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
+import yaml
 from loguru import logger
 from scipy import stats
 
@@ -589,7 +590,7 @@ def process_all_datasets(
     noise_percentages: dict = None,
     ar_mechanisms: dict = None,
     nar_mechanisms: dict = None,
-    test_size: float = 0.4,
+    test_size: float = 0.3,
 ):
     """
     Process all datasets and create poisoned versions.
@@ -747,10 +748,15 @@ if __name__ == "__main__":
         "--output_dir", type=str, help="Directory to save poisoned files", default="data_poisoned"
     )
     parser.add_argument(
+        "--config", type=str, default="config.yaml",
+        help="Path to experiment config file (default: config.yaml)",
+    )
+    parser.add_argument(
         "--dataset", type=str, help="Process only this specific dataset (name without .csv)"
     )
     parser.add_argument(
-        "--test-size", type=float, default=0.3, help="Fraction of data held out as clean test set (default 0.4)"
+        "--test-size", type=float, default=None,
+        help="Fraction of data held out as clean test set (overrides config.yaml test_size)",
     )
 
     noise_group = parser.add_argument_group("Noise Distribution")
@@ -808,6 +814,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Load config and resolve test_size (CLI overrides config)
+    _config: dict = {}
+    if Path(args.config).exists():
+        with open(args.config) as _f:
+            _config = yaml.safe_load(_f) or {}
+    test_size: float = args.test_size if args.test_size is not None else _config.get("test_size", 0.3)
+
     # Calculate mild_frac as the remaining fraction
     mild_frac = 1.0 - args.moderate_frac - args.heavy_frac - args.severe_frac
 
@@ -839,5 +852,5 @@ if __name__ == "__main__":
         noise_percentages,
         ar_mechanisms,
         nar_mechanisms,
-        test_size=args.test_size,
+        test_size=test_size,
     )

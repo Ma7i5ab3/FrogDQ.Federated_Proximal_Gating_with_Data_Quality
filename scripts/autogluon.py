@@ -80,7 +80,7 @@ def _load_raw_splits(
     poisoned_dir: str = "data_poisoned",
     val_size: float = 0.2,
     test_sample_size: float = 0.8,
-    poison_test_size: float = 0.4,
+    poison_test_size: float = 0.3,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, str, str]:
     """Load raw (un-preprocessed) train/val/test splits mirroring load_data() exactly.
 
@@ -234,6 +234,7 @@ def extract_features_for_seed(
     output_dir: Path,
     data_dir: str = "data",
     poisoned_dir: str = "data_poisoned",
+    poison_test_size: float = 0.3,
     time_limit: int = 120,
     verbosity: int = 0,
 ) -> bool:
@@ -268,7 +269,8 @@ def extract_features_for_seed(
             df_val_clean, df_val_corrupted,
             df_test_clean, df_test_corrupted,
             label_col, task_type,
-        ) = _load_raw_splits(dataset_name, mode, seed, data_dir, poisoned_dir)
+        ) = _load_raw_splits(dataset_name, mode, seed, data_dir, poisoned_dir,
+                             poison_test_size=poison_test_size)
     except Exception as exc:
         print(f"      [ERROR] Loading data: {exc}")
         return False
@@ -472,6 +474,10 @@ def _parse_args() -> argparse.Namespace:
         help="Number of seeds to generate (overrides config n_seeds; default: config value or 5)",
     )
     parser.add_argument(
+        "--test-size", type=float, default=None,
+        help="Fraction held out as test set in poison_data.py (overrides config.yaml test_size)",
+    )
+    parser.add_argument(
         "--time-limit", type=int, default=120,
         help="AutoGluon fitting time limit in seconds per seed (default: 120)",
     )
@@ -506,6 +512,7 @@ def main() -> None:
     seed_start: int = args.seed if args.seed is not None else config.get("seed_start", 42)
     n_seeds: int = args.n_seeds if args.n_seeds is not None else config.get("n_seeds", 5)
     seeds: List[int] = [seed_start + i for i in range(n_seeds)]
+    test_size: float = args.test_size if args.test_size is not None else config.get("test_size", 0.3)
 
     if not datasets:
         datasets = _discover_datasets(args.poisoned_dir, data_modes)
@@ -568,6 +575,7 @@ def main() -> None:
                         output_dir=output_dir,
                         data_dir=args.data_dir,
                         poisoned_dir=args.poisoned_dir,
+                        poison_test_size=test_size,
                         time_limit=args.time_limit,
                         verbosity=verbosity,
                     )
