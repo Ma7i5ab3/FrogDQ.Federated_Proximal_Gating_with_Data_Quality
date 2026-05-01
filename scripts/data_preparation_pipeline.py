@@ -400,6 +400,10 @@ class DataPreparation:
         cols_with_nan = {c for c in all_feature_cols if df[c].isna().any()}
         mice_cols = [c for c in all_feature_cols if c in selected or c in cols_with_nan]
 
+        # miceforest requires at least one observed value per column to train a predictor;
+        # columns that are entirely NaN would cause numpy.random.choice(0) to raise.
+        mice_cols = [c for c in mice_cols if df[c].notna().any()]
+
         if not mice_cols or not any(df[c].isna().any() for c in mice_cols):
             return df
 

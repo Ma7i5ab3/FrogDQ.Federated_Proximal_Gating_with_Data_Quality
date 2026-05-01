@@ -5,6 +5,7 @@ data_cleaned_saga/*
 results/*
 data_cleaned/*
 data_visualization/
+data_cleaned_cp/*
 */ar
 */nar
 */_ag_tmp
