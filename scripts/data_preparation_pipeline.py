@@ -404,10 +404,25 @@ class DataPreparation:
         # columns that are entirely NaN would cause numpy.random.choice(0) to raise.
         mice_cols = [c for c in mice_cols if df[c].notna().any()]
 
-        if not mice_cols or not any(df[c].isna().any() for c in mice_cols):
-            return df
-
+        # LightGBM multiclass requires >= 2 unique classes; categorical columns with only
+        # one unique non-null value cannot be modelled — fill them directly instead.
+        trivial_cat_cols = [
+            c for c in mice_cols
+            if c.startswith("cat_") and df[c].nunique(dropna=True) < 2 and df[c].isna().any()
+        ]
         df_out = df.copy()
+        for col in trivial_cat_cols:
+            fill_val = df_out[col].dropna().iloc[0]
+            df_out[col] = df_out[col].fillna(fill_val)
+        if trivial_cat_cols:
+            logger.info(
+                f"  Trivial-fill (1 unique value) categorical columns: {trivial_cat_cols}"
+            )
+        mice_cols = [c for c in mice_cols if c not in trivial_cat_cols]
+
+        if not mice_cols or not any(df_out[c].isna().any() for c in mice_cols):
+            return df_out
+
         df_mice = df_out[mice_cols].copy()
 
         for col in df_mice.select_dtypes(include=["object", "bool"]).columns:
