@@ -397,20 +397,24 @@ class DataPreparation:
         Target columns (cls_*, reg_*) are never touched.
         """
         all_feature_cols = [c for c in df.columns if c.startswith("num_") or c.startswith("cat_")]
-        cols_with_nan = {c for c in all_feature_cols if df[c].isna().any()}
+        df_out = df.copy()
+        # Replace ±inf with NaN in numerical columns: LightGBM/miceforest requires finite data
+        num_feature_cols = [c for c in all_feature_cols if c.startswith("num_")]
+        if num_feature_cols:
+            df_out[num_feature_cols] = df_out[num_feature_cols].replace([np.inf, -np.inf], np.nan)
+        cols_with_nan = {c for c in all_feature_cols if df_out[c].isna().any()}
         mice_cols = [c for c in all_feature_cols if c in selected or c in cols_with_nan]
 
         # miceforest requires at least one observed value per column to train a predictor;
         # columns that are entirely NaN would cause numpy.random.choice(0) to raise.
-        mice_cols = [c for c in mice_cols if df[c].notna().any()]
+        mice_cols = [c for c in mice_cols if df_out[c].notna().any()]
 
         # LightGBM multiclass requires >= 2 unique classes; categorical columns with only
         # one unique non-null value cannot be modelled — fill them directly instead.
         trivial_cat_cols = [
             c for c in mice_cols
-            if c.startswith("cat_") and df[c].nunique(dropna=True) < 2 and df[c].isna().any()
+            if c.startswith("cat_") and df_out[c].nunique(dropna=True) < 2 and df_out[c].isna().any()
         ]
-        df_out = df.copy()
         for col in trivial_cat_cols:
             fill_val = df_out[col].dropna().iloc[0]
             df_out[col] = df_out[col].fillna(fill_val)
