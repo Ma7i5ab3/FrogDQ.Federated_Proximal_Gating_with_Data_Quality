@@ -23,6 +23,39 @@
 # (CLASSIFICATION DATASETS)
 # datasets: ['breast_cancer_wisconsin_original', 'chronic_kidney_disease', 'dry_bean', 'glass', 'heart_failure', 'hepatitis', 'higher_education_students_performance_evaluation']
 
+# First 30 datasets with all data sources prepared (data, data_poisoned, data_cleaned_cp, data_autogluon)
+datasets:
+  - kr_vs_kp
+  - letter
+  - balance_scale
+  - mfeat_factors
+  - mfeat_fourier
+  - breast_w
+  - mfeat_karhunen
+  - mfeat_morphological
+  - mfeat_zernike
+  - cmc
+  - optdigits
+  - credit_approval
+  - credit_g
+  - pendigits
+  - diabetes
+  - spambase
+  - splice
+  - tic_tac_toe
+  - vehicle
+  - electricity
+  - satimage
+  - eucalyptus
+  - sick
+  - vowel
+  - isolet
+  - analcatdata_authorship
+  - analcatdata_dmft
+  - mnist_784
+  - pc4
+  - pc3
+
 
 # Data quality modes to test
 # Options: 'clean', 'ar' (At Random poisoning), 'nar' (Not At Random poisoning)
@@ -137,11 +170,34 @@ reuse_top_n: 8
 #
 # false: skip AutoGluon benchmark (default)
 # true:  include AutoGluon benchmark experiments
-run_autogluon: false
+run_autogluon: true
 
 # Directory containing pre-computed AutoGluon features produced by scripts/autogluon.py.
 # Structure: data_autogluon/{mode}/{model_type}/{dataset_name}/seed_{seed}.npz
 autogluon_data_dir: data_autogluon
+
+# Custom Pipeline (CP) Benchmark Settings
+# -----------------------------------------
+# Whether to include the custom pipeline (CP) as a data-preparation benchmark.
+# Requires running scripts/data_preparation_pipeline.py first.
+# false: skip CP benchmark (default)
+# true:  include CP benchmark experiments
+run_cp: true
+
+# Directory containing CP-cleaned data produced by scripts/data_preparation_pipeline.py.
+# Structure: data_cleaned_cp/{mode}/{dataset_filename}.csv
+cp_data_dir: data_cleaned_cp
+
+# Saga++ Benchmark Settings
+# --------------------------
+# Whether to include Saga++ as a data-preparation benchmark.
+# Requires running scripts/saga.py first.
+# false: skip Saga benchmark (default)
+# true:  include Saga benchmark experiments
+run_saga: true
+
+# Directory containing Saga++-cleaned data produced by scripts/saga.py.
+saga_data_dir: data_cleaned_saga
 
 # Output Settings
 # ---------------

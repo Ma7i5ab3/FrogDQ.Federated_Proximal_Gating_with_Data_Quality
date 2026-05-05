@@ -871,6 +871,18 @@ def load_autogluon_data(
     out_file = Path(autogluon_dir) / mode / model_type / dataset_name / f"seed_{seed}.npz"
 
     if not out_file.exists():
+        # Folder may include a numeric prefix (e.g. "00003_kr_vs_kp"); match by substring
+        parent = Path(autogluon_dir) / mode / model_type
+        candidates = [d for d in parent.iterdir() if d.is_dir() and dataset_name in d.name]
+        if len(candidates) == 1:
+            out_file = candidates[0] / f"seed_{seed}.npz"
+        elif len(candidates) > 1:
+            raise FileNotFoundError(
+                f"Ambiguous AutoGluon folders for '{dataset_name}': {[d.name for d in candidates]}\n"
+                "Run 'python scripts/autogluon.py' to regenerate with consistent naming."
+            )
+
+    if not out_file.exists():
         raise FileNotFoundError(
             f"AutoGluon features not found: {out_file}\n"
             "Run 'python scripts/autogluon.py' to pre-compute them."

@@ -401,7 +401,7 @@ class DataPreparation:
         # Replace ±inf with NaN in numerical columns: LightGBM/miceforest requires finite data
         num_feature_cols = [c for c in all_feature_cols if c.startswith("num_")]
         if num_feature_cols:
-            df_out[num_feature_cols] = df_out[num_feature_cols].replace([np.inf, -np.inf], np.nan)
+            df_out[num_feature_cols] = df_out[num_feature_cols].replace([np.inf, -np.inf], np.nan).infer_objects(copy=False)
         cols_with_nan = {c for c in all_feature_cols if df_out[c].isna().any()}
         mice_cols = [c for c in all_feature_cols if c in selected or c in cols_with_nan]
 
@@ -919,7 +919,7 @@ def process_all_datasets(
 
         except Exception as e:
             logger.error(f"  Error processing {csv_file.name}: {e}")
-            continue
+            # continue
 
     logger.success(f"All datasets prepared! Output in {output_dir}")
 
