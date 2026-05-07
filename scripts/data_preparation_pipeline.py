@@ -10,6 +10,7 @@ Output: data_cleaned/{ar,nar}/   (cleaned CSV + residual mask + metrics)
 
 Note: Target columns (cls_*, reg_*) are never modified.
 """
+import gc
 import os
 import inspect
 import sys
@@ -435,6 +436,7 @@ class DataPreparation:
         try:
             kernel = mf.ImputationKernel(
                 data=df_mice,
+                save_all_iterations=False,
                 random_state=self.seed,
             )
 
@@ -671,6 +673,7 @@ class DataPreparation:
         )
 
         # Step 4: Reapply MICE RF to fill NaN introduced by steps 2 and 3
+        gc.collect()
         logger.info("  Step 4: MICE RF re-imputation")
         df_clean = self._impute_mice(df_clean, selected)
 
@@ -977,12 +980,12 @@ if __name__ == "__main__":
         "--iqr-factor",
         type=float,
         default=2.5,
-        help="IQR whisker multiplier for outlier clipping (default: 1.5)",
+        help="IQR whisker multiplier for outlier clipping (default: 2.5)",
     )
     parser.add_argument(
         "--shap-top-pct",
         type=float,
-        default=1.0,
+        default=0.6,
         help=(
             "Fraction (0.0–1.0] of top SHAP-ranked features to include in "
             "cleaning steps. 1.0 keeps all features (default)."
@@ -993,14 +996,14 @@ if __name__ == "__main__":
     ar_group.add_argument(
         "--ar-min-support",
         type=float,
-        default=0.8,
-        help="Minimum support for association rule mining in step 3 (default: 0.8)",
+        default=0.9,
+        help="Minimum support for association rule mining in step 3 (default: 0.9)",
     )
     ar_group.add_argument(
         "--ar-min-confidence",
         type=float,
-        default=0.8,
-        help="Minimum confidence for association rule mining in step 3 (default: 0.8)",
+        default=0.9,
+        help="Minimum confidence for association rule mining in step 3 (default: 0.9)",
     )
 
     args = parser.parse_args()

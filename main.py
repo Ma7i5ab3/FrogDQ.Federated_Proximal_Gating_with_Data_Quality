@@ -252,6 +252,21 @@ def get_quick_test_config():
     }
 
 
+def sort_datasets_by_samples(datasets: list, data_dir: str = "data") -> list:
+    """Return datasets sorted by ascending number of samples, using the data directory."""
+    from pathlib import Path
+    counts = {}
+    data_path = Path(data_dir)
+    for name in datasets:
+        matches = list(data_path.glob(f"*_{name}.csv"))
+        if matches:
+            with open(matches[0]) as f:
+                counts[name] = sum(1 for _ in f) - 1  # subtract header
+        else:
+            counts[name] = float('inf')
+    return sorted(datasets, key=lambda d: counts[d])
+
+
 def main():
     """Main entry point."""
     args = parse_args()
@@ -325,6 +340,8 @@ def main():
     if config.get('datasets') == 'all':
         datasets_df = get_datasets()
         config['datasets'] = datasets_df['dataset_name'].tolist()
+
+    config['datasets'] = sort_datasets_by_samples(config['datasets'])
 
     # Print experiment summary
     print("\n" + "="*80)
