@@ -430,6 +430,15 @@ class DataPreparation:
 
         df_mice = df_out[mice_cols].copy()
 
+        # Replace any remaining ±inf with NaN: miceforest/LightGBM requires finite values.
+        # This is a safety net on top of the earlier sweep on df_out, covering edge cases
+        # such as object-dtype columns containing float inf values.
+        _num_mice_cols = df_mice.select_dtypes(include=[np.number]).columns
+        if len(_num_mice_cols):
+            df_mice[_num_mice_cols] = (
+                df_mice[_num_mice_cols].replace([np.inf, -np.inf], np.nan)
+            )
+
         for col in df_mice.select_dtypes(include=["object", "bool"]).columns:
             df_mice[col] = df_mice[col].astype("category")
 
