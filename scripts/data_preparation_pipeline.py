@@ -442,10 +442,20 @@ class DataPreparation:
         for col in df_mice.select_dtypes(include=["object", "bool"]).columns:
             df_mice[col] = df_mice[col].astype("category")
 
+        # miceforest 6.x uses log-odds for mean-matching on categorical columns.
+        # When LightGBM predicts probability = 1.0 (happens with small/unbalanced
+        # categories after poisoning), numpy silently produces inf instead of raising
+        # ZeroDivisionError, bypassing the library's try/except guard.  Using the
+        # "fast" strategy for categorical columns avoids log-odds entirely and samples
+        # directly from the predicted class probability distribution.
+        cat_cols_in_mice = list(df_mice.select_dtypes(include=["category"]).columns)
+        mean_match_strategy = {c: "fast" for c in cat_cols_in_mice} if cat_cols_in_mice else "normal"
+
         try:
             kernel = mf.ImputationKernel(
                 data=df_mice,
                 save_all_iterations_data=False,
+                mean_match_strategy=mean_match_strategy,
                 random_state=self.seed,
             )
 
