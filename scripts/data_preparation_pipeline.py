@@ -436,7 +436,7 @@ class DataPreparation:
         try:
             kernel = mf.ImputationKernel(
                 data=df_mice,
-                save_all_iterations=False,
+                save_all_iterations_data=False,
                 random_state=self.seed,
             )
 

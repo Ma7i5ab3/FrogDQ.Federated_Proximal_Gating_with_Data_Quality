@@ -3,6 +3,7 @@ data_poisoned/*
 data_preprocessed/*
 data_cleaned_saga/*
 results/*
+analysis/plots/*
 data_cleaned/*
 data_visualization/
 data_cleaned_cp/*

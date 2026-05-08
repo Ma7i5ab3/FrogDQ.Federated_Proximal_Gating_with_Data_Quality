@@ -12,7 +12,6 @@ from IPython.display import display
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 warnings.filterwarnings("ignore")
 
-%matplotlib inline
 plt.rcParams.update({"figure.dpi": 130, "font.size": 10})
 
 DB_PATH = Path("..") / "results" / "optuna_studies.db"

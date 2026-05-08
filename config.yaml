@@ -49,12 +49,6 @@ datasets:
   - eucalyptus
   - sick
   - vowel
-  - isolet
-  - analcatdata_authorship
-  - analcatdata_dmft
-  - mnist_784
-  - pc4
-  - pc3
 
 
 # Data quality modes to test
