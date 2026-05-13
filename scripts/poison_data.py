@@ -34,17 +34,27 @@ class DataPoisoner:
     - Data quality: Redman (2001), Wang & Strong (1996)
     """
 
-    def __init__(self, seed=42, noise_percentages=None):
+    def __init__(
+        self,
+        seed=42,
+        noise_percentages=None,
+        nar_min_corruption: float = 0.25,
+        nar_max_corruption: float = 0.50,
+    ):
         self.seed = seed
         np.random.seed(seed)
         self.poison_log = {}
+        self.nar_min_corruption = nar_min_corruption
+        self.nar_max_corruption = nar_max_corruption
 
         if noise_percentages is None:
+            # Tier rates calibrated to produce ~12 % noise + ~9 % MCAR ≈ 21 % AR total.
+            # Column fractions: 56.25 % mild / 25 % moderate / 12.5 % heavy / 6.25 % severe.
             self.noise_percentages = {
-                "mild": (0.5625, 0.05),
-                "moderate": (0.25, 0.10),
-                "heavy": (0.125, 0.20),
-                "severe": (0.0625, 0.40),
+                "mild": (0.5625, 0.06),
+                "moderate": (0.25, 0.12),
+                "heavy": (0.125, 0.24),
+                "severe": (0.0625, 0.48),
             }
         else:
             self.noise_percentages = noise_percentages
@@ -281,7 +291,7 @@ class DataPoisoner:
                 if df_poison[col].dtype in ["int64", "int32", "int16", "int8"]:
                     df_poison[col] = df_poison[col].astype("float64")
 
-                n_missing = int(len(df) * poison_rate * 0.3)
+                n_missing = int(len(df) * poison_rate * 0.75)
                 if n_missing == 0:
                     continue
                 missing_idx = np.random.choice(df.index, size=n_missing, replace=False)
@@ -474,7 +484,7 @@ class DataPoisoner:
         # 4. Correlated noise across numerical features
         num_cols = col_types["numerical"]
         if len(num_cols) > 1:
-            n_chains = max(1, len(num_cols) // 3)
+            n_chains = max(1, min(len(num_cols) // 3, 3))
             anchor_cols = np.random.choice(
                 num_cols, size=min(n_chains, len(num_cols)), replace=False
             )
@@ -533,6 +543,13 @@ class DataPoisoner:
             df_poison.loc[missing_idx, col] = np.nan
             poison_mask.loc[missing_idx, col] = True
 
+        # Enforce corruption budget: clamp total cell corruption to [min, max].
+        poison_mask = self._apply_corruption_budget(
+            poison_mask, col_types,
+            min_rate=self.nar_min_corruption,
+            max_rate=self.nar_max_corruption,
+        )
+
         logger.success(f"NAR poisoning complete: {poison_mask.sum().sum()} values poisoned")
         return df_poison, poison_mask
 
@@ -557,6 +574,57 @@ class DataPoisoner:
             "row_cleanliness": row_clean.to_dict(),
             "overall_cleanliness": overall_clean,
         }
+
+    def _apply_corruption_budget(
+        self,
+        poison_mask: pd.DataFrame,
+        col_types: Dict[str, list],
+        min_rate: float,
+        max_rate: float,
+    ) -> pd.DataFrame:
+        """
+        Clamp total cell corruption to [min_rate, max_rate].
+
+        If above max_rate: randomly clear True entries until the rate hits max_rate.
+        If below min_rate: randomly set False entries to True until rate hits min_rate.
+        Only feature columns (numerical + categorical) are considered; label columns
+        are never touched.
+        """
+        feature_cols = col_types["numerical"] + col_types["categorical"]
+        if not feature_cols:
+            return poison_mask
+
+        mask_vals = poison_mask[feature_cols].values.copy()  # (N, F) bool array
+        total_cells = mask_vals.size
+        n_corrupt = int(mask_vals.sum())
+        rate = n_corrupt / total_cells
+
+        if rate > max_rate:
+            target = int(total_cells * max_rate)
+            n_clear = n_corrupt - target
+            true_idx = np.flatnonzero(mask_vals)
+            clear_idx = np.random.choice(true_idx, size=n_clear, replace=False)
+            mask_vals.flat[clear_idx] = False
+            logger.info(
+                f"  NAR budget cap:   {rate*100:.1f}% → {max_rate*100:.0f}%  "
+                f"(cleared {n_clear:,} cells)"
+            )
+
+        elif rate < min_rate:
+            target = int(total_cells * min_rate)
+            n_add = target - n_corrupt
+            false_idx = np.flatnonzero(~mask_vals)
+            if len(false_idx) >= n_add:
+                add_idx = np.random.choice(false_idx, size=n_add, replace=False)
+                mask_vals.flat[add_idx] = True
+            logger.info(
+                f"  NAR budget floor: {rate*100:.1f}% → {min_rate*100:.0f}%  "
+                f"(added {n_add:,} cells)"
+            )
+
+        poison_mask = poison_mask.copy()
+        poison_mask[feature_cols] = mask_vals
+        return poison_mask
 
 
 def check_dataset_complete(csv_file: Path, output_dir: str) -> bool:
@@ -586,11 +654,13 @@ def check_dataset_complete(csv_file: Path, output_dir: str) -> bool:
 def process_all_datasets(
     input_dir: str,
     output_dir: str,
-    dataset_name: str = None,
+    datasets: list = None,
     noise_percentages: dict = None,
     ar_mechanisms: dict = None,
     nar_mechanisms: dict = None,
     test_size: float = 0.3,
+    nar_min_corruption: float = 0.25,
+    nar_max_corruption: float = 0.50,
 ):
     """
     Process all datasets and create poisoned versions.
@@ -598,11 +668,13 @@ def process_all_datasets(
     Args:
         input_dir: Directory containing clean CSV files
         output_dir: Directory to save poisoned files
-        dataset_name: Optional specific dataset name to process
+        datasets: Optional list of dataset names to process (from config.yaml)
         noise_percentages: Optional custom noise distribution percentages
         ar_mechanisms: Dict of enabled AR mechanisms
         nar_mechanisms: Dict of enabled NAR mechanisms
-        test_size: Fraction of data to hold out as clean test set (default 0.4)
+        test_size: Fraction of data to hold out as clean test set
+        nar_min_corruption: Minimum total cell corruption for NAR (floor)
+        nar_max_corruption: Maximum total cell corruption for NAR (cap)
     """
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.join(output_dir, "ar"), exist_ok=True)
@@ -610,7 +682,12 @@ def process_all_datasets(
     os.makedirs(os.path.join(output_dir, "metrics"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "test"), exist_ok=True)
 
-    poisoner = DataPoisoner(seed=42, noise_percentages=noise_percentages)
+    poisoner = DataPoisoner(
+        seed=42,
+        noise_percentages=noise_percentages,
+        nar_min_corruption=nar_min_corruption,
+        nar_max_corruption=nar_max_corruption,
+    )
 
     if ar_mechanisms is None:
         ar_mechanisms = {}
@@ -619,12 +696,13 @@ def process_all_datasets(
 
     csv_files = sorted(Path(input_dir).glob("*.csv"))
 
-    if dataset_name:
-        csv_files = [f for f in csv_files if f.stem[8:] == dataset_name]
+    if datasets:
+        dataset_set = set(datasets)
+        csv_files = [f for f in csv_files if f.stem[8:] in dataset_set]
         if not csv_files:
-            logger.error(f"Dataset '{dataset_name}' not found in {input_dir}")
+            logger.error(f"None of the specified datasets found in {input_dir}")
             return
-        logger.info(f"Processing specific dataset: {dataset_name}")
+        logger.info(f"Processing {len(csv_files)} configured dataset(s)")
     else:
         logger.info(f"Found {len(csv_files)} datasets to poison")
 
@@ -761,22 +839,22 @@ if __name__ == "__main__":
 
     noise_group = parser.add_argument_group("Noise Distribution")
     noise_group.add_argument(
-        "--mild-rate", type=float, default=0.10, help="Mild noise rate for remaining columns"
+        "--mild-rate", type=float, default=0.06, help="Mild noise rate for remaining columns"
     )
     noise_group.add_argument(
         "--moderate-frac", type=float, default=0.3, help="Fraction of columns at moderate noise"
     )
     noise_group.add_argument(
-        "--moderate-rate", type=float, default=0.20, help="Moderate noise rate"
+        "--moderate-rate", type=float, default=0.12, help="Moderate noise rate"
     )
     noise_group.add_argument(
         "--heavy-frac", type=float, default=0.2, help="Fraction of columns at heavy noise"
     )
-    noise_group.add_argument("--heavy-rate", type=float, default=0.30, help="Heavy noise rate")
+    noise_group.add_argument("--heavy-rate", type=float, default=0.24, help="Heavy noise rate")
     noise_group.add_argument(
         "--severe-frac", type=float, default=0.1, help="Fraction of columns at severe noise"
     )
-    noise_group.add_argument("--severe-rate", type=float, default=0.40, help="Severe noise rate")
+    noise_group.add_argument("--severe-rate", type=float, default=0.48, help="Severe noise rate")
 
     ar_group = parser.add_argument_group("AR Mode Mechanisms")
     ar_group.add_argument(
@@ -811,15 +889,29 @@ if __name__ == "__main__":
     nar_group.add_argument(
         "--no-nar-rare-missing", action="store_true", help="Disable rare category missingness"
     )
+    nar_group.add_argument(
+        "--nar-min-corruption", type=float, default=0.25,
+        help="Minimum total cell corruption for NAR (floor, 0–1)",
+    )
+    nar_group.add_argument(
+        "--nar-max-corruption", type=float, default=0.50,
+        help="Maximum total cell corruption for NAR (cap, 0–1)",
+    )
 
     args = parser.parse_args()
 
-    # Load config and resolve test_size (CLI overrides config)
+    # Load config and resolve settings (CLI overrides config)
     _config: dict = {}
     if Path(args.config).exists():
         with open(args.config) as _f:
             _config = yaml.safe_load(_f) or {}
     test_size: float = args.test_size if args.test_size is not None else _config.get("test_size", 0.3)
+
+    # Datasets: --dataset overrides; otherwise use config.yaml datasets list
+    if args.dataset:
+        datasets = [args.dataset]
+    else:
+        datasets = _config.get("datasets") or None
 
     # Calculate mild_frac as the remaining fraction
     mild_frac = 1.0 - args.moderate_frac - args.heavy_frac - args.severe_frac
@@ -848,9 +940,11 @@ if __name__ == "__main__":
     process_all_datasets(
         args.input_dir,
         args.output_dir,
-        args.dataset,
+        datasets,
         noise_percentages,
         ar_mechanisms,
         nar_mechanisms,
         test_size=test_size,
+        nar_min_corruption=args.nar_min_corruption,
+        nar_max_corruption=args.nar_max_corruption,
     )

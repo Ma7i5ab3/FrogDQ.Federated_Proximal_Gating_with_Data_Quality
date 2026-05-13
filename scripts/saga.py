@@ -1197,7 +1197,7 @@ def check_dataset_complete(csv_file: Path, output_dir: str) -> bool:
 def process_all_datasets(
     input_dir: str,
     output_dir: str,
-    dataset_name: Optional[str] = None,
+    datasets: Optional[List[str]] = None,
     K: int = 3,
     max_iter: int = 15,
     resources: int = 20,
@@ -1211,13 +1211,13 @@ def process_all_datasets(
     ``output_dir/{ar,nar}/``.
 
     Args:
-        input_dir    : Root poisoned-data directory (default: data_poisoned)
-        output_dir   : Root output directory (default: data_cleaned_saga)
-        dataset_name : If given, process only this dataset
-        K            : Number of top-K pipelines to search (default 3)
-        max_iter     : Evolutionary iterations for logical enumeration (default 10)
-        resources    : Hyperband resource budget R (default 20)
-        seed         : Random seed
+        input_dir : Root poisoned-data directory (default: data_poisoned)
+        output_dir: Root output directory (default: data_cleaned_saga)
+        datasets  : List of dataset names to process (from config.yaml); None = all
+        K         : Number of top-K pipelines to search (default 3)
+        max_iter  : Evolutionary iterations for logical enumeration (default 10)
+        resources : Hyperband resource budget R (default 20)
+        seed      : Random seed
     """
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.join(output_dir, "ar"), exist_ok=True)
@@ -1243,12 +1243,13 @@ def process_all_datasets(
         logger.error(f"No poisoned CSV files found in {ar_dir}")
         return
 
-    if dataset_name:
-        csv_files = [f for f in csv_files if f.stem[8:] == dataset_name]
+    if datasets:
+        dataset_set = set(datasets)
+        csv_files = [f for f in csv_files if f.stem[8:] in dataset_set]
         if not csv_files:
-            logger.error(f"Dataset '{dataset_name}' not found in {ar_dir}")
+            logger.error(f"None of the specified datasets found in {ar_dir}")
             return
-        logger.info(f"Processing specific dataset: {dataset_name}")
+        logger.info(f"Processing {len(csv_files)} configured dataset(s)")
     else:
         logger.info(f"Found {len(csv_files)} poisoned datasets to prepare")
 
@@ -1336,6 +1337,7 @@ def process_all_datasets(
 
 if __name__ == "__main__":
     import argparse
+    import yaml
 
     parser = argparse.ArgumentParser(
         description="Saga++ automated data cleaning pipeline baseline",
@@ -1374,8 +1376,12 @@ if __name__ == "__main__":
         help="Root directory for cleaned output (default: data_cleaned_saga)",
     )
     parser.add_argument(
+        "--config", type=str, default="config.yaml",
+        help="Path to experiment config file (default: config.yaml)",
+    )
+    parser.add_argument(
         "--dataset", type=str, default=None,
-        help="Process only this dataset (name without .csv, e.g. 'iris')",
+        help="Process only this dataset (overrides config; name without .csv, e.g. 'iris')",
     )
     parser.add_argument(
         "--K", type=int, default=3,
@@ -1396,10 +1402,20 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    _config: dict = {}
+    if Path(args.config).exists():
+        with open(args.config) as _f:
+            _config = yaml.safe_load(_f) or {}
+
+    if args.dataset:
+        datasets = [args.dataset]
+    else:
+        datasets = _config.get("datasets") or None
+
     process_all_datasets(
         input_dir=args.input_dir,
         output_dir=args.output_dir,
-        dataset_name=args.dataset,
+        datasets=datasets,
         K=args.K,
         max_iter=args.max_iter,
         resources=args.resources,

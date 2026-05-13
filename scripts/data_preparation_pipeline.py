@@ -18,6 +18,9 @@ import time
 import tracemalloc
 from pathlib import Path
 from typing import Dict, Tuple
+import argparse
+import yaml
+
 
 import numpy as np
 import pandas as pd
@@ -762,7 +765,7 @@ def check_dataset_complete(csv_file: Path, output_dir: str) -> bool:
 def process_all_datasets(
     input_dir: str,
     output_dir: str,
-    dataset_name: str = None,
+    datasets: list = None,
     iqr_factor: float = 1.5,
     shap_top_pct: float = 1.0,
     ar_min_support: float = 0.8,
@@ -776,14 +779,13 @@ def process_all_datasets(
     ``output_dir/{ar,nar}/``.
 
     Args:
-        input_dir       : Root poisoned-data directory (default: data_poisoned)
-        output_dir      : Root output directory for cleaned data (default: data_cleaned)
-        dataset_name    : If given, process only this dataset (name without .csv suffix,
-                          matched against the part after the 8-char prefix, e.g. "iris")
-        iqr_factor      : Whisker multiplier for IQR-based outlier clipping (default 1.5)
-        shap_top_pct    : Fraction (0.0–1.0] of top-ranked SHAP features passed to
-                          cleaning steps (1.0 = all features, default)
-        ar_min_support  : Minimum support threshold for association rule mining (default 0.8)
+        input_dir        : Root poisoned-data directory (default: data_poisoned)
+        output_dir       : Root output directory for cleaned data (default: data_cleaned)
+        datasets         : List of dataset names to process (from config.yaml); None = all
+        iqr_factor       : Whisker multiplier for IQR-based outlier clipping (default 1.5)
+        shap_top_pct     : Fraction (0.0–1.0] of top-ranked SHAP features passed to
+                           cleaning steps (1.0 = all features, default)
+        ar_min_support   : Minimum support threshold for association rule mining (default 0.8)
         ar_min_confidence: Minimum confidence threshold for association rule mining (default 0.8)
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -813,13 +815,13 @@ def process_all_datasets(
         logger.error(f"No poisoned CSV files found in {ar_dir}")
         return
 
-    if dataset_name:
-        # Match against the dataset name part (after 8-char prefix "XXX_YYY_")
-        csv_files = [f for f in csv_files if f.stem[8:] == dataset_name]
+    if datasets:
+        dataset_set = set(datasets)
+        csv_files = [f for f in csv_files if f.stem[8:] in dataset_set]
         if not csv_files:
-            logger.error(f"Dataset '{dataset_name}' not found in {ar_dir}")
+            logger.error(f"None of the specified datasets found in {ar_dir}")
             return
-        logger.info(f"Processing specific dataset: {dataset_name}")
+        logger.info(f"Processing {len(csv_files)} configured dataset(s)")
     else:
         logger.info(f"Found {len(csv_files)} poisoned datasets to prepare")
 
@@ -951,8 +953,6 @@ def process_all_datasets(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import argparse
-
     parser = argparse.ArgumentParser(
         description="Apply data preparation / cleaning to AR and NAR poisoned datasets",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -990,10 +990,16 @@ if __name__ == "__main__":
         help="Root directory for cleaned output (default: data_cleaned)",
     )
     parser.add_argument(
+        "--config",
+        type=str,
+        default="config.yaml",
+        help="Path to experiment config file (default: config.yaml)",
+    )
+    parser.add_argument(
         "--dataset",
         type=str,
         default=None,
-        help="Process only this dataset (name without .csv, e.g. 'iris')",
+        help="Process only this dataset (overrides config; name without .csv, e.g. 'iris')",
     )
     parser.add_argument(
         "--iqr-factor",
@@ -1027,10 +1033,20 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    _config: dict = {}
+    if Path(args.config).exists():
+        with open(args.config) as _f:
+            _config = yaml.safe_load(_f) or {}
+
+    if args.dataset:
+        datasets = [args.dataset]
+    else:
+        datasets = _config.get("datasets") or None
+
     process_all_datasets(
         input_dir=args.input_dir,
         output_dir=args.output_dir,
-        dataset_name=args.dataset,
+        datasets=datasets,
         iqr_factor=args.iqr_factor,
         shap_top_pct=args.shap_top_pct,
         ar_min_support=args.ar_min_support,
