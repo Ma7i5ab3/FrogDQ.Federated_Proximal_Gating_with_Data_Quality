@@ -1,3 +1,4 @@
+import argparse
 import re
 import warnings
 from pathlib import Path
@@ -207,6 +208,23 @@ def plot_comparison(df: pd.DataFrame, model_type: str, noise_mode: str) -> None:
     plt.savefig(f'plots/{model_type}_{noise_mode}.png')
 
 
+def filter_complete_datasets(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep only datasets that have all configs completed for each (model_type, data_mode)."""
+    parts = []
+    for (model_type, data_mode), group in df.groupby(["model_type", "data_mode"]):
+        all_configs = set(group["config"].unique())
+        complete = (
+            group.groupby("dataset")["config"]
+            .apply(set)
+            .pipe(lambda s: s[s.apply(lambda c: c >= all_configs)].index)
+        )
+        n_dropped = group["dataset"].nunique() - len(complete)
+        if n_dropped:
+            print(f"[complete-only] {model_type}/{data_mode}: dropping {n_dropped} incomplete dataset(s)")
+        parts.append(group[group["dataset"].isin(complete)])
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
 def overall_aggr_results(df):
     
     # Macro-average F1 across datasets (unweighted) per (model_type, data_mode, config)
@@ -251,10 +269,23 @@ def overall_aggr_results(df):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--complete-only",
+        action="store_true",
+        help="Restrict aggregated results to datasets that have completed all configurations, "
+             "ensuring an equal comparison across configs.",
+    )
+    args = parser.parse_args()
+
     df = f1_studies()
+
     for model_type in sorted(df["model_type"].unique()):
         for noise_mode in ["ar", "nar"]:
             plot_comparison(df, model_type, noise_mode)
-    
-    overall_aggr_results(df)
+
+    df_agg = filter_complete_datasets(df) if args.complete_only else df
+    if args.complete_only:
+        print(f"\n[complete-only] {df_agg['dataset'].nunique()} dataset(s) retained for aggregation.\n")
+    overall_aggr_results(df_agg)
     

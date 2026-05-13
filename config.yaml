@@ -23,7 +23,7 @@
 # (CLASSIFICATION DATASETS)
 # datasets: ['breast_cancer_wisconsin_original', 'chronic_kidney_disease', 'dry_bean', 'glass', 'heart_failure', 'hepatitis', 'higher_education_students_performance_evaluation']
 
-# First 30 datasets with all data sources prepared (data, data_poisoned, data_cleaned_cp, data_autogluon)
+# Datasets 001-068
 datasets:
   - kr_vs_kp
   - letter
@@ -49,6 +49,50 @@ datasets:
   - eucalyptus
   - sick
   - vowel
+  - isolet
+  - analcatdata_authorship
+  - analcatdata_dmft
+  - mnist_784
+  - pc4
+  - pc3
+  - jm1
+  - kc2
+  - kc1
+  - pc1
+  - adult
+  - bioresponse
+  - wdbc
+  - phoneme
+  - qsar_biodeg
+  - wall_robot_navigation
+  - semeion
+  - ilpd
+  - madelon
+  - nomao
+  - ozone_level_8hr
+  - cnae_9
+  - first_order_theorem_proving
+  - banknote_authentication
+  - blood_transfusion_service_center
+  - phishingwebsites
+  - cylinder_bands
+  - bank_marketing
+  - gesturephasesegmentationprocessed
+  - har
+  - dresses_sales
+  - texture
+  - connect_4
+  - miceprotein
+  - steel_plates_fault
+  - climate_model_simulation_crashes
+  - wilt
+  - car
+  - segment
+  - mfeat_pixel
+  - fashion_mnist
+  - jungle_chess_2pcs_raw_endgame_complete
+  - numerai28.6
+  - devnagari_script
 
 
 # Data quality modes to test

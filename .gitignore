@@ -3,6 +3,7 @@ data_poisoned/*
 data_preprocessed/*
 data_cleaned_saga/*
 results/*
+results_old/*
 analysis/plots/*
 data_cleaned/*
 data_visualization/
@@ -10,6 +11,7 @@ data_cleaned_cp/*
 */ar
 */nar
 */_ag_tmp
+.python-version
 .local
 .config
 .cache
