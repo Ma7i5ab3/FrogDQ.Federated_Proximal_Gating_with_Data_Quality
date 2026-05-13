@@ -817,7 +817,7 @@ def process_all_datasets(
 
     if datasets:
         dataset_set = set(datasets)
-        csv_files = [f for f in csv_files if f.stem[8:] in dataset_set]
+        csv_files = [f for f in csv_files if f.stem[10:] in dataset_set]
         if not csv_files:
             logger.error(f"None of the specified datasets found in {ar_dir}")
             return
