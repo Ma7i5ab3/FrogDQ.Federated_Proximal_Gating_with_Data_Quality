@@ -425,10 +425,20 @@ def main() -> None:
     print(yaml_block)
 
     if args.output:
+        import re
         out_path = Path(args.output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(out_path, "w") as f:
-            f.write(yaml_block)
+        if out_path.exists() and out_path.suffix in (".yaml", ".yml"):
+            content = out_path.read_text()
+            pattern = r'^datasets:\n(?:[ \t]+-[ \t]+[^\n]+\n)+'
+            if re.search(pattern, content, flags=re.MULTILINE):
+                content = re.sub(pattern, yaml_block, content, flags=re.MULTILINE)
+            else:
+                content += "\n" + yaml_block
+            out_path.write_text(content)
+        else:
+            with open(out_path, "w") as f:
+                f.write(yaml_block)
         logger.info(f"Written to '{out_path}'.")
 
 

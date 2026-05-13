@@ -116,7 +116,8 @@ if $SKIP_SELECT; then
 else
     "$PYTHON" scripts/select_datasets.py \
         --data-dir data \
-        --config "$CONFIG"
+        --config "$CONFIG" \
+        --output "$CONFIG"
     step_ok 1
 fi
 
