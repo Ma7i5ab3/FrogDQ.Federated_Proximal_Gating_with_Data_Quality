@@ -243,15 +243,16 @@ class DataPoisoner:
                 if std_signal == 0:
                     std_signal = abs(values.mean()) * 0.1 if values.mean() != 0 else 1.0
 
-                snr_db = 20
-                noise_std = std_signal / (10 ** (snr_db / 20))
+                k = np.random.uniform(1.2, 1.5)
+                noise_std = k * std_signal
+                delta = np.random.choice([-1.0, 1.0]) * k * std_signal
 
                 n_poison = int(len(df) * poison_rate)
                 if n_poison == 0:
                     continue
                 poison_idx = np.random.choice(df.index, size=n_poison, replace=False)
 
-                noise = np.random.normal(0, noise_std, size=n_poison)
+                noise = np.random.normal(delta, noise_std, size=n_poison)
                 df_poison.loc[poison_idx, col] = df_poison.loc[poison_idx, col] + noise
                 poison_mask.loc[poison_idx, col] = True
 
@@ -279,7 +280,7 @@ class DataPoisoner:
                             df_poison.loc[idx, col] = np.random.choice(other_vals)
                             poison_mask.loc[idx, col] = True
 
-        # 3. MCAR: Random missing values
+        # 3. MCAR: Random missing values — sampled from rows not yet corrupted
         if enable_missing:
             for col in all_data_cols:
                 if col not in column_noise_dist:
@@ -294,7 +295,19 @@ class DataPoisoner:
                 n_missing = int(len(df) * poison_rate * 0.75)
                 if n_missing == 0:
                     continue
-                missing_idx = np.random.choice(df.index, size=n_missing, replace=False)
+
+                # Prefer rows not yet corrupted to avoid noise-missingness overlap
+                clean_idx = df.index[~poison_mask[col]].to_numpy()
+                if len(clean_idx) >= n_missing:
+                    missing_idx = np.random.choice(clean_idx, size=n_missing, replace=False)
+                else:
+                    missing_idx = clean_idx.copy()
+                    remaining = n_missing - len(clean_idx)
+                    if remaining > 0:
+                        overlap_pool = df.index[poison_mask[col]].to_numpy()
+                        extra = np.random.choice(overlap_pool, size=min(remaining, len(overlap_pool)), replace=False)
+                        missing_idx = np.concatenate([missing_idx, extra])
+
                 df_poison.loc[missing_idx, col] = np.nan
                 poison_mask.loc[missing_idx, col] = True
 
@@ -403,8 +416,9 @@ class DataPoisoner:
                 std_signal = values.std()
                 if std_signal == 0:
                     std_signal = abs(values.mean()) * 0.1 if values.mean() != 0 else 1.0
-                snr_db = 15
-                base_noise_std = std_signal / (10 ** (snr_db / 20))
+                k = np.random.uniform(1.2, 1.5)
+                base_noise_std = k * std_signal
+                delta = np.random.choice([-1.0, 1.0]) * k * std_signal
 
                 candidate_vals = df_poison.loc[poison_idx, col]
                 valid_mask = candidate_vals.notna()
@@ -414,7 +428,7 @@ class DataPoisoner:
                 vals = df_poison.loc[valid_idx, col].values
                 normalized_vals = (vals - min_val) / (max_val - min_val)
                 noise_stds = base_noise_std * (1 + 3 * normalized_vals)
-                noise = np.random.normal(0, noise_stds)
+                noise = np.random.normal(delta, noise_stds)
                 df_poison.loc[valid_idx, col] = vals + noise
                 poison_mask.loc[valid_idx, col] = True
 
@@ -443,6 +457,8 @@ class DataPoisoner:
                 valid = df_poison[col].notna()
                 col_vals = df_poison.loc[valid, col]
                 prob = ((col_vals - median).abs() / (2 * iqr) * poison_rate).clip(upper=0.5)
+                already_corrupted = poison_mask.loc[col_vals.index, col]
+                prob = prob.where(~already_corrupted, other=0.0)
                 missing_mask = np.random.random(valid.sum()) < prob.values
                 missing_idx = col_vals.index[missing_mask]
                 df_poison.loc[missing_idx, col] = np.nan
@@ -538,6 +554,8 @@ class DataPoisoner:
             freq_series = value_counts / total
             frequencies = col_vals.map(freq_series).fillna(0)
             prob = poison_rate * (1 - frequencies)
+            already_corrupted = poison_mask.loc[col_vals.index, col]
+            prob = prob.where(~already_corrupted, other=0.0)
             missing_mask = np.random.random(valid.sum()) < prob.values
             missing_idx = col_vals.index[missing_mask]
             df_poison.loc[missing_idx, col] = np.nan

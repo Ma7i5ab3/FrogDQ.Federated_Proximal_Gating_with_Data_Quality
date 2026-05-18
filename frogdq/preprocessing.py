@@ -44,7 +44,7 @@ class TabularPreprocessor:
         val_size: float = 0.2,
         random_state: int = 42,
         stratify: bool = False,
-        numerical_impute_strategy: str = "median",
+        numerical_impute_strategy: str = "mean",
         categorical_impute_strategy: str = "most_frequent",
         outlier_clip_percentile: Tuple[float, float] = (1, 99),
         rare_category_threshold: float = 0.01,
@@ -398,18 +398,6 @@ class TabularPreprocessor:
             # Add transformed date columns to numerical features for processing
             self.numerical_features_ = self.numerical_features_ + self.date_features_
 
-        # Compute outlier bounds on original data (before imputation)
-        if self.numerical_features_:
-            self.outlier_bounds_ = self._compute_outlier_bounds(
-                X_features, self.numerical_features_
-            )
-
-        # Compute rare category mappings
-        if self.categorical_features_:
-            self.rare_category_mapping_ = self._compute_rare_categories(
-                X_features, self.categorical_features_
-            )
-
         # Build preprocessing pipeline
         numerical_pipeline = Pipeline(
             [
@@ -441,8 +429,6 @@ class TabularPreprocessor:
 
         # Apply preprocessing steps
         X_processed = X_features.copy()
-        X_processed = self._clip_outliers(X_processed)
-        X_processed = self._apply_rare_category_mapping(X_processed)
         X_processed = self._convert_categorical_to_string(X_processed)
 
         # Fit the preprocessor
@@ -479,8 +465,6 @@ class TabularPreprocessor:
         if self.date_features_:
             X_processed = self._transform_dates(X_processed)
 
-        X_processed = self._clip_outliers(X_processed)
-        X_processed = self._apply_rare_category_mapping(X_processed)
         X_processed = self._convert_categorical_to_string(X_processed)
 
         return self.preprocessor_.transform(X_processed)
