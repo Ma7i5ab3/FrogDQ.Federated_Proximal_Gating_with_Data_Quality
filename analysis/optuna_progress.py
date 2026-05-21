@@ -225,6 +225,76 @@ def filter_complete_datasets(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
+def plot_heatmap(df: pd.DataFrame, model_type: str, noise_mode: str) -> None:
+    """Heatmap: datasets on y-axis, configurations on x-axis, cell = mean test F1."""
+
+    clean_rows = df[
+        (df["model_type"] == model_type)
+        & (df["data_mode"] == "clean")
+        & (df["config"] == "curr0_gate0")
+    ].copy()
+    clean_rows["config_label"] = "Clean"
+
+    noise_rows = df[
+        (df["model_type"] == model_type)
+        & (df["data_mode"] == noise_mode)
+    ].copy()
+
+    combined = pd.concat([clean_rows, noise_rows], ignore_index=True)
+    if combined.empty:
+        print(f"No data for {model_type} / {noise_mode}.")
+        return
+
+    present_labels = combined["config_label"].unique()
+    col_labels = [b for b in BAR_ORDER if b in present_labels]
+    datasets   = sorted(combined["dataset"].unique())
+
+    pivot = (
+        combined
+        .pivot_table(index="dataset", columns="config_label",
+                     values="test_f1_mean", aggfunc="mean")
+        .reindex(index=datasets, columns=col_labels)
+    )
+
+    n_rows, n_cols = len(datasets), len(col_labels)
+    cell_w, cell_h = 1.6, 0.45
+    _, ax = plt.subplots(
+        figsize=(n_cols * cell_w + 2.5, n_rows * cell_h + 2.0)
+    )
+
+    data = pivot.values.astype(float)
+    vmin, vmax = np.nanmin(data), np.nanmax(data)
+    im = ax.imshow(data, aspect="auto", cmap="RdYlGn", vmin=vmin, vmax=vmax)
+    plt.colorbar(im, ax=ax, label="Test F1", pad=0.02)
+
+    ax.set_xticks(range(n_cols))
+    ax.set_xticklabels(col_labels, rotation=40, ha="right", fontsize=8)
+    ax.set_yticks(range(n_rows))
+    ax.set_yticklabels(datasets, fontsize=8)
+    ax.xaxis.set_ticks_position("top")
+    ax.xaxis.set_label_position("top")
+
+    # Annotate each cell with its value; pick text colour for contrast
+    mid = (vmin + vmax) / 2
+    for i in range(n_rows):
+        for j in range(n_cols):
+            val = data[i, j]
+            if not np.isnan(val):
+                txt_color = "black" if val > mid else "white"
+                ax.text(j, i, f"{val:.3f}", ha="center", va="center",
+                        fontsize=6, color=txt_color)
+
+    ax.set_title(
+        f"{model_type.upper()} — Clean vs {noise_mode.upper()} (Heatmap)",
+        fontsize=11, fontweight="bold", pad=14,
+    )
+    ax.set_xlabel("Configuration", fontsize=9, labelpad=6)
+    ax.set_ylabel("Dataset", fontsize=9)
+
+    plt.tight_layout()
+    plt.savefig(f"plots/{model_type}_{noise_mode}_heatmap.png", bbox_inches="tight")
+
+
 def overall_aggr_results(df):
     
     # Macro-average F1 across datasets (unweighted) per (model_type, data_mode, config)
@@ -280,12 +350,14 @@ if __name__ == '__main__':
 
     df = f1_studies()
 
-    for model_type in sorted(df["model_type"].unique()):
-        for noise_mode in ["ar", "nar"]:
-            plot_comparison(df, model_type, noise_mode)
-
-    df_agg = filter_complete_datasets(df) if args.complete_only else df
+    df_plot = filter_complete_datasets(df) if args.complete_only else df
     if args.complete_only:
-        print(f"\n[complete-only] {df_agg['dataset'].nunique()} dataset(s) retained for aggregation.\n")
-    overall_aggr_results(df_agg)
+        print(f"\n[complete-only] {df_plot['dataset'].nunique()} dataset(s) retained.\n")
+
+    for model_type in sorted(df_plot["model_type"].unique()):
+        for noise_mode in ["ar", "nar"]:
+            plot_comparison(df_plot, model_type, noise_mode)
+            plot_heatmap(df_plot, model_type, noise_mode)
+
+    overall_aggr_results(df_plot)
     
