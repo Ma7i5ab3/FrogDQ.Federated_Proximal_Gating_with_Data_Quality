@@ -860,11 +860,8 @@ class SagaPP:
             y_tr = y_clean.iloc[train_idx]
             y_vl = y_clean.iloc[val_idx]
 
-            # Fit pipeline on training fold
+            # Fit pipeline on training fold, then apply fitted state to validation fold
             try:
-                _, X_tr_c, y_tr_c = self.fit_pipeline(pipeline, X_tr, y_tr, col_types)
-                X_vl_c = self.apply_pipeline(pipeline, X_vl, {}, col_types)  # use training state only
-                # Re-fit to get proper state and apply to val
                 states, X_tr_c, y_tr_c = self.fit_pipeline(pipeline, X_tr, y_tr, col_types)
                 X_vl_c = self.apply_pipeline(pipeline, X_vl, states, col_types)
             except Exception:

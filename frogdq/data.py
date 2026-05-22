@@ -149,7 +149,7 @@ def load_data(
     test_dir: str = "data_poisoned",
     val_size: float = 0.2,
     test_sample_size: float = 0.8,
-    poison_test_size: float = 0.4,
+    poison_test_size: float = 0.3,
     **preprocessor_kwargs,
 ) -> Tuple[
     Tuple[np.ndarray, np.ndarray, np.ndarray],
@@ -196,9 +196,9 @@ def load_data(
     test_sample_size : float, default=0.8
         Fraction of ``test_dir/test/`` to use as the final test set
         (sampled with ``random_state=seed`` for reproducibility).
-    poison_test_size : float, default=0.4
+    poison_test_size : float, default=0.3
         Fraction that was held out as test when running ``poison_data.py``
-        (default ``--test-size 0.4``).  Used in clean mode to exclude those
+        (default ``--test-size 0.3``).  Used in clean mode to exclude those
         same rows from the train+val pool, preventing leakage.
     **preprocessor_kwargs
         Additional keyword arguments passed to TabularPreprocessor.
@@ -522,7 +522,7 @@ def load_saga_data(
     poisoned_dir: str = "data_poisoned",
     val_size: float = 0.2,
     test_sample_size: float = 0.8,
-    poison_test_size: float = 0.4,
+    poison_test_size: float = 0.3,
     **preprocessor_kwargs,
 ) -> Tuple[
     Tuple[np.ndarray, np.ndarray, np.ndarray],

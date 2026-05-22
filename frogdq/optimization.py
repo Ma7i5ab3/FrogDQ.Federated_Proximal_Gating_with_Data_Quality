@@ -571,14 +571,18 @@ class OptunaExperiment:
             # Extract final metrics
             primary_metric = 'f1' if task == 'classification' else 'r2'
 
+            # Use best-epoch index (matching the model state restored by early stopping)
+            val_hist = history[f'val_{primary_metric}']
+            best_epoch_idx = int(np.argmax(val_hist)) if primary_metric != 'rmse' else int(np.argmin(val_hist))
+
             result = {
                 'seed': seed,
-                'train_loss': history['train_loss'][-1],
-                'val_loss': history['val_loss'][-1],
-                'test_loss': history['test_loss'][-1] if 'test_loss' in history else None,
-                f'train_{primary_metric}': history[f'train_{primary_metric}'][-1],
-                f'val_{primary_metric}': history[f'val_{primary_metric}'][-1],
-                f'test_{primary_metric}': history[f'test_{primary_metric}'][-1] if f'test_{primary_metric}' in history else None,
+                'train_loss': history['train_loss'][best_epoch_idx],
+                'val_loss': history['val_loss'][best_epoch_idx],
+                'test_loss': history['test_loss'][best_epoch_idx] if 'test_loss' in history else None,
+                f'train_{primary_metric}': history[f'train_{primary_metric}'][best_epoch_idx],
+                f'val_{primary_metric}': history[f'val_{primary_metric}'][best_epoch_idx],
+                f'test_{primary_metric}': history[f'test_{primary_metric}'][best_epoch_idx] if f'test_{primary_metric}' in history else None,
                 'n_epochs_trained': len(history['train_loss']),
                 'history': history,  # Store full history
             }
@@ -804,9 +808,10 @@ class OptunaExperiment:
             baseline_params_list = self._load_baseline_params(dataset_name, data_mode, model_type)
 
             if baseline_params_list:
-                # Sample one configuration from top-N baseline runs
+                # Sample one configuration from top-N baseline runs (shallow copy to
+                # avoid mutating the cached dict when curriculum/gate keys are added below)
                 rng = np.random.RandomState(trial.number + self.optuna_sampler_seed)
-                hyperparams = rng.choice(baseline_params_list)
+                hyperparams = dict(rng.choice(baseline_params_list))
 
                 # Now suggest only the curriculum/gate specific parameters
                 if use_curriculum:
@@ -861,10 +866,13 @@ class OptunaExperiment:
                 for seed in seeds
             )
 
-        # Compute average validation and test metrics across seeds
+        # Compute average validation and test metrics across seeds.
+        # Use best_val_metric (computed by compute_convergence_metrics) so that
+        # Optuna ranks trials by the performance of the restored best-epoch model,
+        # not by the last-epoch metric (which is lower when early stopping triggers).
         primary_metric = 'f1' if task == 'classification' else 'r2'
         valid_results = [r for r in results if 'error' not in r]
-        val_metrics = [r.get(f'val_{primary_metric}', float('-inf')) for r in valid_results]
+        val_metrics = [r.get('best_val_metric', r.get(f'val_{primary_metric}', float('-inf'))) for r in valid_results]
         test_metrics = [
             r[f'test_{primary_metric}'] for r in valid_results
             if r.get(f'test_{primary_metric}') is not None
@@ -895,9 +903,9 @@ class OptunaExperiment:
         trial.set_user_attr('avg_test_metric', avg_test_metric)
         trial.set_user_attr('std_test_metric', float(np.std(test_metrics)) if test_metrics else 0.0)
 
-        # Store the full results (with histories) in the trial object as a Python attribute
-        # This won't be persisted to DB but will be available in memory for the current run
-        trial.user_attrs['_full_results_with_histories'] = results
+        # Histories are persisted to disk by _save_trial_histories below.
+        # trial.user_attrs returns a copy in Optuna, so direct assignment is a no-op;
+        # use set_user_attr if in-memory recovery is ever needed in the future.
 
         # Save histories to disk immediately (so they're available even after warm_start)
         study_name = f"{dataset_name}_{data_mode}_{model_type}_curr{int(use_curriculum)}_gate{int(use_gate)}"

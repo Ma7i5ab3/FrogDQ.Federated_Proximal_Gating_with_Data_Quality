@@ -341,7 +341,10 @@ def main():
         datasets_df = get_datasets()
         config['datasets'] = datasets_df['dataset_name'].tolist()
 
-    config['datasets'] = sort_datasets_by_samples(config['datasets'])
+    config['datasets'] = sort_datasets_by_samples(
+        config['datasets'],
+        data_dir=config.get('data_dir', 'data'),
+    )
 
     # Print experiment summary
     print("\n" + "="*80)
