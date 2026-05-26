@@ -7,7 +7,9 @@
 #   3. Data Preparation Pipeline (CP)
 #   4. Saga++
 #   5. AutoGluon
-#   6. Main (Optuna experiments)
+#   6. Baseline 0 (zero/random imputation)
+#   7. KNN Imputation
+#   8. Main (Optuna experiments)
 #
 # Usage:
 #   ./run_pipeline.sh [options]
@@ -18,8 +20,10 @@
 #   --skip-cp            Skip step 3 (data preparation pipeline)
 #   --skip-saga          Skip step 4 (Saga++)
 #   --skip-autogluon     Skip step 5 (AutoGluon)
-#   --skip-main          Skip step 6 (main experiments)
-#   --start-from N       Start from step N (1–6), skipping earlier steps
+#   --skip-baseline-zero Skip step 6 (Baseline 0)
+#   --skip-knn           Skip step 7 (KNN imputation)
+#   --skip-main          Skip step 8 (main experiments)
+#   --start-from N       Start from step N (1–8), skipping earlier steps
 #   -y, --yes            Auto-confirm the main experiment prompt
 #   -h, --help           Show this help message
 
@@ -66,21 +70,25 @@ SKIP_POISON=false
 SKIP_CP=false
 SKIP_SAGA=false
 SKIP_AUTOGLUON=false
+SKIP_BASELINE_ZERO=false
+SKIP_KNN=false
 SKIP_MAIN=false
 AUTO_YES=false
 START_FROM=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --skip-select)    SKIP_SELECT=true    ;;
-        --skip-poison)    SKIP_POISON=true    ;;
-        --skip-cp)        SKIP_CP=true        ;;
-        --skip-saga)      SKIP_SAGA=true      ;;
-        --skip-autogluon) SKIP_AUTOGLUON=true ;;
-        --skip-main)      SKIP_MAIN=true      ;;
+        --skip-select)        SKIP_SELECT=true        ;;
+        --skip-poison)        SKIP_POISON=true        ;;
+        --skip-cp)            SKIP_CP=true            ;;
+        --skip-saga)          SKIP_SAGA=true          ;;
+        --skip-autogluon)     SKIP_AUTOGLUON=true     ;;
+        --skip-baseline-zero) SKIP_BASELINE_ZERO=true ;;
+        --skip-knn)           SKIP_KNN=true           ;;
+        --skip-main)          SKIP_MAIN=true          ;;
         --start-from)
             START_FROM="$2"; shift
-            [[ "$START_FROM" =~ ^[1-6]$ ]] || die "--start-from requires a number between 1 and 6"
+            [[ "$START_FROM" =~ ^[1-8]$ ]] || die "--start-from requires a number between 1 and 8"
             ;;
         -y|--yes)         AUTO_YES=true       ;;
         -h|--help)
@@ -98,6 +106,8 @@ done
 (( START_FROM > 3 )) && SKIP_CP=true
 (( START_FROM > 4 )) && SKIP_SAGA=true
 (( START_FROM > 5 )) && SKIP_AUTOGLUON=true
+(( START_FROM > 6 )) && SKIP_BASELINE_ZERO=true
+(( START_FROM > 7 )) && SKIP_KNN=true
 
 # ── preflight ─────────────────────────────────────────────────────────────────
 [[ -x "$PYTHON" ]]  || die "Python not found at: $PYTHON"
@@ -170,16 +180,42 @@ else
     step_ok 5
 fi
 
-# ── step 6 — main (optuna experiments) ───────────────────────────────────────
-step_header 6 "Main (Optuna Experiments)"
-if $SKIP_MAIN; then
+# ── step 6 — baseline 0 (zero/random imputation) ─────────────────────────────
+step_header 6 "Baseline 0 (Zero/Random Imputation)"
+if $SKIP_BASELINE_ZERO; then
     step_skip 6
+else
+    "$PYTHON" scripts/baseline_zero.py \
+        --input_dir  data_poisoned \
+        --output_dir data_baseline_zero \
+        --config     "$CONFIG"
+    step_ok 6
+fi
+
+# ── step 7 — knn imputation ───────────────────────────────────────────────────
+step_header 7 "KNN Imputation"
+if $SKIP_KNN; then
+    step_skip 7
+else
+    "$PYTHON" scripts/knn.py \
+        --input_dir  data_poisoned \
+        --output_dir data_knn \
+        --config     "$CONFIG"
+    step_ok 7
+fi
+
+# ── step 8 — main (optuna experiments) ───────────────────────────────────────
+step_header 8 "Main (Optuna Experiments)"
+if $SKIP_MAIN; then
+    step_skip 8
 else
     MAIN_ARGS=(
         --config "$CONFIG"
         --run-cp
         --run-saga
         --run-autogluon
+        --run-baseline-zero
+        --run-knn
     )
 
     # Patch stdin so the "Proceed?" prompt is auto-answered when -y is passed
@@ -188,7 +224,7 @@ else
     else
         "$PYTHON" main.py "${MAIN_ARGS[@]}"
     fi
-    step_ok 6
+    step_ok 8
 fi
 
 echo ""

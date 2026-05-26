@@ -199,6 +199,38 @@ def parse_args():
         help='Directory containing Saga++-cleaned data (default: data_cleaned_saga)'
     )
 
+    parser.add_argument(
+        '--run-baseline-zero',
+        action='store_true',
+        help=(
+            'Include Baseline 0 (zero/random imputation) as a data-preparation benchmark. '
+            'Runs experiments on AR/NAR modes using Baseline-0-imputed data. '
+            'Requires running scripts/baseline_zero.py first.'
+        )
+    )
+
+    parser.add_argument(
+        '--baseline-zero-data-dir',
+        type=str,
+        help='Directory containing Baseline-0-imputed data (default: data_baseline_zero)'
+    )
+
+    parser.add_argument(
+        '--run-knn',
+        action='store_true',
+        help=(
+            'Include KNN imputation as a data-preparation benchmark. '
+            'Runs experiments on AR/NAR modes using KNN-imputed data. '
+            'Requires running scripts/knn.py first.'
+        )
+    )
+
+    parser.add_argument(
+        '--knn-data-dir',
+        type=str,
+        help='Directory containing KNN-imputed data (default: data_knn)'
+    )
+
     return parser.parse_args()
 
 
@@ -330,6 +362,14 @@ def main():
         config['run_saga'] = True
     if args.saga_data_dir:
         config['saga_data_dir'] = args.saga_data_dir
+    if args.run_baseline_zero:
+        config['run_baseline_zero'] = True
+    if args.baseline_zero_data_dir:
+        config['baseline_zero_data_dir'] = args.baseline_zero_data_dir
+    if args.run_knn:
+        config['run_knn'] = True
+    if args.knn_data_dir:
+        config['knn_data_dir'] = args.knn_data_dir
 
     # Validate configuration
     if not config.get('datasets'):
@@ -377,6 +417,14 @@ def main():
     if config.get('run_saga'):
         print(f"  - Cleaned data dir: {config.get('saga_data_dir', 'data_cleaned_saga')}")
         print(f"  - To pre-compute: python scripts/saga.py")
+    print(f"Baseline 0 (zero/random) benchmark: {config.get('run_baseline_zero', False)}")
+    if config.get('run_baseline_zero'):
+        print(f"  - Imputed data dir: {config.get('baseline_zero_data_dir', 'data_baseline_zero')}")
+        print(f"  - To pre-compute: python scripts/baseline_zero.py")
+    print(f"KNN imputation benchmark: {config.get('run_knn', False)}")
+    if config.get('run_knn'):
+        print(f"  - Imputed data dir: {config.get('knn_data_dir', 'data_knn')}")
+        print(f"  - To pre-compute: python scripts/knn.py")
 
     # Calculate total configurations per model × n_models × n_datasets,
     # adjusted for which optional benchmarks are enabled.
@@ -386,13 +434,17 @@ def main():
     n_models = len(config['model_types'])
 
     # Per model per AR/NAR mode: poisoned + curriculum + gate + gate+curriculum = 4 standard
-    # + autogluon (opt) + cp (opt) + saga (opt)
+    # + autogluon (opt) + cp (opt) + saga (opt) + baseline_zero (opt) + knn (opt)
     per_model_ar_nar = 4
     if config.get('run_autogluon'):
         per_model_ar_nar += 1
     if config.get('run_cp'):
         per_model_ar_nar += 1
     if config.get('run_saga'):
+        per_model_ar_nar += 1
+    if config.get('run_baseline_zero'):
+        per_model_ar_nar += 1
+    if config.get('run_knn'):
         per_model_ar_nar += 1
 
     clean_configs = n_datasets * n_models * int(has_clean)
@@ -411,6 +463,10 @@ def main():
         print(f"    - Custom pipeline (CP) baseline: 1 config")
     if config.get('run_saga'):
         print(f"    - Saga baseline: 1 config")
+    if config.get('run_baseline_zero'):
+        print(f"    - Baseline 0 (zero/random imputation): 1 config")
+    if config.get('run_knn'):
+        print(f"    - KNN imputation baseline: 1 config")
     print(f"  AR/NAR configs total: {ar_nar_configs}")
     print(f"  Total configurations: {total_configs}")
     print(f"  Total trials: {total_trials}")

@@ -237,6 +237,63 @@ run_saga: true
 # Directory containing Saga++-cleaned data produced by scripts/saga.py.
 saga_data_dir: data_cleaned_saga
 
+# Baseline 0 (Zero/Random Imputation) Benchmark Settings
+# --------------------------------------------------------
+# Whether to include Baseline 0 as a data-preparation benchmark.
+# Numerical NaN → 0; categorical NaN → random observed value.
+# Requires running scripts/baseline_zero.py first.
+run_baseline_zero: true
+
+# Directory containing Baseline-0-imputed data produced by scripts/baseline_zero.py.
+baseline_zero_data_dir: data_baseline_zero
+
+# KNN Imputation Benchmark Settings
+# -----------------------------------
+# Whether to include KNN imputation as a data-preparation benchmark.
+# Requires running scripts/knn.py first.
+run_knn: true
+
+# Directory containing KNN-imputed data produced by scripts/knn.py.
+knn_data_dir: data_knn
+
+# Data Poisoning Settings
+# -----------------------
+# Parameters controlling how AR and NAR poisoning are applied.
+# All values here are the defaults used by scripts/poison_data.py.
+# CLI flags (--mild-rate, --no-ar-numerical, etc.) override these when passed.
+poisoning:
+
+  # Noise distribution tiers.
+  # Each tier defines the fraction of columns assigned to that severity and
+  # the per-column corruption rate (0–1).
+  # mild_frac is computed automatically as 1 - moderate_frac - heavy_frac - severe_frac.
+  noise:
+    mild_rate: 0.06
+    moderate_frac: 0.30
+    moderate_rate: 0.12
+    heavy_frac: 0.20
+    heavy_rate: 0.24
+    severe_frac: 0.10
+    severe_rate: 0.48
+
+  # AR (At Random) poisoning mechanisms.
+  # Set to false to disable a specific mechanism.
+  ar:
+    enable_numerical_noise: true    # Additive Gaussian noise on numerical features
+    enable_categorical_flips: true  # Random label flips for categorical features
+    enable_missing: true            # MCAR: Missing Completely At Random
+
+  # NAR (Not At Random) poisoning mechanisms.
+  # Set to false to disable a specific mechanism.
+  nar:
+    enable_nnar: true             # Heteroscedastic noise (value-dependent magnitude)
+    enable_mnar: true             # Extreme values more likely to be missing
+    enable_systematic_flips: true # Systematic categorical confusion patterns
+    enable_correlated_noise: true # Correlated noise propagation across features
+    enable_rare_missing: true     # Rare categories more likely to be missing
+    min_corruption: 0.25          # Minimum total cell corruption rate (floor)
+    max_corruption: 0.50          # Maximum total cell corruption rate (cap)
+
 # Output Settings
 # ---------------
 

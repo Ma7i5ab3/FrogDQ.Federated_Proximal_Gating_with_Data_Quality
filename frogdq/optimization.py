@@ -18,7 +18,7 @@ from joblib import Parallel, delayed
 from optuna.samplers import TPESampler
 from optuna.study import Study
 
-from frogdq.data import get_datasets, load_autogluon_data, load_cp_data, load_data, load_saga_data
+from frogdq.data import get_datasets, load_autogluon_data, load_baseline_zero_data, load_cp_data, load_data, load_knn_data, load_saga_data
 from frogdq.nn import build_model
 from frogdq.training import fit, set_seed
 
@@ -229,6 +229,14 @@ class OptunaExperiment:
         self.run_cp = config.get('run_cp', False)
         self.cp_data_dir = config.get('cp_data_dir', 'data_cleaned_cp')
 
+        # Baseline 0 (zero/random imputation) benchmark settings
+        self.run_baseline_zero = config.get('run_baseline_zero', False)
+        self.baseline_zero_data_dir = config.get('baseline_zero_data_dir', 'data_baseline_zero')
+
+        # KNN imputation benchmark settings
+        self.run_knn = config.get('run_knn', False)
+        self.knn_data_dir = config.get('knn_data_dir', 'data_knn')
+
         # Optuna storage for persistence
         self.storage_url = _get_storage_url(self.output_dir)
 
@@ -431,6 +439,28 @@ class OptunaExperiment:
                     mode=data_mode,
                     seed=seed,
                     cp_dir=self.cp_data_dir,
+                    clean_val=self.clean_val,
+                    clean_test=self.clean_test,
+                )
+            )
+        elif preparation == 'baseline_zero':
+            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
+                load_baseline_zero_data(
+                    dataset_name=dataset_name,
+                    mode=data_mode,
+                    seed=seed,
+                    baseline_zero_dir=self.baseline_zero_data_dir,
+                    clean_val=self.clean_val,
+                    clean_test=self.clean_test,
+                )
+            )
+        elif preparation == 'knn':
+            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
+                load_knn_data(
+                    dataset_name=dataset_name,
+                    mode=data_mode,
+                    seed=seed,
+                    knn_dir=self.knn_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
                 )
@@ -784,6 +814,24 @@ class OptunaExperiment:
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
                 )
+            elif preparation == 'baseline_zero':
+                _, (y_train, _, _), _, metadata = load_baseline_zero_data(
+                    dataset_name=dataset_name,
+                    mode=data_mode,
+                    seed=self.seed_start,
+                    baseline_zero_dir=self.baseline_zero_data_dir,
+                    clean_val=self.clean_val,
+                    clean_test=self.clean_test,
+                )
+            elif preparation == 'knn':
+                _, (y_train, _, _), _, metadata = load_knn_data(
+                    dataset_name=dataset_name,
+                    mode=data_mode,
+                    seed=self.seed_start,
+                    knn_dir=self.knn_data_dir,
+                    clean_val=self.clean_val,
+                    clean_test=self.clean_test,
+                )
             else:
                 _, (y_train, _, _), _, metadata = load_data(
                     dataset_name=dataset_name,
@@ -963,6 +1011,10 @@ class OptunaExperiment:
             study_name = f"{dataset_name}_{data_mode}_{model_type}_saga"
         elif preparation == 'cp':
             study_name = f"{dataset_name}_{data_mode}_{model_type}_cp"
+        elif preparation == 'baseline_zero':
+            study_name = f"{dataset_name}_{data_mode}_{model_type}_baseline_zero"
+        elif preparation == 'knn':
+            study_name = f"{dataset_name}_{data_mode}_{model_type}_knn"
         else:
             study_name = f"{dataset_name}_{data_mode}_{model_type}_curr{int(use_curriculum)}_gate{int(use_gate)}"
 
@@ -1240,7 +1292,29 @@ class OptunaExperiment:
                             'preparation': 'saga',
                         })
 
-                    # 6. Curriculum learning
+                    # 6. Baseline 0 (zero/random imputation)
+                    if self.run_baseline_zero:
+                        experiments.append({
+                            'dataset': dataset,
+                            'data_mode': data_mode,
+                            'model_type': model_type,
+                            'use_curriculum': False,
+                            'use_gate': False,
+                            'preparation': 'baseline_zero',
+                        })
+
+                    # 7. KNN imputation baseline
+                    if self.run_knn:
+                        experiments.append({
+                            'dataset': dataset,
+                            'data_mode': data_mode,
+                            'model_type': model_type,
+                            'use_curriculum': False,
+                            'use_gate': False,
+                            'preparation': 'knn',
+                        })
+
+                    # 9. Curriculum learning
                     experiments.append({
                         'dataset': dataset,
                         'data_mode': data_mode,
@@ -1250,7 +1324,7 @@ class OptunaExperiment:
                         'preparation': 'standard',
                     })
 
-                    # 7. quAIL gate
+                    # 10. quAIL gate
                     experiments.append({
                         'dataset': dataset,
                         'data_mode': data_mode,
@@ -1260,7 +1334,7 @@ class OptunaExperiment:
                         'preparation': 'standard',
                     })
 
-                    # 8. quAIL gate + curriculum
+                    # 11. quAIL gate + curriculum
                     experiments.append({
                         'dataset': dataset,
                         'data_mode': data_mode,

@@ -824,10 +824,15 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
             Examples:
-            python poison_data.py data data_poisoned
-            python poison_data.py data data_poisoned --dataset my_dataset
-            python poison_data.py data data_poisoned --severe-frac 0.1 --severe-rate 0.50
-            python poison_data.py data data_poisoned --no-ar-numerical --no-nar-correlated
+            python poison_data.py
+            python poison_data.py --dataset my_dataset
+            python poison_data.py --severe-frac 0.1 --severe-rate 0.50
+            python poison_data.py --no-ar-numerical --no-nar-correlated
+
+            Parameter priority (highest to lowest):
+              1. CLI flags passed explicitly
+              2. config.yaml  poisoning:  section
+              3. Built-in defaults
 
             Poisoning Modes:
             AR (At Random): Random poisoning with stratified column distribution
@@ -838,121 +843,176 @@ if __name__ == "__main__":
                 """,
     )
     parser.add_argument(
-        "--input_dir", type=str, help="Directory containing clean CSV files", default="data"
+        "--input_dir", type=str, default="data",
+        help="Directory containing clean CSV files (default: data)",
     )
     parser.add_argument(
-        "--output_dir", type=str, help="Directory to save poisoned files", default="data_poisoned"
+        "--output_dir", type=str, default="data_poisoned",
+        help="Directory to save poisoned files (default: data_poisoned)",
     )
     parser.add_argument(
         "--config", type=str, default="config.yaml",
         help="Path to experiment config file (default: config.yaml)",
     )
     parser.add_argument(
-        "--dataset", type=str, help="Process only this specific dataset (name without .csv)"
+        "--dataset", type=str,
+        help="Process only this specific dataset (name without .csv)",
     )
     parser.add_argument(
         "--test-size", type=float, default=None,
-        help="Fraction of data held out as clean test set (overrides config.yaml test_size)",
+        help="Fraction of data held out as clean test set "
+             "(overrides config.yaml test_size; default: 0.3)",
     )
 
-    noise_group = parser.add_argument_group("Noise Distribution")
-    noise_group.add_argument(
-        "--mild-rate", type=float, default=0.06, help="Mild noise rate for remaining columns"
+    noise_group = parser.add_argument_group(
+        "Noise Distribution",
+        "Per-tier corruption rates and column fractions. "
+        "Defaults are read from config.yaml poisoning.noise when not set here. "
+        "mild_frac is computed as 1 - moderate_frac - heavy_frac - severe_frac.",
     )
     noise_group.add_argument(
-        "--moderate-frac", type=float, default=0.3, help="Fraction of columns at moderate noise"
+        "--mild-rate", type=float, default=None,
+        help="Corruption rate for mildly noisy columns (config default: 0.06)",
     )
     noise_group.add_argument(
-        "--moderate-rate", type=float, default=0.12, help="Moderate noise rate"
+        "--moderate-frac", type=float, default=None,
+        help="Fraction of columns assigned to moderate noise (config default: 0.30)",
     )
     noise_group.add_argument(
-        "--heavy-frac", type=float, default=0.2, help="Fraction of columns at heavy noise"
+        "--moderate-rate", type=float, default=None,
+        help="Corruption rate for moderately noisy columns (config default: 0.12)",
     )
-    noise_group.add_argument("--heavy-rate", type=float, default=0.24, help="Heavy noise rate")
     noise_group.add_argument(
-        "--severe-frac", type=float, default=0.1, help="Fraction of columns at severe noise"
+        "--heavy-frac", type=float, default=None,
+        help="Fraction of columns assigned to heavy noise (config default: 0.20)",
     )
-    noise_group.add_argument("--severe-rate", type=float, default=0.48, help="Severe noise rate")
+    noise_group.add_argument(
+        "--heavy-rate", type=float, default=None,
+        help="Corruption rate for heavily noisy columns (config default: 0.24)",
+    )
+    noise_group.add_argument(
+        "--severe-frac", type=float, default=None,
+        help="Fraction of columns assigned to severe noise (config default: 0.10)",
+    )
+    noise_group.add_argument(
+        "--severe-rate", type=float, default=None,
+        help="Corruption rate for severely noisy columns (config default: 0.48)",
+    )
 
-    ar_group = parser.add_argument_group("AR Mode Mechanisms")
+    ar_group = parser.add_argument_group(
+        "AR Mode Mechanisms",
+        "Flags disable individual AR mechanisms. "
+        "Defaults are read from config.yaml poisoning.ar.",
+    )
     ar_group.add_argument(
-        "--no-ar-numerical",
-        action="store_true",
+        "--no-ar-numerical", action="store_true",
         help="Disable Gaussian noise on numerical features",
     )
     ar_group.add_argument(
-        "--no-ar-categorical",
-        action="store_true",
+        "--no-ar-categorical", action="store_true",
         help="Disable random flips for categorical features",
     )
     ar_group.add_argument(
-        "--no-ar-missing", action="store_true", help="Disable MCAR (Missing Completely At Random)"
+        "--no-ar-missing", action="store_true",
+        help="Disable MCAR (Missing Completely At Random)",
     )
 
-    nar_group = parser.add_argument_group("NAR Mode Mechanisms")
-    nar_group.add_argument(
-        "--no-nar-nnar", action="store_true", help="Disable NNAR (heteroscedastic noise)"
+    nar_group = parser.add_argument_group(
+        "NAR Mode Mechanisms",
+        "Flags disable individual NAR mechanisms. "
+        "Defaults are read from config.yaml poisoning.nar.",
     )
     nar_group.add_argument(
-        "--no-nar-mnar",
-        action="store_true",
+        "--no-nar-nnar", action="store_true",
+        help="Disable NNAR (heteroscedastic noise)",
+    )
+    nar_group.add_argument(
+        "--no-nar-mnar", action="store_true",
         help="Disable MNAR (extreme values more likely missing)",
     )
     nar_group.add_argument(
-        "--no-nar-systematic", action="store_true", help="Disable systematic categorical confusion"
+        "--no-nar-systematic", action="store_true",
+        help="Disable systematic categorical confusion",
     )
     nar_group.add_argument(
-        "--no-nar-correlated", action="store_true", help="Disable correlated noise propagation"
+        "--no-nar-correlated", action="store_true",
+        help="Disable correlated noise propagation",
     )
     nar_group.add_argument(
-        "--no-nar-rare-missing", action="store_true", help="Disable rare category missingness"
+        "--no-nar-rare-missing", action="store_true",
+        help="Disable rare category missingness",
     )
     nar_group.add_argument(
-        "--nar-min-corruption", type=float, default=0.25,
-        help="Minimum total cell corruption for NAR (floor, 0–1)",
+        "--nar-min-corruption", type=float, default=None,
+        help="Minimum total cell corruption for NAR, 0–1 (config default: 0.25)",
     )
     nar_group.add_argument(
-        "--nar-max-corruption", type=float, default=0.50,
-        help="Maximum total cell corruption for NAR (cap, 0–1)",
+        "--nar-max-corruption", type=float, default=None,
+        help="Maximum total cell corruption for NAR, 0–1 (config default: 0.50)",
     )
 
     args = parser.parse_args()
 
-    # Load config and resolve settings (CLI overrides config)
+    # ── Load config ────────────────────────────────────────────────────────────
     _config: dict = {}
     if Path(args.config).exists():
         with open(args.config) as _f:
             _config = yaml.safe_load(_f) or {}
-    test_size: float = args.test_size if args.test_size is not None else _config.get("test_size", 0.3)
 
-    # Datasets: --dataset overrides; otherwise use config.yaml datasets list
-    if args.dataset:
-        datasets = [args.dataset]
-    else:
-        datasets = _config.get("datasets") or None
+    # Sub-sections of the poisoning block (all optional; fall back to built-ins)
+    _poison_cfg  = _config.get("poisoning", {})
+    _noise_cfg   = _poison_cfg.get("noise", {})
+    _ar_cfg      = _poison_cfg.get("ar", {})
+    _nar_cfg     = _poison_cfg.get("nar", {})
 
-    # Calculate mild_frac as the remaining fraction
-    mild_frac = 1.0 - args.moderate_frac - args.heavy_frac - args.severe_frac
+    # Helper: CLI value wins if given, else config, else built-in default
+    def _resolve(cli_val, cfg_section, cfg_key, builtin):
+        if cli_val is not None:
+            return cli_val
+        return cfg_section.get(cfg_key, builtin)
+
+    # ── Resolve test_size ──────────────────────────────────────────────────────
+    test_size: float = _resolve(args.test_size, _config, "test_size", 0.3)
+
+    # ── Datasets ───────────────────────────────────────────────────────────────
+    datasets = [args.dataset] if args.dataset else (_config.get("datasets") or None)
+
+    # ── Noise distribution ─────────────────────────────────────────────────────
+    mild_rate     = _resolve(args.mild_rate,     _noise_cfg, "mild_rate",     0.06)
+    moderate_frac = _resolve(args.moderate_frac, _noise_cfg, "moderate_frac", 0.30)
+    moderate_rate = _resolve(args.moderate_rate, _noise_cfg, "moderate_rate", 0.12)
+    heavy_frac    = _resolve(args.heavy_frac,    _noise_cfg, "heavy_frac",    0.20)
+    heavy_rate    = _resolve(args.heavy_rate,    _noise_cfg, "heavy_rate",    0.24)
+    severe_frac   = _resolve(args.severe_frac,   _noise_cfg, "severe_frac",   0.10)
+    severe_rate   = _resolve(args.severe_rate,   _noise_cfg, "severe_rate",   0.48)
+
+    mild_frac = 1.0 - moderate_frac - heavy_frac - severe_frac
 
     noise_percentages = {
-        "mild": (mild_frac, args.mild_rate),
-        "moderate": (args.moderate_frac, args.moderate_rate),
-        "heavy": (args.heavy_frac, args.heavy_rate),
-        "severe": (args.severe_frac if args.severe_frac > 0 else None, args.severe_rate),
+        "mild":     (mild_frac,                              mild_rate),
+        "moderate": (moderate_frac,                          moderate_rate),
+        "heavy":    (heavy_frac,                             heavy_rate),
+        "severe":   (severe_frac if severe_frac > 0 else None, severe_rate),
     }
 
+    # ── AR mechanisms ──────────────────────────────────────────────────────────
+    # Config provides the base default; --no-* CLI flags override to False.
     ar_mechanisms = {
-        "enable_numerical_noise": not args.no_ar_numerical,
-        "enable_categorical_flips": not args.no_ar_categorical,
-        "enable_missing": not args.no_ar_missing,
+        "enable_numerical_noise":   _ar_cfg.get("enable_numerical_noise",   True) and not args.no_ar_numerical,
+        "enable_categorical_flips": _ar_cfg.get("enable_categorical_flips", True) and not args.no_ar_categorical,
+        "enable_missing":           _ar_cfg.get("enable_missing",           True) and not args.no_ar_missing,
     }
+
+    # ── NAR mechanisms ─────────────────────────────────────────────────────────
+    nar_min_corruption = _resolve(args.nar_min_corruption, _nar_cfg, "min_corruption", 0.25)
+    nar_max_corruption = _resolve(args.nar_max_corruption, _nar_cfg, "max_corruption", 0.50)
 
     nar_mechanisms = {
-        "enable_nnar": not args.no_nar_nnar,
-        "enable_mnar": not args.no_nar_mnar,
-        "enable_systematic_flips": not args.no_nar_systematic,
-        "enable_correlated_noise": not args.no_nar_correlated,
-        "enable_rare_missing": not args.no_nar_rare_missing,
+        "enable_nnar":             _nar_cfg.get("enable_nnar",             True) and not args.no_nar_nnar,
+        "enable_mnar":             _nar_cfg.get("enable_mnar",             True) and not args.no_nar_mnar,
+        "enable_systematic_flips": _nar_cfg.get("enable_systematic_flips", True) and not args.no_nar_systematic,
+        "enable_correlated_noise": _nar_cfg.get("enable_correlated_noise", True) and not args.no_nar_correlated,
+        "enable_rare_missing":     _nar_cfg.get("enable_rare_missing",     True) and not args.no_nar_rare_missing,
     }
 
     process_all_datasets(
@@ -963,6 +1023,6 @@ if __name__ == "__main__":
         ar_mechanisms,
         nar_mechanisms,
         test_size=test_size,
-        nar_min_corruption=args.nar_min_corruption,
-        nar_max_corruption=args.nar_max_corruption,
+        nar_min_corruption=nar_min_corruption,
+        nar_max_corruption=nar_max_corruption,
     )
