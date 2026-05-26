@@ -40,12 +40,14 @@ class DataPoisoner:
         noise_percentages=None,
         nar_min_corruption: float = 0.25,
         nar_max_corruption: float = 0.50,
+        clean_feature_frac: float = 0.0,
     ):
         self.seed = seed
         np.random.seed(seed)
         self.poison_log = {}
         self.nar_min_corruption = nar_min_corruption
         self.nar_max_corruption = nar_max_corruption
+        self.clean_feature_frac = max(0.0, min(1.0, clean_feature_frac))
 
         if noise_percentages is None:
             # Tier rates calibrated to produce ~12 % noise + ~9 % MCAR ≈ 21 % AR total.
@@ -104,6 +106,21 @@ class DataPoisoner:
 
         shuffled_cols = columns.copy()
         np.random.shuffle(shuffled_cols)
+
+        # Reserve the first n_clean columns as completely unpoisoned.
+        # They are excluded from noise_dist, so every downstream mechanism
+        # that checks `col not in column_noise_dist` will skip them.
+        n_clean = int(n_cols * self.clean_feature_frac)
+        n_clean = min(n_clean, n_cols)  # never exceed total column count
+        if n_clean > 0:
+            logger.info(
+                f"  Clean feature reservation: {n_clean}/{n_cols} columns kept fully clean "
+                f"({self.clean_feature_frac*100:.1f}%)"
+            )
+        shuffled_cols = shuffled_cols[n_clean:]   # only poisonable columns from here on
+        n_cols = len(shuffled_cols)
+        if n_cols == 0:
+            return {}
 
         mild_frac, mild_rate = self.noise_percentages["mild"]
         moderate_frac, moderate_rate = self.noise_percentages["moderate"]
@@ -498,7 +515,9 @@ class DataPoisoner:
                         poison_mask.loc[idx, col] = True
 
         # 4. Correlated noise across numerical features
-        num_cols = col_types["numerical"]
+        # Restrict to poisonable columns only — clean-reserved columns must not
+        # receive any corruption, including as propagation targets.
+        num_cols = [c for c in col_types["numerical"] if c in column_noise_dist]
         if len(num_cols) > 1:
             n_chains = max(1, min(len(num_cols) // 3, 3))
             anchor_cols = np.random.choice(
@@ -562,10 +581,13 @@ class DataPoisoner:
             poison_mask.loc[missing_idx, col] = True
 
         # Enforce corruption budget: clamp total cell corruption to [min, max].
+        # Only poisonable columns (those in column_noise_dist) count toward the
+        # budget — clean-reserved columns are never touched by this step.
         poison_mask = self._apply_corruption_budget(
             poison_mask, col_types,
             min_rate=self.nar_min_corruption,
             max_rate=self.nar_max_corruption,
+            poisonable_cols=set(column_noise_dist.keys()),
         )
 
         logger.success(f"NAR poisoning complete: {poison_mask.sum().sum()} values poisoned")
@@ -599,16 +621,27 @@ class DataPoisoner:
         col_types: Dict[str, list],
         min_rate: float,
         max_rate: float,
+        poisonable_cols: set = None,
     ) -> pd.DataFrame:
         """
         Clamp total cell corruption to [min_rate, max_rate].
 
         If above max_rate: randomly clear True entries until the rate hits max_rate.
         If below min_rate: randomly set False entries to True until rate hits min_rate.
-        Only feature columns (numerical + categorical) are considered; label columns
-        are never touched.
+
+        Only poisonable feature columns are considered; label columns and
+        clean-reserved columns (absent from poisonable_cols) are never touched.
+
+        Args:
+            poisonable_cols: Set of column names eligible for corruption.
+                             When None, all numerical + categorical columns are used.
         """
-        feature_cols = col_types["numerical"] + col_types["categorical"]
+        all_feature_cols = col_types["numerical"] + col_types["categorical"]
+        if poisonable_cols is not None:
+            feature_cols = [c for c in all_feature_cols if c in poisonable_cols]
+        else:
+            feature_cols = all_feature_cols
+
         if not feature_cols:
             return poison_mask
 
@@ -679,6 +712,7 @@ def process_all_datasets(
     test_size: float = 0.3,
     nar_min_corruption: float = 0.25,
     nar_max_corruption: float = 0.50,
+    clean_feature_frac: float = 0.0,
 ):
     """
     Process all datasets and create poisoned versions.
@@ -693,6 +727,7 @@ def process_all_datasets(
         test_size: Fraction of data to hold out as clean test set
         nar_min_corruption: Minimum total cell corruption for NAR (floor)
         nar_max_corruption: Maximum total cell corruption for NAR (cap)
+        clean_feature_frac: Fraction of feature columns kept completely unpoisoned (0–1)
     """
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.join(output_dir, "ar"), exist_ok=True)
@@ -705,6 +740,7 @@ def process_all_datasets(
         noise_percentages=noise_percentages,
         nar_min_corruption=nar_min_corruption,
         nar_max_corruption=nar_max_corruption,
+        clean_feature_frac=clean_feature_frac,
     )
 
     if ar_mechanisms is None:
@@ -951,6 +987,14 @@ if __name__ == "__main__":
         help="Maximum total cell corruption for NAR, 0–1 (config default: 0.50)",
     )
 
+    noise_group.add_argument(
+        "--clean-feature-frac", type=float, default=None,
+        help=(
+            "Fraction of feature columns kept completely clean (0–1, config default: 0.0). "
+            "0.0 = all features may be poisoned; 0.3 = 30%% of columns are never touched."
+        ),
+    )
+
     args = parser.parse_args()
 
     # ── Load config ────────────────────────────────────────────────────────────
@@ -1015,6 +1059,9 @@ if __name__ == "__main__":
         "enable_rare_missing":     _nar_cfg.get("enable_rare_missing",     True) and not args.no_nar_rare_missing,
     }
 
+    # ── Clean feature fraction ─────────────────────────────────────────────────
+    clean_feature_frac = _resolve(args.clean_feature_frac, _noise_cfg, "clean_feature_frac", 0.0)
+
     process_all_datasets(
         args.input_dir,
         args.output_dir,
@@ -1025,4 +1072,5 @@ if __name__ == "__main__":
         test_size=test_size,
         nar_min_corruption=nar_min_corruption,
         nar_max_corruption=nar_max_corruption,
+        clean_feature_frac=clean_feature_frac,
     )

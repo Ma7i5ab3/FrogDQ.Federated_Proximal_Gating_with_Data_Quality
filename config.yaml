@@ -268,6 +268,11 @@ poisoning:
   # the per-column corruption rate (0–1).
   # mild_frac is computed automatically as 1 - moderate_frac - heavy_frac - severe_frac.
   noise:
+    # Fraction of feature columns kept completely unpoisoned (0.0–1.0).
+    # 0.0 = all features may be poisoned (current behaviour).
+    # e.g. 0.3 = 30 % of columns are randomly selected and never touched.
+    clean_feature_frac: 0.0
+
     mild_rate: 0.06
     moderate_frac: 0.30
     moderate_rate: 0.12
