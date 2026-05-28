@@ -51,13 +51,15 @@ print(f"DB: {DB_PATH.resolve()}  |  exists: {DB_PATH.exists()}")
 
 # Config suffix → human-readable label (shown in legend / axes)
 CONFIG_LABELS = {
-    "curr0_gate0": "Baseline",
-    "curr1_gate0": "+ Curriculum",
-    "curr0_gate1": "+ Gate",
-    "curr1_gate1": "+ Gate + Curr",
-    "ag":          "AutoGluon prep",
-    "saga":        "Saga++ prep",
-    "cp":          "CP prep",
+    "curr0_gate0":  "Baseline",
+    "curr1_gate0":  "+ Curriculum",
+    "curr0_gate1":  "+ Gate",
+    "curr1_gate1":  "+ Gate + Curr",
+    "ag":           "AutoGluon prep",
+    "saga":         "Saga++ prep",
+    "cp":           "CP prep",
+    "baseline_zero": "Zero imputation",
+    "knn":          "KNN imputation",
 }
 
 BAR_ORDER = [
@@ -67,19 +69,23 @@ BAR_ORDER = [
     "AutoGluon prep",
     "Saga++ prep",
     "CP prep",
+    "Zero imputation",
+    "KNN imputation",
     "+ Gate",
     "+ Gate + Curr",
 ]
 
 BAR_COLORS = {
-    "Clean":          "#4c9bcd",
-    "Baseline":       "#aaaaaa",
-    "+ Curriculum":   "#e07b39",
-    "AutoGluon prep": "#9b59b6",
-    "Saga++ prep":    "#1abc9c",
-    "CP prep":        "#f39c12",
-    "+ Gate":         "#e74c3c",
-    "+ Gate + Curr":  "#2ecc71",
+    "Clean":            "#4c9bcd",
+    "Baseline":         "#aaaaaa",
+    "+ Curriculum":     "#e07b39",
+    "AutoGluon prep":   "#9b59b6",
+    "Saga++ prep":      "#1abc9c",
+    "CP prep":          "#f39c12",
+    "Zero imputation":  "#778ca3",
+    "KNN imputation":   "#00acc1",
+    "+ Gate":           "#e74c3c",
+    "+ Gate + Curr":    "#2ecc71",
 }
 
 NCOLS = 5
@@ -118,7 +124,8 @@ def load_studies(split: str = "test", metric: str = "f1") -> pd.DataFrame:
     * **data_mode**  : ``clean`` | ``ar`` | ``nar``
     * **model_type** : ``linear`` | ``mlp``
     * **config**     : ``curr0_gate0`` | ``curr1_gate0`` | ``curr0_gate1`` |
-                       ``curr1_gate1`` | ``ag`` | ``saga`` | ``cp``
+                       ``curr1_gate1`` | ``ag`` | ``saga`` | ``cp`` |
+                       ``baseline_zero`` | ``knn``
 
     Metrics are read from ``best_trial.user_attrs["seed_results"]``, a list
     of per-seed dicts whose keys follow ``{split}_{metric}`` (e.g.
@@ -158,7 +165,7 @@ def load_studies(split: str = "test", metric: str = "f1") -> pd.DataFrame:
     """
     _RE = re.compile(
         r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-        r"_(?P<config>curr[01]_gate[01]|ag|saga|cp)$"
+        r"_(?P<config>curr[01]_gate[01]|ag|saga|cp|baseline_zero|knn)$"
     )
     metric_key = f"{split}_{metric}"
 

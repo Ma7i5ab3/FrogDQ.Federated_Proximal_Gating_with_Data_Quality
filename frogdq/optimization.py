@@ -956,7 +956,18 @@ class OptunaExperiment:
         # use set_user_attr if in-memory recovery is ever needed in the future.
 
         # Save histories to disk immediately (so they're available even after warm_start)
-        study_name = f"{dataset_name}_{data_mode}_{model_type}_curr{int(use_curriculum)}_gate{int(use_gate)}"
+        if preparation == 'autogluon':
+            study_name = f"{dataset_name}_{data_mode}_{model_type}_ag"
+        elif preparation == 'saga':
+            study_name = f"{dataset_name}_{data_mode}_{model_type}_saga"
+        elif preparation == 'cp':
+            study_name = f"{dataset_name}_{data_mode}_{model_type}_cp"
+        elif preparation == 'baseline_zero':
+            study_name = f"{dataset_name}_{data_mode}_{model_type}_baseline_zero"
+        elif preparation == 'knn':
+            study_name = f"{dataset_name}_{data_mode}_{model_type}_knn"
+        else:
+            study_name = f"{dataset_name}_{data_mode}_{model_type}_curr{int(use_curriculum)}_gate{int(use_gate)}"
         self._save_trial_histories(study_name, trial.number, results)
 
         # For both classification (F1) and regression (R2), higher is better
