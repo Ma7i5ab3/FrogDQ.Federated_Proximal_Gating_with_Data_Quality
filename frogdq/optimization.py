@@ -237,6 +237,10 @@ class OptunaExperiment:
         self.run_knn = config.get('run_knn', False)
         self.knn_data_dir = config.get('knn_data_dir', 'data_knn')
 
+        # Base data directories (relative to CWD or absolute)
+        self.data_dir = config.get('data_dir', 'data')
+        self.poisoned_dir = config.get('poisoned_dir', 'data_poisoned')
+
         # Optuna storage for persistence
         self.storage_url = _get_storage_url(self.output_dir)
 
@@ -430,6 +434,8 @@ class OptunaExperiment:
                     saga_dir=self.saga_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             )
         elif preparation == 'cp':
@@ -441,6 +447,8 @@ class OptunaExperiment:
                     cp_dir=self.cp_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             )
         elif preparation == 'baseline_zero':
@@ -452,6 +460,8 @@ class OptunaExperiment:
                     baseline_zero_dir=self.baseline_zero_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             )
         elif preparation == 'knn':
@@ -463,6 +473,8 @@ class OptunaExperiment:
                     knn_dir=self.knn_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             )
         else:
@@ -472,6 +484,9 @@ class OptunaExperiment:
                 seed=seed,
                 clean_val=self.clean_val,
                 clean_test=self.clean_test,
+                data_dir=self.data_dir,
+                poisoned_dir=self.poisoned_dir,
+                test_dir=self.poisoned_dir,
             )
 
         # Determine task type
@@ -804,6 +819,8 @@ class OptunaExperiment:
                     saga_dir=self.saga_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             elif preparation == 'cp':
                 _, (y_train, _, _), _, metadata = load_cp_data(
@@ -813,6 +830,8 @@ class OptunaExperiment:
                     cp_dir=self.cp_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             elif preparation == 'baseline_zero':
                 _, (y_train, _, _), _, metadata = load_baseline_zero_data(
@@ -822,6 +841,8 @@ class OptunaExperiment:
                     baseline_zero_dir=self.baseline_zero_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             elif preparation == 'knn':
                 _, (y_train, _, _), _, metadata = load_knn_data(
@@ -831,6 +852,8 @@ class OptunaExperiment:
                     knn_dir=self.knn_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             else:
                 _, (y_train, _, _), _, metadata = load_data(
@@ -839,6 +862,9 @@ class OptunaExperiment:
                     seed=self.seed_start,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
+                    test_dir=self.poisoned_dir,
                 )
             task = metadata.get('task_type', 'classification')
             if task not in ['classification', 'regression']:
@@ -1346,14 +1372,15 @@ class OptunaExperiment:
                     })
 
                     # 11. quAIL gate + curriculum
-                    experiments.append({
-                        'dataset': dataset,
-                        'data_mode': data_mode,
-                        'model_type': model_type,
-                        'use_curriculum': True,
-                        'use_gate': True,
-                        'preparation': 'standard',
-                    })
+                    if self.config.get('run_gate_curriculum', True):
+                        experiments.append({
+                            'dataset': dataset,
+                            'data_mode': data_mode,
+                            'model_type': model_type,
+                            'use_curriculum': True,
+                            'use_gate': True,
+                            'preparation': 'standard',
+                        })
 
         total_experiments = len(experiments)
         experiment_count = 0

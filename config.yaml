@@ -25,74 +25,11 @@
 
 # Datasets 001-068
 datasets:
-  - kr_vs_kp
-  - letter
-  - balance_scale
-  - mfeat_factors
-  - mfeat_fourier
-  - breast_w
-  - mfeat_karhunen
-  - mfeat_morphological
-  - mfeat_zernike
-  - cmc
-  - optdigits
-  - credit_approval
-  - credit_g
-  - pendigits
-  - diabetes
-  - spambase
-  - splice
-  - tic_tac_toe
-  - vehicle
-  - electricity
-  - satimage
-  - eucalyptus
-  - sick
-  - vowel
-  - isolet
-  - analcatdata_authorship
-  - analcatdata_dmft
-  - mnist_784
-  - pc4
-  - pc3
-  - jm1
-  - kc2
-  - kc1
-  - pc1
-  - adult
-  - bioresponse
-  - wdbc
-  - phoneme
-  - qsar_biodeg
-  - wall_robot_navigation
-  - semeion
-  - ilpd
-  - madelon
-  - nomao
-  - ozone_level_8hr
-  - cnae_9
-  - first_order_theorem_proving
-  - banknote_authentication
-  - blood_transfusion_service_center
+  - dna
   - phishingwebsites
-  - cylinder_bands
-  - bank_marketing
-  - gesturephasesegmentationprocessed
-  - har
-  - dresses_sales
-  - texture
-  - connect_4
-  - miceprotein
-  - steel_plates_fault
-  - climate_model_simulation_crashes
-  - wilt
   - car
-  - segment
-  - mfeat_pixel
-  - fashion_mnist
-  - jungle_chess_2pcs_raw_endgame_complete
-  - numerai28.6
-  - devnagari_script
+  - tic_tac_toe
+  - sick
 
 
 # Data quality modes to test
@@ -105,7 +42,6 @@ data_modes:
 # Model architectures to test
 # Options: 'linear' (no hidden layers), 'mlp' (multi-layer perceptron)
 model_types:
-  - linear
   - mlp
 
 # Curriculum learning settings to test
@@ -149,7 +85,7 @@ n_trials: 256
 
 # Number of random seeds to evaluate per trial
 # The best hyperparameters are those with the best average validation metric
-n_seeds: 5
+n_seeds: 10
 
 # Starting seed for incremental seed generation
 # Seeds will be: seed_start, seed_start+1, seed_start+2, ...
@@ -157,7 +93,7 @@ seed_start: 42
 
 # Number of top trials to log (with all seeds)
 # The top-M trials will be saved with full train/val/test metrics
-top_m: 5
+top_m: 10
 
 # Parallel Processing
 # -------------------
@@ -208,7 +144,7 @@ reuse_top_n: 8
 #
 # false: skip AutoGluon benchmark (default)
 # true:  include AutoGluon benchmark experiments
-run_autogluon: true
+run_autogluon: false
 
 # Directory containing pre-computed AutoGluon features produced by scripts/autogluon.py.
 # Structure: data_autogluon/{mode}/{model_type}/{dataset_name}/seed_{seed}.npz
@@ -242,7 +178,7 @@ saga_data_dir: data_cleaned_saga
 # Whether to include Baseline 0 as a data-preparation benchmark.
 # Numerical NaN → 0; categorical NaN → random observed value.
 # Requires running scripts/baseline_zero.py first.
-run_baseline_zero: true
+run_baseline_zero: false
 
 # Directory containing Baseline-0-imputed data produced by scripts/baseline_zero.py.
 baseline_zero_data_dir: data_baseline_zero
@@ -251,10 +187,17 @@ baseline_zero_data_dir: data_baseline_zero
 # -----------------------------------
 # Whether to include KNN imputation as a data-preparation benchmark.
 # Requires running scripts/knn.py first.
-run_knn: true
+run_knn: false
 
 # Directory containing KNN-imputed data produced by scripts/knn.py.
 knn_data_dir: data_knn
+
+# Gate + Curriculum Experiment Settings
+# ---------------------------------------
+# Whether to include the combined gate+curriculum experiment.
+# true:  run gate+curriculum (default)
+# false: skip gate+curriculum
+run_gate_curriculum: false
 
 # Data Poisoning Settings
 # -----------------------
@@ -271,15 +214,15 @@ poisoning:
     # Fraction of feature columns kept completely unpoisoned (0.0–1.0).
     # 0.0 = all features may be poisoned (current behaviour).
     # e.g. 0.3 = 30 % of columns are randomly selected and never touched.
-    clean_feature_frac: 0.0
+    clean_feature_frac: 0.4
 
     mild_rate: 0.06
     moderate_frac: 0.30
-    moderate_rate: 0.12
+    moderate_rate: 0.15
     heavy_frac: 0.20
-    heavy_rate: 0.24
-    severe_frac: 0.10
-    severe_rate: 0.48
+    heavy_rate: 0.35
+    severe_frac: 0.15
+    severe_rate: 0.50
 
   # AR (At Random) poisoning mechanisms.
   # Set to false to disable a specific mechanism.
