@@ -581,17 +581,14 @@ class TabularPreprocessor:
 
     def _compute_feature_names(self):
         """Compute output feature names after transformation."""
-        feature_names = []
-
-        if self.numerical_features_:
-            feature_names.extend(self.numerical_features_)
-
-        if self.categorical_features_:
-            cat_encoder = self.preprocessor_.named_transformers_["cat"]["onehot"]
-            cat_feature_names = cat_encoder.get_feature_names_out(self.categorical_features_)
-            feature_names.extend(cat_feature_names)
-
-        self.feature_names_out_ = feature_names
+        # Use ColumnTransformer's get_feature_names_out() so that columns silently
+        # dropped by SimpleImputer (e.g. all-NaN features like 'num_TBG' in the
+        # sick dataset) are not included. Without this, get_feature_names_out()
+        # would report N names while transform() returns N-1 columns, causing a
+        # tensor size mismatch in the gate loss computation.
+        raw_names = self.preprocessor_.get_feature_names_out()
+        # Strip the transformer-name prefix added by ColumnTransformer (e.g. 'num__' / 'cat__')
+        self.feature_names_out_ = [name.split("__", 1)[1] for name in raw_names]
 
     def get_feature_names_out(self) -> List[str]:
         """Get output feature names after transformation."""

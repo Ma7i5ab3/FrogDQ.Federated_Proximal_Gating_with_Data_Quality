@@ -747,6 +747,8 @@ def load_cp_data(
     cp_dir: str = "data_cleaned_cp",
     clean_val: bool = True,
     clean_test: bool = True,
+    data_dir: str = "data",
+    poisoned_dir: str = "data_poisoned",
     **kwargs,
 ) -> Tuple[
     Tuple[np.ndarray, np.ndarray, np.ndarray],
@@ -795,8 +797,9 @@ def load_cp_data(
         seed=seed,
         clean_val=clean_val,
         clean_test=clean_test,
+        data_dir=data_dir,
         poisoned_dir=cp_dir,
-        test_dir="data_poisoned",
+        test_dir=poisoned_dir,
         **kwargs,
     )
 
@@ -808,6 +811,8 @@ def load_baseline_zero_data(
     baseline_zero_dir: str = "data_baseline_zero",
     clean_val: bool = True,
     clean_test: bool = True,
+    data_dir: str = "data",
+    poisoned_dir: str = "data_poisoned",
     **kwargs,
 ) -> Tuple[
     Tuple[np.ndarray, np.ndarray, np.ndarray],
@@ -856,8 +861,9 @@ def load_baseline_zero_data(
         seed=seed,
         clean_val=clean_val,
         clean_test=clean_test,
+        data_dir=data_dir,
         poisoned_dir=baseline_zero_dir,
-        test_dir="data_poisoned",
+        test_dir=poisoned_dir,
         **kwargs,
     )
 
@@ -869,6 +875,8 @@ def load_knn_data(
     knn_dir: str = "data_knn",
     clean_val: bool = True,
     clean_test: bool = True,
+    data_dir: str = "data",
+    poisoned_dir: str = "data_poisoned",
     **kwargs,
 ) -> Tuple[
     Tuple[np.ndarray, np.ndarray, np.ndarray],
@@ -916,8 +924,9 @@ def load_knn_data(
         seed=seed,
         clean_val=clean_val,
         clean_test=clean_test,
+        data_dir=data_dir,
         poisoned_dir=knn_dir,
-        test_dir="data_poisoned",
+        test_dir=poisoned_dir,
         **kwargs,
     )
 

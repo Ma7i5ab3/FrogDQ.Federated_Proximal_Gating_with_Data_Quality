@@ -285,14 +285,68 @@ class DataPreparation:
     # Cleaning steps
     # ------------------------------------------------------------------
 
+    def _compute_quality_meta(
+        self,
+        df_poisoned: pd.DataFrame,
+        mask_df: pd.DataFrame,
+        col_types: Dict[str, list],
+    ) -> Dict[str, Dict[str, float]]:
+        """
+        Derive per-column quality metadata from the corruption mask.
+
+        For each numerical column returns:
+          nan_rate     – fraction of cells that are NaN in the poisoned data
+                         (these are handled by imputation)
+          outlier_rate – fraction of cells that were corrupted but remain non-NaN
+                         (these are the target for outlier clipping)
+
+        Relationship:
+          total_corrupted = nan_rate + outlier_rate
+        So if 20% of a column is corrupted and 15% of cells are NaN,
+        the clipping step should target the remaining 5%.
+        """
+        n = len(df_poisoned)
+        meta: Dict[str, Dict[str, float]] = {}
+        for col in col_types["numerical"]:
+            if col not in mask_df.columns or col not in df_poisoned.columns:
+                continue
+            total_corrupted = int(mask_df[col].sum())
+            nan_and_corrupted = int((mask_df[col] & df_poisoned[col].isna()).sum())
+            outlier_count = max(0, total_corrupted - nan_and_corrupted)
+            meta[col] = {
+                "nan_rate": float(df_poisoned[col].isna().sum() / n),
+                "outlier_rate": float(outlier_count / n),
+            }
+        return meta
+
     def _clip_outliers(
-        self, df: pd.DataFrame, col_types: Dict[str, list]
+        self,
+        df: pd.DataFrame,
+        col_types: Dict[str, list],
+        quality_meta: Dict[str, Dict[str, float]] = None,
     ) -> pd.DataFrame:
         """
-        Nullify numerical values outside [Q1 - k*IQR, Q3 + k*IQR].
+        Nullify numerical values that are likely outliers/noise.
 
-        Extreme values introduced by noise mechanisms (especially NAR) are
-        replaced with NaN rather than clipped to the fence.
+        Two modes, selected per column:
+
+        Quality-aware (when quality_meta is provided and outlier_rate > 0):
+          Uses the known corruption fraction from the mask to derive exact
+          per-column quantile thresholds so that clipping targets only the
+          non-NaN corrupted cells.  If the column's outlier_rate is 0 (all
+          corruption was NaN-type), clipping is skipped entirely for that column.
+
+              q_lo = outlier_rate / 2
+              q_hi = 1 – outlier_rate / 2
+              → values below series.quantile(q_lo) or above series.quantile(q_hi)
+                are nullified
+
+        Fallback (no metadata or column absent from meta):
+          IQR-based clipping: nullifies values outside
+          [Q1 – k*IQR, Q3 + k*IQR] where k = self.iqr_factor.
+
+        In both cases extreme values are replaced with NaN so that the
+        subsequent MICE re-imputation step can fill them correctly.
         """
         df_out = df.copy()
         n_rows = len(df_out)
@@ -300,15 +354,30 @@ class DataPreparation:
             series = df_out[col].dropna()
             if len(series) == 0:
                 continue
-            q1, q3 = series.quantile(0.25), series.quantile(0.75)
-            iqr = q3 - q1
-            if iqr == 0:
-                continue
-            lo = q1 - self.iqr_factor * iqr
-            hi = q3 + self.iqr_factor * iqr
 
             if df_out[col].dtype in ["int64", "int32", "int16", "int8"]:
                 df_out[col] = df_out[col].astype("float64")
+
+            if quality_meta is not None and col in quality_meta:
+                outlier_rate = quality_meta[col]["outlier_rate"]
+                if outlier_rate <= 0:
+                    logger.info(f"    {col}: outlier_rate=0 — skipping clipping")
+                    continue
+                # Cap at 40 % per tail to avoid degenerate quantiles when
+                # corruption is very high (> 80 %); in that regime the
+                # quantile boundary would land inside the noise distribution.
+                half = min(outlier_rate / 2, 0.40)
+                lo = series.quantile(half)
+                hi = series.quantile(1.0 - half)
+                mode = "quality-aware"
+            else:
+                q1, q3 = series.quantile(0.25), series.quantile(0.75)
+                iqr = q3 - q1
+                if iqr == 0:
+                    continue
+                lo = q1 - self.iqr_factor * iqr
+                hi = q3 + self.iqr_factor * iqr
+                mode = "IQR"
 
             outlier_mask = df_out[col].notna() & (
                 (df_out[col] < lo) | (df_out[col] > hi)
@@ -316,7 +385,8 @@ class DataPreparation:
             n_outliers = int(outlier_mask.sum())
             df_out[col] = df_out[col].where(~outlier_mask)
             logger.info(
-                f"    {col}: {n_outliers} outliers ({n_outliers / n_rows * 100:.2f}% of rows)"
+                f"    {col} [{mode}]: {n_outliers} outliers "
+                f"({n_outliers / n_rows * 100:.2f}% of rows)"
             )
         return df_out
 
@@ -658,6 +728,22 @@ class DataPreparation:
         col_types = self.identify_column_types(df_poisoned)
         df_clean = df_poisoned.copy()
 
+        # Derive per-column quality metadata from the corruption mask BEFORE
+        # any cleaning so that outlier_rate reflects the original poisoning.
+        quality_meta = self._compute_quality_meta(df_poisoned, mask_df, col_types)
+        if quality_meta:
+            total_outlier_cells = sum(
+                int(v["outlier_rate"] * len(df_poisoned)) for v in quality_meta.values()
+            )
+            total_nan_cells = sum(
+                int(v["nan_rate"] * len(df_poisoned)) for v in quality_meta.values()
+            )
+            logger.info(
+                f"  Quality metadata: {total_nan_cells} NaN-corrupted cells "
+                f"(→ imputation), {total_outlier_cells} noise-corrupted cells "
+                f"(→ clipping) across {len(quality_meta)} numerical columns"
+            )
+
         # Step 0: SHAP feature ranking
         ranked_features = self._compute_shap_ranking(df_poisoned, col_types)
         # Always define selected; when shap_top_pct==1.0, all features are kept
@@ -684,9 +770,10 @@ class DataPreparation:
         logger.info("  Step 1: MICE RF imputation")
         df_clean = self._impute_mice(df_clean, selected)
 
-        # Step 2: Outlier detection with IQR for numerical features
-        logger.info("  Step 2: IQR outlier clipping")
-        df_clean = self._clip_outliers(df_clean, col_types)
+        # Step 2: Outlier detection — quality-aware quantile clipping when
+        # metadata is available, IQR fallback otherwise.
+        logger.info("  Step 2: Outlier clipping (quality-aware)")
+        df_clean = self._clip_outliers(df_clean, col_types, quality_meta=quality_meta)
 
         # Step 3: Outlier detection with pairwise association rules for categorical features
         logger.info("  Step 3: Categorical AR outlier detection")

@@ -10,6 +10,7 @@
 #   6. Baseline 0 (zero/random imputation)
 #   7. KNN Imputation
 #   8. Main (Optuna experiments)
+#   9. Evaluation (Friedman test + critical-difference diagrams)
 #
 # Usage:
 #   ./run_pipeline.sh [options]
@@ -23,7 +24,9 @@
 #   --skip-baseline-zero Skip step 6 (Baseline 0)
 #   --skip-knn           Skip step 7 (KNN imputation)
 #   --skip-main          Skip step 8 (main experiments)
-#   --start-from N       Start from step N (1–8), skipping earlier steps
+#   --skip-evaluate      Skip step 9 (evaluation)
+#   --start-from N       Start from step N (1–9), skipping earlier steps
+#   --eval-output-dir D  Output directory for evaluation plots (default: evaluation)
 #   -y, --yes            Auto-confirm the main experiment prompt
 #   -h, --help           Show this help message
 
@@ -73,8 +76,10 @@ SKIP_AUTOGLUON=false
 SKIP_BASELINE_ZERO=false
 SKIP_KNN=false
 SKIP_MAIN=false
+SKIP_EVALUATE=false
 AUTO_YES=false
 START_FROM=1
+EVAL_OUTPUT_DIR="evaluation"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -86,9 +91,13 @@ while [[ $# -gt 0 ]]; do
         --skip-baseline-zero) SKIP_BASELINE_ZERO=true ;;
         --skip-knn)           SKIP_KNN=true           ;;
         --skip-main)          SKIP_MAIN=true          ;;
+        --skip-evaluate)      SKIP_EVALUATE=true      ;;
         --start-from)
             START_FROM="$2"; shift
-            [[ "$START_FROM" =~ ^[1-8]$ ]] || die "--start-from requires a number between 1 and 8"
+            [[ "$START_FROM" =~ ^[1-9]$ ]] || die "--start-from requires a number between 1 and 9"
+            ;;
+        --eval-output-dir)
+            EVAL_OUTPUT_DIR="$2"; shift
             ;;
         -y|--yes)         AUTO_YES=true       ;;
         -h|--help)
@@ -108,6 +117,7 @@ done
 (( START_FROM > 5 )) && SKIP_AUTOGLUON=true
 (( START_FROM > 6 )) && SKIP_BASELINE_ZERO=true
 (( START_FROM > 7 )) && SKIP_KNN=true
+(( START_FROM > 8 )) && SKIP_MAIN=true
 
 # ── preflight ─────────────────────────────────────────────────────────────────
 [[ -x "$PYTHON" ]]  || die "Python not found at: $PYTHON"
@@ -225,6 +235,17 @@ else
         "$PYTHON" main.py "${MAIN_ARGS[@]}"
     fi
     step_ok 8
+fi
+
+# ── step 9 — evaluation (friedman test + cd diagrams) ────────────────────────
+step_header 9 "Evaluation (Friedman Test + Critical-Difference Diagrams)"
+if $SKIP_EVALUATE; then
+    step_skip 9
+else
+    "$PYTHON" scripts/evaluate.py \
+        --config     "$CONFIG" \
+        --output-dir "$EVAL_OUTPUT_DIR"
+    step_ok 9
 fi
 
 echo ""

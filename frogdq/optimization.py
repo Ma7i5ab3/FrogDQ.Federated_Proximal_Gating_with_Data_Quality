@@ -237,6 +237,10 @@ class OptunaExperiment:
         self.run_knn = config.get('run_knn', False)
         self.knn_data_dir = config.get('knn_data_dir', 'data_knn')
 
+        # Base data directories (relative to CWD or absolute)
+        self.data_dir = config.get('data_dir', 'data')
+        self.poisoned_dir = config.get('poisoned_dir', 'data_poisoned')
+
         # Optuna storage for persistence
         self.storage_url = _get_storage_url(self.output_dir)
 
@@ -430,6 +434,8 @@ class OptunaExperiment:
                     saga_dir=self.saga_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             )
         elif preparation == 'cp':
@@ -441,6 +447,8 @@ class OptunaExperiment:
                     cp_dir=self.cp_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             )
         elif preparation == 'baseline_zero':
@@ -452,6 +460,8 @@ class OptunaExperiment:
                     baseline_zero_dir=self.baseline_zero_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             )
         elif preparation == 'knn':
@@ -463,6 +473,8 @@ class OptunaExperiment:
                     knn_dir=self.knn_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             )
         else:
@@ -472,6 +484,9 @@ class OptunaExperiment:
                 seed=seed,
                 clean_val=self.clean_val,
                 clean_test=self.clean_test,
+                data_dir=self.data_dir,
+                poisoned_dir=self.poisoned_dir,
+                test_dir=self.poisoned_dir,
             )
 
         # Determine task type
@@ -826,6 +841,8 @@ class OptunaExperiment:
                     saga_dir=self.saga_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             elif preparation == 'cp':
                 _, (y_train, _, _), _, metadata = load_cp_data(
@@ -835,6 +852,8 @@ class OptunaExperiment:
                     cp_dir=self.cp_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             elif preparation == 'baseline_zero':
                 _, (y_train, _, _), _, metadata = load_baseline_zero_data(
@@ -844,6 +863,8 @@ class OptunaExperiment:
                     baseline_zero_dir=self.baseline_zero_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             elif preparation == 'knn':
                 _, (y_train, _, _), _, metadata = load_knn_data(
@@ -853,6 +874,8 @@ class OptunaExperiment:
                     knn_dir=self.knn_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
                 )
             else:
                 _, (y_train, _, _), _, metadata = load_data(
@@ -861,6 +884,9 @@ class OptunaExperiment:
                     seed=self.seed_start,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
+                    test_dir=self.poisoned_dir,
                 )
             task = metadata.get('task_type', 'classification')
             if task not in ['classification', 'regression']:
@@ -1300,7 +1326,129 @@ class OptunaExperiment:
             Combined results from all experiments
         """
         all_results = []
-        experiments = self._build_experiment_list()
+
+        # Generate experiment list matching the benchmark per model:
+        #  1. Clean baseline
+        #  2. AR/NAR poisoned baseline
+        #  3. AR/NAR + AutoGluon  (if run_autogluon)
+        #  4. AR/NAR + CP         (if run_cp)
+        #  5. AR/NAR + Saga       (if run_saga)
+        #  6. AR/NAR + curriculum
+        #  7. AR/NAR + gate
+        #  8. AR/NAR + gate + curriculum
+        # All configs apply symmetrically to both Linear and MLP.
+        experiments = []
+        ar_nar_modes = [m for m in self.data_modes if m in ('ar', 'nar')]
+
+        for dataset in self.datasets:
+            for model_type in self.model_types:
+                # 1. Clean baseline
+                if 'clean' in self.data_modes:
+                    experiments.append({
+                        'dataset': dataset,
+                        'data_mode': 'clean',
+                        'model_type': model_type,
+                        'use_curriculum': False,
+                        'use_gate': False,
+                        'preparation': 'standard',
+                    })
+
+                for data_mode in ar_nar_modes:
+                    # 2. Poisoned baseline
+                    experiments.append({
+                        'dataset': dataset,
+                        'data_mode': data_mode,
+                        'model_type': model_type,
+                        'use_curriculum': False,
+                        'use_gate': False,
+                        'preparation': 'standard',
+                    })
+
+                    # 3. AutoGluon data-preparation baseline
+                    if self.run_autogluon:
+                        experiments.append({
+                            'dataset': dataset,
+                            'data_mode': data_mode,
+                            'model_type': model_type,
+                            'use_curriculum': False,
+                            'use_gate': False,
+                            'preparation': 'autogluon',
+                        })
+
+                    # 4. CP (custom pipeline) data-preparation baseline
+                    if self.run_cp:
+                        experiments.append({
+                            'dataset': dataset,
+                            'data_mode': data_mode,
+                            'model_type': model_type,
+                            'use_curriculum': False,
+                            'use_gate': False,
+                            'preparation': 'cp',
+                        })
+
+                    # 5. Saga data-preparation baseline
+                    if self.run_saga:
+                        experiments.append({
+                            'dataset': dataset,
+                            'data_mode': data_mode,
+                            'model_type': model_type,
+                            'use_curriculum': False,
+                            'use_gate': False,
+                            'preparation': 'saga',
+                        })
+
+                    # 6. Baseline 0 (zero/random imputation)
+                    if self.run_baseline_zero:
+                        experiments.append({
+                            'dataset': dataset,
+                            'data_mode': data_mode,
+                            'model_type': model_type,
+                            'use_curriculum': False,
+                            'use_gate': False,
+                            'preparation': 'baseline_zero',
+                        })
+
+                    # 7. KNN imputation baseline
+                    if self.run_knn:
+                        experiments.append({
+                            'dataset': dataset,
+                            'data_mode': data_mode,
+                            'model_type': model_type,
+                            'use_curriculum': False,
+                            'use_gate': False,
+                            'preparation': 'knn',
+                        })
+
+                    # 9. Curriculum learning
+                    experiments.append({
+                        'dataset': dataset,
+                        'data_mode': data_mode,
+                        'model_type': model_type,
+                        'use_curriculum': True,
+                        'use_gate': False,
+                        'preparation': 'standard',
+                    })
+
+                    # 10. quAIL gate
+                    experiments.append({
+                        'dataset': dataset,
+                        'data_mode': data_mode,
+                        'model_type': model_type,
+                        'use_curriculum': False,
+                        'use_gate': True,
+                        'preparation': 'standard',
+                    })
+
+                    # 11. quAIL gate + curriculum
+                    if self.config.get('run_gate_curriculum', True):
+                        experiments.append({
+                            'dataset': dataset,
+                            'data_mode': data_mode,
+                            'model_type': model_type,
+                            'use_curriculum': True,
+                            'use_gate': True,
+                            'preparation': 'standard',
+                        })
 
         total_experiments = len(experiments)
         experiment_count = 0
