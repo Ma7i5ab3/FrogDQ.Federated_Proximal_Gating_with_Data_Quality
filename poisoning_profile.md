@@ -21,10 +21,10 @@ Columns are shuffled, then assigned a tier; remaining columns default to mild.
 
 | Tier | Column fraction | Poison rate per column |
 |---|---|---|
-| Mild | 56.25 % | 6 % |
-| Moderate | 25.00 % | 12 % |
-| Heavy | 12.50 % | 24 % |
-| Severe | 6.25 % | 48 % |
+| Mild | 56.25 % | 5 % |
+| Moderate | 25.00 % | 10 % |
+| Heavy | 12.50 % | 21 % |
+| Severe | 6.25 % | 42 % |
 
 Calibrated to produce approximately **21 % total cell corruption in CAR**
 (~12 % value noise + ~9 % MCAR).

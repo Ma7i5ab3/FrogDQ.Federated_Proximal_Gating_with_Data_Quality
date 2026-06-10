@@ -335,11 +335,11 @@ def main() -> None:
     # ── step 3 ──
     g3 = parser.add_argument_group("Step 3 — pilot filter")
     g3.add_argument(
-        "--pilot-threshold", type=int, default=20,
+        "--pilot-threshold", type=int, default=25,
         help="Run pilot only when surviving datasets exceed this count.",
     )
     g3.add_argument(
-        "--pilot-select", type=int, default=20,
+        "--pilot-select", type=int, default=5,
         help="Number of datasets to retain after the pilot.",
     )
     g3.add_argument(

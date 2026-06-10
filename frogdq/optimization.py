@@ -744,6 +744,28 @@ class OptunaExperiment:
                 print(f"  Baseline study not found: {study_name}")
             return None
 
+    def _get_study_name(
+        self,
+        dataset_name: str,
+        data_mode: str,
+        model_type: str,
+        use_curriculum: bool,
+        use_gate: bool,
+        preparation: str,
+    ) -> str:
+        if preparation == 'autogluon':
+            return f"{dataset_name}_{data_mode}_{model_type}_ag"
+        elif preparation == 'saga':
+            return f"{dataset_name}_{data_mode}_{model_type}_saga"
+        elif preparation == 'cp':
+            return f"{dataset_name}_{data_mode}_{model_type}_cp"
+        elif preparation == 'baseline_zero':
+            return f"{dataset_name}_{data_mode}_{model_type}_baseline_zero"
+        elif preparation == 'knn':
+            return f"{dataset_name}_{data_mode}_{model_type}_knn"
+        else:
+            return f"{dataset_name}_{data_mode}_{model_type}_curr{int(use_curriculum)}_gate{int(use_gate)}"
+
     def _objective(
         self,
         trial: optuna.Trial,
@@ -956,18 +978,9 @@ class OptunaExperiment:
         # use set_user_attr if in-memory recovery is ever needed in the future.
 
         # Save histories to disk immediately (so they're available even after warm_start)
-        if preparation == 'autogluon':
-            study_name = f"{dataset_name}_{data_mode}_{model_type}_ag"
-        elif preparation == 'saga':
-            study_name = f"{dataset_name}_{data_mode}_{model_type}_saga"
-        elif preparation == 'cp':
-            study_name = f"{dataset_name}_{data_mode}_{model_type}_cp"
-        elif preparation == 'baseline_zero':
-            study_name = f"{dataset_name}_{data_mode}_{model_type}_baseline_zero"
-        elif preparation == 'knn':
-            study_name = f"{dataset_name}_{data_mode}_{model_type}_knn"
-        else:
-            study_name = f"{dataset_name}_{data_mode}_{model_type}_curr{int(use_curriculum)}_gate{int(use_gate)}"
+        study_name = self._get_study_name(
+            dataset_name, data_mode, model_type, use_curriculum, use_gate, preparation
+        )
         self._save_trial_histories(study_name, trial.number, results)
 
         # For both classification (F1) and regression (R2), higher is better
@@ -1015,19 +1028,9 @@ class OptunaExperiment:
         top_results : pd.DataFrame
             DataFrame with top-M trial results
         """
-        # Build study name — data-preparation baselines get a distinct suffix
-        if preparation == 'autogluon':
-            study_name = f"{dataset_name}_{data_mode}_{model_type}_ag"
-        elif preparation == 'saga':
-            study_name = f"{dataset_name}_{data_mode}_{model_type}_saga"
-        elif preparation == 'cp':
-            study_name = f"{dataset_name}_{data_mode}_{model_type}_cp"
-        elif preparation == 'baseline_zero':
-            study_name = f"{dataset_name}_{data_mode}_{model_type}_baseline_zero"
-        elif preparation == 'knn':
-            study_name = f"{dataset_name}_{data_mode}_{model_type}_knn"
-        else:
-            study_name = f"{dataset_name}_{data_mode}_{model_type}_curr{int(use_curriculum)}_gate{int(use_gate)}"
+        study_name = self._get_study_name(
+            dataset_name, data_mode, model_type, use_curriculum, use_gate, preparation
+        )
 
         # Check if study exists and determine trials to run
         existing_study = None
@@ -1212,6 +1215,71 @@ class OptunaExperiment:
 
         return study, top_results
 
+    def _build_experiment_list(self) -> List[Dict[str, Any]]:
+        experiments = []
+        ar_nar_modes = [m for m in self.data_modes if m in ('ar', 'nar')]
+
+        for dataset in self.datasets:
+            for model_type in self.model_types:
+                if 'clean' in self.data_modes:
+                    experiments.append({
+                        'dataset': dataset, 'data_mode': 'clean', 'model_type': model_type,
+                        'use_curriculum': False, 'use_gate': False, 'preparation': 'standard',
+                    })
+
+                for data_mode in ar_nar_modes:
+                    experiments.append({
+                        'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
+                        'use_curriculum': False, 'use_gate': False, 'preparation': 'standard',
+                    })
+
+                    if self.run_autogluon:
+                        experiments.append({
+                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
+                            'use_curriculum': False, 'use_gate': False, 'preparation': 'autogluon',
+                        })
+
+                    if self.run_cp:
+                        experiments.append({
+                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
+                            'use_curriculum': False, 'use_gate': False, 'preparation': 'cp',
+                        })
+
+                    if self.run_saga:
+                        experiments.append({
+                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
+                            'use_curriculum': False, 'use_gate': False, 'preparation': 'saga',
+                        })
+
+                    if self.run_baseline_zero:
+                        experiments.append({
+                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
+                            'use_curriculum': False, 'use_gate': False, 'preparation': 'baseline_zero',
+                        })
+
+                    if self.run_knn:
+                        experiments.append({
+                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
+                            'use_curriculum': False, 'use_gate': False, 'preparation': 'knn',
+                        })
+
+                    experiments.append({
+                        'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
+                        'use_curriculum': True, 'use_gate': False, 'preparation': 'standard',
+                    })
+
+                    experiments.append({
+                        'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
+                        'use_curriculum': False, 'use_gate': True, 'preparation': 'standard',
+                    })
+
+                    experiments.append({
+                        'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
+                        'use_curriculum': True, 'use_gate': True, 'preparation': 'standard',
+                    })
+
+        return experiments
+
     def run_all_experiments(self) -> pd.DataFrame:
         """
         Run all experiments across all configurations.
@@ -1232,128 +1300,7 @@ class OptunaExperiment:
             Combined results from all experiments
         """
         all_results = []
-
-        # Generate experiment list matching the benchmark per model:
-        #  1. Clean baseline
-        #  2. AR/NAR poisoned baseline
-        #  3. AR/NAR + AutoGluon  (if run_autogluon)
-        #  4. AR/NAR + CP         (if run_cp)
-        #  5. AR/NAR + Saga       (if run_saga)
-        #  6. AR/NAR + curriculum
-        #  7. AR/NAR + gate
-        #  8. AR/NAR + gate + curriculum
-        # All configs apply symmetrically to both Linear and MLP.
-        experiments = []
-        ar_nar_modes = [m for m in self.data_modes if m in ('ar', 'nar')]
-
-        for dataset in self.datasets:
-            for model_type in self.model_types:
-                # 1. Clean baseline
-                if 'clean' in self.data_modes:
-                    experiments.append({
-                        'dataset': dataset,
-                        'data_mode': 'clean',
-                        'model_type': model_type,
-                        'use_curriculum': False,
-                        'use_gate': False,
-                        'preparation': 'standard',
-                    })
-
-                for data_mode in ar_nar_modes:
-                    # 2. Poisoned baseline
-                    experiments.append({
-                        'dataset': dataset,
-                        'data_mode': data_mode,
-                        'model_type': model_type,
-                        'use_curriculum': False,
-                        'use_gate': False,
-                        'preparation': 'standard',
-                    })
-
-                    # 3. AutoGluon data-preparation baseline
-                    if self.run_autogluon:
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': False,
-                            'use_gate': False,
-                            'preparation': 'autogluon',
-                        })
-
-                    # 4. CP (custom pipeline) data-preparation baseline
-                    if self.run_cp:
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': False,
-                            'use_gate': False,
-                            'preparation': 'cp',
-                        })
-
-                    # 5. Saga data-preparation baseline
-                    if self.run_saga:
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': False,
-                            'use_gate': False,
-                            'preparation': 'saga',
-                        })
-
-                    # 6. Baseline 0 (zero/random imputation)
-                    if self.run_baseline_zero:
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': False,
-                            'use_gate': False,
-                            'preparation': 'baseline_zero',
-                        })
-
-                    # 7. KNN imputation baseline
-                    if self.run_knn:
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': False,
-                            'use_gate': False,
-                            'preparation': 'knn',
-                        })
-
-                    # 9. Curriculum learning
-                    experiments.append({
-                        'dataset': dataset,
-                        'data_mode': data_mode,
-                        'model_type': model_type,
-                        'use_curriculum': True,
-                        'use_gate': False,
-                        'preparation': 'standard',
-                    })
-
-                    # 10. quAIL gate
-                    experiments.append({
-                        'dataset': dataset,
-                        'data_mode': data_mode,
-                        'model_type': model_type,
-                        'use_curriculum': False,
-                        'use_gate': True,
-                        'preparation': 'standard',
-                    })
-
-                    # 11. quAIL gate + curriculum
-                    experiments.append({
-                        'dataset': dataset,
-                        'data_mode': data_mode,
-                        'model_type': model_type,
-                        'use_curriculum': True,
-                        'use_gate': True,
-                        'preparation': 'standard',
-                    })
+        experiments = self._build_experiment_list()
 
         total_experiments = len(experiments)
         experiment_count = 0
@@ -1399,6 +1346,134 @@ class OptunaExperiment:
         else:
             print("No experiments completed successfully.")
             return pd.DataFrame()
+
+
+    def run_final_evaluation(
+        self,
+        top_k: int = 1,
+        n_final_seeds: int = 10,
+        seed_offset: int = 1000,
+    ) -> pd.DataFrame:
+        """
+        Re-evaluate the top-k configurations from each completed study using a disjoint seed range.
+
+        Takes the best trial hyperparameters from each study and reruns training with
+        seeds [seed_start + seed_offset, ..., seed_start + seed_offset + n_final_seeds - 1].
+        These seeds are disjoint from the HPO seeds, giving an unbiased estimate of
+        test performance suitable for reporting mean ± std in a paper.
+
+        Parameters
+        ----------
+        top_k : int, default=1
+            Number of top trials per study to re-evaluate.
+        n_final_seeds : int, default=10
+            Number of seeds for the final evaluation.
+        seed_offset : int, default=1000
+            Offset from seed_start to generate disjoint seeds.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per (study, rank, seed). Aggregated mean/std over seeds are
+            included as final_test_mean, final_test_std, final_val_mean, final_val_std.
+        """
+        final_seeds = [self.seed_start + seed_offset + i for i in range(n_final_seeds)]
+        experiments = self._build_experiment_list()
+        all_rows = []
+
+        total = len(experiments)
+        for idx, exp in enumerate(experiments, 1):
+            dataset_name = exp['dataset']
+            data_mode = exp['data_mode']
+            model_type = exp['model_type']
+            use_curriculum = exp['use_curriculum']
+            use_gate = exp['use_gate']
+            preparation = exp.get('preparation', 'standard')
+
+            study_name = self._get_study_name(
+                dataset_name, data_mode, model_type, use_curriculum, use_gate, preparation
+            )
+
+            try:
+                study = optuna.load_study(study_name=study_name, storage=self.storage_url)
+            except KeyError:
+                if self.verbose > 0:
+                    print(f"[{idx}/{total}] Study not found: {study_name}, skipping.")
+                continue
+
+            completed_trials = sorted(
+                [t for t in study.trials if t.value is not None],
+                key=lambda t: t.value,
+                reverse=True,
+            )[:top_k]
+
+            if not completed_trials:
+                if self.verbose > 0:
+                    print(f"[{idx}/{total}] No completed trials for {study_name}, skipping.")
+                continue
+
+            if self.verbose > 0:
+                print(f"\n[{idx}/{total}] Final eval: {study_name} "
+                      f"(top-{len(completed_trials)}, {n_final_seeds} seeds)")
+
+            for rank, trial in enumerate(completed_trials, 1):
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore")
+                    results = Parallel(n_jobs=self.n_jobs_seeds, backend='loky')(
+                        delayed(self._evaluate_single_seed)(
+                            dataset_name, data_mode, model_type,
+                            use_curriculum, use_gate, trial.params, seed, preparation,
+                        )
+                        for seed in final_seeds
+                    )
+
+                valid_results = [r for r in results if 'error' not in r]
+                primary_metric = 'f1' if any('val_f1' in r for r in valid_results) else 'r2'
+
+                test_metrics = [r[f'test_{primary_metric}'] for r in valid_results
+                                if r.get(f'test_{primary_metric}') is not None]
+                val_metrics = [r.get('best_val_metric', r.get(f'val_{primary_metric}', float('nan')))
+                               for r in valid_results]
+
+                final_test_mean = float(np.mean(test_metrics)) if test_metrics else float('nan')
+                final_test_std = float(np.std(test_metrics)) if test_metrics else float('nan')
+                final_val_mean = float(np.mean(val_metrics)) if val_metrics else float('nan')
+                final_val_std = float(np.std(val_metrics)) if val_metrics else float('nan')
+
+                for seed_result in valid_results:
+                    all_rows.append({
+                        'dataset': dataset_name,
+                        'data_mode': data_mode,
+                        'model_type': model_type,
+                        'use_curriculum': use_curriculum,
+                        'use_gate': use_gate,
+                        'preparation': preparation,
+                        'study_name': study_name,
+                        'hpo_rank': rank,
+                        'trial_number': trial.number,
+                        'hpo_val_metric': trial.value,
+                        'final_test_mean': final_test_mean,
+                        'final_test_std': final_test_std,
+                        'final_val_mean': final_val_mean,
+                        'final_val_std': final_val_std,
+                        **{k: v for k, v in seed_result.items() if k != 'history'},
+                    })
+
+                if self.verbose > 0:
+                    print(f"  rank {rank} | val {final_val_mean:.4f} ± {final_val_std:.4f} | "
+                          f"test {final_test_mean:.4f} ± {final_test_std:.4f}")
+
+        if not all_rows:
+            return pd.DataFrame()
+
+        results_df = pd.DataFrame(all_rows)
+        save_path = self.output_dir / "final_evaluation_results.csv"
+        results_df.to_csv(save_path, index=False)
+
+        if self.verbose > 0:
+            print(f"\nFinal evaluation saved to: {save_path}")
+
+        return results_df
 
 
 def load_config(config_path: str) -> Dict[str, Any]:

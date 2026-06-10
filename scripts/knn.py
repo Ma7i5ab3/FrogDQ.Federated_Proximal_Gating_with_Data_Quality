@@ -174,7 +174,10 @@ class KNNImputation:
         logger.info(f"  KNN imputing {n_missing_before} missing values across {len(feature_cols)} feature columns")
 
         # Apply KNN imputation
-        imputer = KNNImputer(n_neighbors=min(self.n_neighbors, n_rows - 1))
+        # keep_empty_features=True retains all-NaN columns (e.g. num_TBG in sick) in
+        # the output as NaN instead of silently dropping them, preventing a shape
+        # mismatch when rebuilding the DataFrame with the original feature_cols list.
+        imputer = KNNImputer(n_neighbors=min(self.n_neighbors, n_rows - 1), keep_empty_features=True)
         X_arr = imputer.fit_transform(X[feature_cols].values)
         X_imputed = pd.DataFrame(X_arr, columns=feature_cols, index=df_poisoned.index)
 
