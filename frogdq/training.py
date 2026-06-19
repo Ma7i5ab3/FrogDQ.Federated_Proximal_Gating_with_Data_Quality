@@ -278,6 +278,7 @@ def fit(
         model=model,
         learning_rate=learning_rate,
         weight_decay=weight_decay,
+        use_gate=use_gate,  # FIX 1.4: gate gets its own param group with weight_decay=0
     )
 
     # Setup learning rate scheduler
@@ -335,16 +336,25 @@ def fit(
     # Training loop
     best_model_state = None
     best_val_metric = float("-inf")  # Higher is better for both F1 and R2
-    gate_anchor = None
     gate_quality_weights = None
 
-    # Prepare gate quality weights if using gate
-    if use_gate and feature_quality is not None:
-        gate_quality_weights = _compute_gate_quality_weights(
-            feature_quality=feature_quality,
-            weighting_strategy=gate_quality_weighting,
-        )
-        gate_quality_weights = torch.FloatTensor(gate_quality_weights).to(device)
+    # Prepare gate quality weights and fixed anchor if using gate
+    # FIX 1.2: gate_anchor is set once before training and never updated.
+    # When quality is available it equals the quality vector so gates are
+    # pulled toward their reliability values throughout the entire run.
+    # When quality is absent we anchor to the initial gate values so the
+    # gate at least stays near its starting point.
+    gate_anchor = None
+    if use_gate:
+        if feature_quality is not None:
+            gate_quality_weights = _compute_gate_quality_weights(
+                feature_quality=feature_quality,
+                weighting_strategy=gate_quality_weighting,
+            )
+            gate_quality_weights = torch.FloatTensor(gate_quality_weights).to(device)
+            gate_anchor = torch.FloatTensor(feature_quality).to(device)
+        else:
+            gate_anchor = model.gate.data.clone().detach()
 
     # Determine primary metric
     primary_metric = "f1" if task == "classification" else "r2"
@@ -352,12 +362,7 @@ def fit(
     for epoch in range(epochs):
         # Update gate loss weight
         current_gate_loss_weight = gate_loss_scheduler_fn(epoch) if use_gate else 0.0
-
-        # Update gate anchor at interval
-        if use_gate and (epoch % gate_anchor_interval == 0 or epoch == 0):
-            gate_anchor = model.gate.weight.data.clone().detach()
-            if verbose > 1:
-                print(f"  Updated gate anchor at epoch {epoch+1}")
+        # FIX 1.2: anchor is fixed — no per-epoch reset here
 
         # Training phase
         train_loss, train_metrics = _train_epoch(
@@ -425,9 +430,9 @@ def fit(
             for metric_name, metric_value in test_metrics.items():
                 history[f"test_{metric_name}"].append(metric_value)
 
-        # Record gate weights (only diagonal elements)
+        # Record gate weights
         if use_gate:
-            gate_weights = torch.diagonal(model.gate.weight.data).cpu().numpy()
+            gate_weights = model.gate.data.cpu().numpy()  # FIX 1.1: Parameter vector, not diagonal of matrix
             history["gate_weights"].append(gate_weights.copy())
             history["gate_loss_weight"].append(current_gate_loss_weight)
 
@@ -480,30 +485,22 @@ class GatedModel(nn.Module):
     ):
         super().__init__()
         self.base_model = base_model
-        self.gate = nn.Linear(input_dim, input_dim, bias=False)
+        # FIX 1.1: genuine D-dim vector, not a D×D matrix whose off-diagonals are dead weight
+        self.gate = nn.Parameter(torch.empty(input_dim))
 
-        # Initialize gate weights
         if gate_init == "ones":
-            nn.init.ones_(self.gate.weight)
+            self.gate.data.fill_(1.0)
         elif gate_init == "quality":
             if feature_quality is None:
                 raise ValueError("feature_quality must be provided when gate_init='quality'")
             if len(feature_quality) != input_dim:
                 raise ValueError(f"feature_quality length ({len(feature_quality)}) must match input_dim ({input_dim})")
-            # Initialize as diagonal with feature_quality values
-            with torch.no_grad():
-                self.gate.weight.zero_()
-                # Set diagonal to feature_quality values
-                for i in range(input_dim):
-                    self.gate.weight[i, i] = feature_quality[i]
-        else:  # random
-            # Xavier uniform initialization
-            nn.init.xavier_uniform_(self.gate.weight)
+            self.gate.data = torch.tensor(feature_quality, dtype=torch.float32)
+        else:  # random: small noise around 1.0 (not xavier on a D×D matrix)
+            self.gate.data = torch.ones(input_dim) + 0.01 * torch.randn(input_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply gate and forward through base model."""
-        # Element-wise multiplication (diagonal gate matrix)
-        gated_x = x * torch.diagonal(self.gate.weight)
+        gated_x = x * self.gate
         return self.base_model(gated_x)
 
 
@@ -676,16 +673,11 @@ def _compute_gate_quality_weights(
     High quality features get less anchor loss (more freedom to adapt).
     Formula: weight = f(1 - feature_quality)
     """
-    # Normalize quality to [0, 1]
-    quality_min = feature_quality.min()
-    quality_max = feature_quality.max()
-    if quality_max > quality_min:
-        quality_norm = (feature_quality - quality_min) / (quality_max - quality_min)
-    else:
-        quality_norm = np.ones_like(feature_quality)
-
-    # Invert: high quality -> low weight
-    inv_quality = 1.0 - quality_norm
+    # FIX 1.3: use absolute quality on its true [0,1] scale — no min-max normalization.
+    # Min-max would destroy the absolute reliability information: a dataset where all
+    # features are 0.91-0.95 reliable would treat the 0.91 feature as maximally bad,
+    # indistinguishable from a genuinely 0.50-reliable feature in another dataset.
+    inv_quality = 1.0 - np.clip(feature_quality, 0.0, 1.0)
 
     if weighting_strategy == "linear":
         weights = inv_quality
@@ -759,16 +751,31 @@ def _get_optimizer(
     model: nn.Module,
     learning_rate: float,
     weight_decay: float,
+    use_gate: bool = False,
 ) -> torch.optim.Optimizer:
     """Get optimizer."""
+    # FIX 1.4: gate has its own dedicated regularizer (L_gate) so it must NOT also
+    # be penalized by weight decay or L1, which would fight the quality prior.
+    if use_gate and isinstance(model, GatedModel):
+        gate_params = [model.gate]
+        base_params = [p for n, p in model.named_parameters() if n != "gate"]
+        params = [
+            {"params": base_params, "weight_decay": weight_decay},
+            {"params": gate_params, "weight_decay": 0.0},
+        ]
+        wd = 0.0  # per-group weight_decay overrides the optimizer-level default
+    else:
+        params = list(model.parameters())
+        wd = weight_decay
+
     if optimizer_name == "adam":
-        return Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        return Adam(params, lr=learning_rate, weight_decay=wd)
     elif optimizer_name == "adamw":
-        return AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        return AdamW(params, lr=learning_rate, weight_decay=wd)
     elif optimizer_name == "sgd":
-        return SGD(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=0.9)
+        return SGD(params, lr=learning_rate, weight_decay=wd, momentum=0.9)
     elif optimizer_name == "rmsprop":
-        return RMSprop(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        return RMSprop(params, lr=learning_rate, weight_decay=wd)
     else:
         raise ValueError(f"Unknown optimizer: {optimizer_name}")
 
@@ -857,15 +864,19 @@ def _train_epoch(
             loss = criterion(outputs, batch_y)
 
         # Add L1 regularization if enabled
+        # FIX 1.4: exclude gate — it has its own dedicated regularizer (L_gate)
         if l1_lambda > 0:
-            l1_norm = sum(p.abs().sum() for p in model.parameters())
+            if use_gate and isinstance(model, GatedModel):
+                l1_norm = sum(p.abs().sum() for n, p in model.named_parameters() if n != "gate")
+            else:
+                l1_norm = sum(p.abs().sum() for p in model.parameters())
             loss = loss + l1_lambda * l1_norm
 
         # Add gate proximal loss if enabled
         if use_gate and gate_anchor is not None and gate_loss_weight > 0:
-            gate_current = torch.diagonal(model.gate.weight)
-            gate_prev = torch.diagonal(gate_anchor)
-            gate_diff = (gate_current - gate_prev) ** 2
+            # FIX 1.1: model.gate is now a D-dim Parameter vector, not a D×D Linear
+            # FIX 1.2: gate_anchor is a fixed quality target set before training begins
+            gate_diff = (model.gate - gate_anchor) ** 2
 
             # Weight by feature quality if provided
             if gate_quality_weights is not None:

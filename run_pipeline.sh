@@ -34,7 +34,7 @@ set -euo pipefail
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="${SCRIPT_DIR}/.venv/bin/python"
+PYTHON="${SCRIPT_DIR}/venv/bin/python"
 CONFIG="${SCRIPT_DIR}/config.yaml"
 
 # ── colours ───────────────────────────────────────────────────────────────────
@@ -219,14 +219,16 @@ step_header 8 "Main (Optuna Experiments)"
 if $SKIP_MAIN; then
     step_skip 8
 else
-    MAIN_ARGS=(
-        --config "$CONFIG"
-        --run-cp
-        --run-saga
-        --run-autogluon
-        --run-baseline-zero
-        --run-knn
-    )
+    # Read benchmark flags from config.yaml so this step stays in sync
+    _cfg_flag() {
+        "$PYTHON" -c "import yaml; cfg=yaml.safe_load(open('$CONFIG')); print('true' if cfg.get('$1', False) else 'false')"
+    }
+    MAIN_ARGS=(--config "$CONFIG")
+    [ "$(_cfg_flag run_cp)"            = "true" ] && MAIN_ARGS+=(--run-cp)
+    [ "$(_cfg_flag run_saga)"          = "true" ] && MAIN_ARGS+=(--run-saga)
+    [ "$(_cfg_flag run_autogluon)"     = "true" ] && MAIN_ARGS+=(--run-autogluon)
+    [ "$(_cfg_flag run_baseline_zero)" = "true" ] && MAIN_ARGS+=(--run-baseline-zero)
+    [ "$(_cfg_flag run_knn)"           = "true" ] && MAIN_ARGS+=(--run-knn)
 
     # Patch stdin so the "Proceed?" prompt is auto-answered when -y is passed
     if $AUTO_YES; then

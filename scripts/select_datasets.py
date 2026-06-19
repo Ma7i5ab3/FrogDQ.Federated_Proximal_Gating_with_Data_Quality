@@ -339,7 +339,7 @@ def main() -> None:
         help="Run pilot only when surviving datasets exceed this count.",
     )
     g3.add_argument(
-        "--pilot-select", type=int, default=5,
+        "--pilot-select", type=int, default=2,
         help="Number of datasets to retain after the pilot.",
     )
     g3.add_argument(

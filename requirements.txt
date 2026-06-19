@@ -25,3 +25,4 @@ shap
 miceforest
 mlxtend
 autogluon.tabular
+scikit-posthocs
