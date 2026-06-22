@@ -6,6 +6,7 @@ different model architectures (linear, MLP), curriculum learning settings, and
 gate configurations using Optuna with multi-seed evaluation.
 """
 
+import time
 import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -413,6 +414,9 @@ class OptunaExperiment:
         set_seed(seed)
 
         # Load data — branch on preparation method
+        preproc_wall_t0 = time.perf_counter()
+        preproc_cpu_t0  = time.process_time()
+
         if preparation == 'autogluon':
             (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
                 load_autogluon_data(
@@ -488,6 +492,9 @@ class OptunaExperiment:
                 poisoned_dir=self.poisoned_dir,
                 test_dir=self.poisoned_dir,
             )
+
+        preproc_wall_time_s = time.perf_counter() - preproc_wall_t0
+        preproc_cpu_time_s  = time.process_time()  - preproc_cpu_t0
 
         # Determine task type
         task = metadata.get('task_type', 'classification')
@@ -611,7 +618,13 @@ class OptunaExperiment:
 
         # Train model
         try:
+            train_wall_t0 = time.perf_counter()
+            train_cpu_t0 = time.process_time()
+
             trained_model, history = fit(**train_kwargs)
+
+            train_wall_time_s = time.perf_counter() - train_wall_t0
+            train_cpu_time_s = time.process_time() - train_cpu_t0
 
             # Extract final metrics
             primary_metric = 'f1' if task == 'classification' else 'r2'
@@ -629,6 +642,10 @@ class OptunaExperiment:
                 f'val_{primary_metric}': history[f'val_{primary_metric}'][best_epoch_idx],
                 f'test_{primary_metric}': history[f'test_{primary_metric}'][best_epoch_idx] if f'test_{primary_metric}' in history else None,
                 'n_epochs_trained': len(history['train_loss']),
+                'preproc_cpu_time': round(preproc_cpu_time_s, 4),
+                'preproc_wall_time': round(preproc_wall_time_s, 4),
+                'cpu_time': round(train_cpu_time_s, 4),
+                'wall_time': round(train_wall_time_s, 4),
                 'history': history,  # Store full history
             }
 

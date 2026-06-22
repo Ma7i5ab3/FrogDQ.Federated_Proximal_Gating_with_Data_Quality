@@ -102,8 +102,80 @@ _METRIC_LABELS = {
     "loss":      "Loss",
 }
 
-# Keys tried in order when extracting per-seed CPU/wall time
+# Keys tried in order when extracting per-seed training CPU time
 _TIME_KEYS = ["cpu_time", "train_time", "elapsed", "time"]
+
+# Root directories for external preprocessing perf_metrics CSVs
+_PREPROC_DIRS = {
+    "baseline_zero": Path("..") / "data_baseline_zero",
+    "knn":           Path("..") / "data_knn",
+    "saga":          Path("..") / "data_cleaned_saga",
+    "cp":            Path("..") / "data_cleaned_cp",
+    "ag":            Path("..") / "data_autogluon",
+}
+
+
+def _load_external_preproc_times() -> dict:
+    """
+    Load cpu_time_s from preprocessing perf_metrics CSVs written by the
+    standalone scripts (saga.py, knn.py, autogluon.py, baseline_zero.py,
+    data_preparation_pipeline.py).
+
+    Returns
+    -------
+    dict
+        Keys: (dataset, data_mode, config, model_type) -> float (seconds).
+        Configs without an external preprocessing step (curr*_gate*) are
+        absent — callers should treat missing keys as 0.
+    """
+    lookup: dict = {}
+
+    # baseline_zero / knn / saga / cp: metrics/{dataset}_{mode}_perf_metrics.csv
+    for config, base_dir in _PREPROC_DIRS.items():
+        if config == "ag":
+            continue
+        metrics_dir = base_dir / "metrics"
+        if not metrics_dir.exists():
+            continue
+        for csv_path in metrics_dir.glob("*_perf_metrics.csv"):
+            try:
+                stem = csv_path.stem.replace("_perf_metrics", "")
+                data_mode = None
+                for mode in ("nar", "ar"):   # nar first so "ar" doesn't match inside "nar"
+                    if stem.endswith(f"_{mode}"):
+                        dataset   = stem[: -len(f"_{mode}")]
+                        data_mode = mode
+                        break
+                if data_mode is None:
+                    continue
+                df_perf = pd.read_csv(csv_path)
+                if "cpu_time_s" not in df_perf.columns:
+                    continue
+                cpu_t = float(df_perf["cpu_time_s"].mean())
+                for model_type in ("linear", "mlp"):
+                    lookup[(dataset, data_mode, config, model_type)] = cpu_t
+            except Exception:
+                continue
+
+    # autogluon: data_autogluon/{mode}/{model_type}/{dataset}/perf_metrics.csv
+    ag_dir = _PREPROC_DIRS["ag"]
+    if ag_dir.exists():
+        for csv_path in ag_dir.glob("*/*/*/perf_metrics.csv"):
+            try:
+                parts      = csv_path.parts
+                data_mode  = parts[-4]
+                model_type = parts[-3]
+                dataset    = parts[-2]
+                df_perf = pd.read_csv(csv_path)
+                if "cpu_time_s" not in df_perf.columns:
+                    continue
+                # Multiple rows (one per seed) — average over seeds
+                cpu_t = float(df_perf["cpu_time_s"].mean())
+                lookup[(dataset, data_mode, "ag", model_type)] = cpu_t
+            except Exception:
+                continue
+
+    return lookup
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -169,6 +241,8 @@ def load_studies(split: str = "test", metric: str = "f1") -> pd.DataFrame:
     )
     metric_key = f"{split}_{metric}"
 
+    external_preproc = _load_external_preproc_times()
+
     rows, skipped = [], 0
     for name in optuna.get_all_study_names(storage=STORAGE):
         m = _RE.match(name)
@@ -199,23 +273,43 @@ def load_studies(split: str = "test", metric: str = "f1") -> pd.DataFrame:
             skipped += 1
             continue
 
-        # Resolve per-seed CPU / wall time
-        cpu_vals = []
+        d = m.groupdict()
+
+        # ── Per-seed in-process preprocessing time (load_*_data inside _evaluate_single_seed)
+        preproc_vals = [
+            float(r["preproc_cpu_time"])
+            for r in seed_results
+            if r.get("preproc_cpu_time") is not None
+        ]
+        preproc_cpu_mean = float(np.mean(preproc_vals)) if preproc_vals else 0.0
+
+        # ── Per-seed training time
+        train_vals = []
         for r in seed_results:
             for k in _TIME_KEYS:
                 if r.get(k) is not None:
-                    cpu_vals.append(float(r[k]))
+                    train_vals.append(float(r[k]))
                     break
-        if cpu_vals:
-            cpu_time_mean = float(np.mean(cpu_vals))
+        if train_vals:
+            train_cpu_mean = float(np.mean(train_vals))
         elif best.user_attrs.get("cpu_time") is not None:
-            cpu_time_mean = float(best.user_attrs["cpu_time"])
+            train_cpu_mean = float(best.user_attrs["cpu_time"])
         elif best.duration is not None:
-            cpu_time_mean = best.duration.total_seconds()
+            train_cpu_mean = best.duration.total_seconds()
+        else:
+            train_cpu_mean = float("nan")
+
+        # ── External preprocessing time (heavy script run separately; 0 for gate/curriculum/baseline)
+        ext_preproc = external_preproc.get(
+            (d["dataset"], d["data_mode"], d["config"], d["model_type"]), 0.0
+        )
+
+        # Total = external preprocessing + in-process load/transform + training
+        if not np.isnan(train_cpu_mean):
+            cpu_time_mean = ext_preproc + preproc_cpu_mean + train_cpu_mean
         else:
             cpu_time_mean = float("nan")
 
-        d = m.groupdict()
         rows.append({
             "dataset":       d["dataset"],
             "data_mode":     d["data_mode"],
