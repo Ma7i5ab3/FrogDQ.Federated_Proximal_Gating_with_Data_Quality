@@ -115,9 +115,21 @@ class DataPreparation:
     quality scores reflect a fully-cleaned dataset.
     """
 
-    def __init__(self, seed: int = 42, iqr_factor: float = 1.5):
+    def __init__(
+        self,
+        seed: int = 42,
+        iqr_factor: float = 1.5,
+        mice_n_iterations: int = 3,
+        mice_n_estimators: int = 10,
+        mice_num_leaves: int = 20,
+        n_jobs: int = -1,
+    ):
         self.seed = seed
         self.iqr_factor = iqr_factor
+        self.mice_n_iterations = mice_n_iterations
+        self.mice_n_estimators = mice_n_estimators
+        self.mice_num_leaves = mice_num_leaves
+        self.n_jobs = n_jobs
         np.random.seed(seed)
 
     # ------------------------------------------------------------------
@@ -234,7 +246,7 @@ class DataPreparation:
             X[cat_present] = enc.fit_transform(X[cat_present].astype(str))
 
         # Fit a small, fast RandomForest
-        rf_kwargs = dict(n_estimators=50, max_depth=6, random_state=self.seed, n_jobs=-1)
+        rf_kwargs = dict(n_estimators=50, max_depth=6, random_state=self.seed, n_jobs=self.n_jobs)
         model = (
             RandomForestClassifier(**rf_kwargs)
             if is_classification
@@ -532,21 +544,12 @@ class DataPreparation:
                 random_state=self.seed,
             )
 
-            # Total number of MICE cycles. More cycles improve convergence but cost time.
-            n_mice_iterations = 3
-            # Number of LightGBM trees trained per imputed column per iteration.
-            # This is the single biggest runtime lever: default is 100.
-            # Use 10-20 for quick experiments, 50-100 for final runs.
-            n_estimators = 10
-            # Maximum number of leaves per tree. Controls model complexity:
-            # fewer leaves = shallower trees = faster training. Default is 31.
-            num_leaves = 20
             logger.info(
-                f"Running MICE ({n_mice_iterations} iter, "
-                f"n_estimators={n_estimators}, num_leaves={num_leaves})..."
+                f"Running MICE ({self.mice_n_iterations} iter, "
+                f"n_estimators={self.mice_n_estimators}, num_leaves={self.mice_num_leaves})..."
             )
-            for _ in tqdm(range(n_mice_iterations), desc="MICE imputation", unit="iter"):
-                kernel.mice(1, n_estimators=n_estimators, num_leaves=num_leaves)
+            for _ in tqdm(range(self.mice_n_iterations), desc="MICE imputation", unit="iter"):
+                kernel.mice(1, n_estimators=self.mice_n_estimators, num_leaves=self.mice_num_leaves)
             df_imputed = kernel.complete_data()
             logger.info("Imputation Completed!")
 
@@ -822,6 +825,253 @@ class DataPreparation:
 
 
 # ---------------------------------------------------------------------------
+# Hyperparameter tuning
+# ---------------------------------------------------------------------------
+
+def _tune_dataset_hyperparams(
+    df_poisoned: pd.DataFrame,
+    mask_df: pd.DataFrame,
+    col_types: Dict[str, list],
+    tuning_cfg: dict,
+    seed: int = 42,
+) -> dict:
+    """
+    Run an Optuna Bayesian optimisation study on a small sample of the poisoned
+    dataset to find the best data-preparation hyperparameters.
+
+    Objective: downstream LightGBM loss (log-loss for classification, RMSE for
+    regression) trained on the trial-cleaned training split and evaluated on a
+    held-out validation split — both drawn from the poisoned-data sample.
+    The corruption mask is used only to guide quality-aware clipping inside
+    DataPreparation.prepare(), not as the optimisation signal.
+
+    Returns:
+        dict with the best hyperparameters, or {} if tuning is skipped / all
+        trials fail.  Keys map directly to DataPreparation.__init__ kwargs
+        (iqr_factor, mice_n_iterations, mice_n_estimators, mice_num_leaves)
+        and DataPreparation.prepare() kwargs (shap_top_pct, ar_min_support,
+        ar_min_confidence).
+    """
+    try:
+        import optuna
+        import lightgbm as _lgb_tune
+        from sklearn.preprocessing import OrdinalEncoder, LabelEncoder
+    except ImportError as exc:
+        logger.warning(f"  Tuning skipped — missing dependency: {exc}")
+        return {}
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    sample_frac = float(tuning_cfg.get("sample_frac", 0.05))
+    max_frac    = float(tuning_cfg.get("max_sample_frac", 0.10))
+    min_rows    = int(tuning_cfg.get("min_sample_rows", 100))
+    val_frac    = float(tuning_cfg.get("val_frac", 0.20))
+    n_trials    = int(tuning_cfg.get("n_trials", 30))
+    n_jobs      = int(tuning_cfg.get("n_jobs", 1))
+    hp          = tuning_cfg.get("hyperparameter_ranges", {})
+
+    n_total  = len(df_poisoned)
+    n_sample = int(n_total * sample_frac)
+    n_sample = min(n_sample, int(n_total * max_frac))
+    n_sample = max(n_sample, min_rows)
+    n_sample = min(n_sample, n_total)
+
+    if n_total < min_rows * 2:
+        logger.warning(f"  Tuning skipped — dataset too small ({n_total} rows)")
+        return {}
+
+    rng    = np.random.RandomState(seed)
+    idx    = rng.choice(n_total, size=n_sample, replace=False)
+    df_s   = df_poisoned.iloc[idx].reset_index(drop=True)
+    mask_s = mask_df.iloc[idx].reset_index(drop=True)
+
+    n_val   = max(10, int(n_sample * val_frac))
+    n_train = n_sample - n_val
+
+    df_val_raw   = df_s.iloc[:n_val].reset_index(drop=True)
+    df_train_raw = df_s.iloc[n_val:].reset_index(drop=True)
+    mask_val     = mask_s.iloc[:n_val].reset_index(drop=True)
+    mask_train   = mask_s.iloc[n_val:].reset_index(drop=True)
+
+    # Determine task type and target column
+    target_col = None
+    is_cls     = False
+    if col_types["target_cls"]:
+        target_col = col_types["target_cls"][0]
+        is_cls     = True
+    elif col_types["target_reg"]:
+        target_col = col_types["target_reg"][0]
+
+    if target_col is None:
+        logger.warning("  Tuning skipped — no target column found")
+        return {}
+
+    feature_cols  = col_types["numerical"] + col_types["categorical"]
+    cat_feat_cols = [c for c in col_types["categorical"] if c in feature_cols]
+    num_feat_cols = [c for c in col_types["numerical"] if c in feature_cols]
+
+    if not feature_cols:
+        logger.warning("  Tuning skipped — no feature columns found")
+        return {}
+
+    # Fit label encoder on the combined sample to avoid unknown-label errors in val
+    le        = LabelEncoder()
+    n_classes = 1
+    if is_cls:
+        combined_y = pd.concat([
+            df_train_raw[target_col].dropna(),
+            df_val_raw[target_col].dropna(),
+        ]).astype(str)
+        if combined_y.nunique() < 2:
+            logger.warning("  Tuning skipped — target has < 2 classes in sample")
+            return {}
+        le.fit(combined_y)
+        n_classes = len(le.classes_)
+
+    def _encode_for_lgb(df_cleaned: pd.DataFrame):
+        present = [c for c in feature_cols if c in df_cleaned.columns]
+        if not present or target_col not in df_cleaned.columns:
+            return None, None
+        X     = df_cleaned[present].copy()
+        y_raw = df_cleaned[target_col].copy()
+        valid = y_raw.notna()
+        X, y_raw = X[valid], y_raw[valid]
+        if X.empty:
+            return None, None
+        for c in num_feat_cols:
+            if c in X.columns:
+                med = X[c].median()
+                X[c] = X[c].fillna(med if pd.notna(med) else 0.0)
+        for c in cat_feat_cols:
+            if c in X.columns:
+                mode = X[c].mode()
+                X[c] = X[c].fillna(mode.iloc[0] if not mode.empty else "missing")
+        cat_present = [c for c in cat_feat_cols if c in X.columns]
+        if cat_present:
+            enc = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
+            X[cat_present] = enc.fit_transform(X[cat_present].astype(str))
+        if is_cls:
+            try:
+                y = le.transform(y_raw.astype(str))
+            except ValueError:
+                return None, None
+        else:
+            y = y_raw.values.astype(float)
+        return X, y
+
+    # When Optuna runs parallel workers, force internal RF/MICE to single-threaded
+    # to avoid CPU oversubscription.
+    internal_jobs = 1 if n_jobs > 1 else -1
+
+    def _r(key, default):
+        v = hp.get(key, default)
+        return v[0], v[1]
+
+    def objective(trial):
+        iqr_factor        = trial.suggest_float("iqr_factor",        *_r("iqr_factor",        [1.0, 4.0]))
+        shap_top_pct      = trial.suggest_float("shap_top_pct",      *_r("shap_top_pct",      [0.3, 1.0]))
+        ar_min_support    = trial.suggest_float("ar_min_support",    *_r("ar_min_support",    [0.5, 0.99]))
+        ar_min_confidence = trial.suggest_float("ar_min_confidence", *_r("ar_min_confidence", [0.5, 0.99]))
+        mice_n_iter       = trial.suggest_int("mice_n_iterations",   *_r("mice_n_iterations", [1, 5]))
+        mice_n_est        = trial.suggest_int("mice_n_estimators",   *_r("mice_n_estimators", [5, 50]))
+        mice_num_lvs      = trial.suggest_int("mice_num_leaves",     *_r("mice_num_leaves",   [10, 50]))
+
+        try:
+            prep = DataPreparation(
+                seed=seed,
+                iqr_factor=iqr_factor,
+                mice_n_iterations=mice_n_iter,
+                mice_n_estimators=mice_n_est,
+                mice_num_leaves=mice_num_lvs,
+                n_jobs=internal_jobs,
+            )
+            df_tr_clean, _, _ = prep.prepare(
+                df_train_raw, mask_train,
+                shap_top_pct=shap_top_pct,
+                ar_min_support=ar_min_support,
+                ar_min_confidence=ar_min_confidence,
+            )
+            df_vl_clean, _, _ = prep.prepare(
+                df_val_raw, mask_val,
+                shap_top_pct=shap_top_pct,
+                ar_min_support=ar_min_support,
+                ar_min_confidence=ar_min_confidence,
+            )
+        except Exception as exc:
+            logger.debug(f"  Trial {trial.number} prepare() error: {exc}")
+            return float("inf")
+
+        X_tr, y_tr = _encode_for_lgb(df_tr_clean)
+        X_vl, y_vl = _encode_for_lgb(df_vl_clean)
+
+        if X_tr is None or X_vl is None or len(X_tr) < 5 or len(X_vl) < 2:
+            return float("inf")
+        if is_cls and len(np.unique(y_tr)) < 2:
+            return float("inf")
+
+        try:
+            dtrain = _lgb_tune.Dataset(X_tr, label=y_tr, free_raw_data=True)
+            dval   = _lgb_tune.Dataset(X_vl, label=y_vl, reference=dtrain, free_raw_data=True)
+
+            if is_cls and n_classes == 2:
+                lgb_p = {"objective": "binary",     "metric": "binary_logloss",
+                         "verbosity": -1, "learning_rate": 0.1, "num_leaves": 15, "n_jobs": 1}
+            elif is_cls:
+                lgb_p = {"objective": "multiclass", "num_class": n_classes,
+                         "metric": "multi_logloss",
+                         "verbosity": -1, "learning_rate": 0.1, "num_leaves": 15, "n_jobs": 1}
+            else:
+                lgb_p = {"objective": "regression", "metric": "rmse",
+                         "verbosity": -1, "learning_rate": 0.1, "num_leaves": 15, "n_jobs": 1}
+
+            callbacks = [
+                _lgb_tune.early_stopping(stopping_rounds=10, verbose=False),
+                _lgb_tune.log_evaluation(period=-1),
+            ]
+            booster = _lgb_tune.train(
+                lgb_p, dtrain,
+                num_boost_round=100,
+                valid_sets=[dval],
+                callbacks=callbacks,
+            )
+            metric_key = next(iter(booster.best_score["valid_0"]))
+            return float(booster.best_score["valid_0"][metric_key])
+
+        except Exception as exc:
+            logger.debug(f"  Trial {trial.number} LightGBM error: {exc}")
+            return float("inf")
+
+    logger.info(
+        f"  Hyperparameter tuning: {n_trials} trials | n_jobs={n_jobs} | "
+        f"sample={n_train} train + {n_val} val rows"
+    )
+    sampler = optuna.samplers.TPESampler(seed=seed)
+    study   = optuna.create_study(direction="minimize", sampler=sampler)
+    study.optimize(
+        objective,
+        n_trials=n_trials,
+        n_jobs=n_jobs,
+        show_progress_bar=False,
+        catch=(Exception,),
+    )
+
+    valid_trials = [t for t in study.trials if t.value is not None and t.value != float("inf")]
+    if not valid_trials:
+        logger.warning("  All tuning trials failed — using default hyperparameters")
+        return {}
+
+    best = study.best_params
+    logger.info(
+        f"  Best trial #{study.best_trial.number}: loss={study.best_value:.4f} | "
+        + ", ".join(
+            f"{k}={v:.4g}" if isinstance(v, float) else f"{k}={v}"
+            for k, v in best.items()
+        )
+    )
+    return best
+
+
+# ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
 
@@ -857,6 +1107,7 @@ def process_all_datasets(
     shap_top_pct: float = 1.0,
     ar_min_support: float = 0.8,
     ar_min_confidence: float = 0.8,
+    tuning_config: dict = None,
 ):
     """
     Apply the data preparation pipeline to all poisoned datasets.
@@ -879,8 +1130,6 @@ def process_all_datasets(
     os.makedirs(os.path.join(output_dir, "ar"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "nar"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "metrics"), exist_ok=True)
-
-    preparer = DataPreparation(seed=42, iqr_factor=iqr_factor)
 
     # Collect CSV files from the AR poisoned directory
     # (AR and NAR always share the same filenames; we iterate once and handle both)
@@ -928,6 +1177,50 @@ def process_all_datasets(
         logger.info(f"Processing {csv_file.name}")
 
         try:
+            # Resolve hyperparameters: run Optuna tuning on AR data if enabled,
+            # otherwise fall back to the CLI / default values for this dataset.
+            _preparer_kw = dict(seed=42, iqr_factor=iqr_factor)
+            _prepare_kw  = dict(
+                shap_top_pct=shap_top_pct,
+                ar_min_support=ar_min_support,
+                ar_min_confidence=ar_min_confidence,
+            )
+
+            if tuning_config and tuning_config.get("enabled", False):
+                _ar_csv_tune  = ar_dir / csv_file.name
+                _ar_mask_tune = ar_dir / f"{csv_file.stem}_mask.csv"
+                if _ar_csv_tune.exists() and _ar_mask_tune.exists():
+                    logger.info(f"  Tuning hyperparameters for {csv_file.name}...")
+                    _df_tune   = pd.read_csv(
+                        _ar_csv_tune,
+                        na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "],
+                    )
+                    _mask_tune = pd.read_csv(_ar_mask_tune).astype(bool)
+                    _ct_tune   = DataPreparation(seed=42).identify_column_types(_df_tune)
+                    _best      = _tune_dataset_hyperparams(
+                        _df_tune, _mask_tune, _ct_tune, tuning_config,
+                        seed=int(tuning_config.get("seed", 42)),
+                    )
+                    if _best:
+                        _preparer_kw.update(
+                            {k: _best[k] for k in (
+                                "iqr_factor", "mice_n_iterations",
+                                "mice_n_estimators", "mice_num_leaves",
+                            ) if k in _best}
+                        )
+                        _prepare_kw.update(
+                            {k: _best[k] for k in (
+                                "shap_top_pct", "ar_min_support", "ar_min_confidence",
+                            ) if k in _best}
+                        )
+                        logger.info(f"  Tuned params → {_best}")
+                else:
+                    logger.warning(
+                        f"  AR data not found for tuning {csv_file.name}; using default params"
+                    )
+
+            preparer = DataPreparation(**_preparer_kw)
+
             # --- AR mode ---
             ar_csv = ar_dir / csv_file.name
             ar_mask_file = ar_dir / f"{csv_file.stem}_mask.csv"
@@ -951,7 +1244,7 @@ def process_all_datasets(
                 mask_ar = pd.read_csv(ar_mask_file).astype(bool)
                 logger.info(f"  AR loaded: {df_ar.shape[0]} rows × {df_ar.shape[1]} columns")
 
-                df_ar_clean, residual_ar, perf_ar = preparer.prepare(df_ar, mask_ar, shap_top_pct=shap_top_pct, ar_min_support=ar_min_support, ar_min_confidence=ar_min_confidence)
+                df_ar_clean, residual_ar, perf_ar = preparer.prepare(df_ar, mask_ar, **_prepare_kw)
                 metrics_ar = preparer.calculate_residual_metrics(residual_ar)
 
                 df_ar_clean.to_csv(os.path.join(output_dir, "ar", csv_file.name), index=False)
@@ -1000,7 +1293,7 @@ def process_all_datasets(
                 mask_nar = pd.read_csv(nar_mask_file).astype(bool)
                 logger.info(f"  NAR loaded: {df_nar.shape[0]} rows × {df_nar.shape[1]} columns")
 
-                df_nar_clean, residual_nar, perf_nar = preparer.prepare(df_nar, mask_nar, shap_top_pct=shap_top_pct, ar_min_support=ar_min_support, ar_min_confidence=ar_min_confidence)
+                df_nar_clean, residual_nar, perf_nar = preparer.prepare(df_nar, mask_nar, **_prepare_kw)
                 metrics_nar = preparer.calculate_residual_metrics(residual_nar)
 
                 df_nar_clean.to_csv(os.path.join(output_dir, "nar", csv_file.name), index=False)
@@ -1138,4 +1431,5 @@ if __name__ == "__main__":
         shap_top_pct=args.shap_top_pct,
         ar_min_support=args.ar_min_support,
         ar_min_confidence=args.ar_min_confidence,
+        tuning_config=_config.get("data_preparation_tuning"),
     )

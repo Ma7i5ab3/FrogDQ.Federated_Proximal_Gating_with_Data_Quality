@@ -296,3 +296,47 @@ hyperparameter_ranges:
   gate_anchor_interval: [1, 20]
   gate_quality_weighting_choices: ['linear', 'quadratic', 'exp', 'inv_exp']
   gate_loss_scheduler_choices: ['none', 'decay', 'cosine']
+
+# Data Preparation Pipeline Tuning
+# -----------------------------------
+# Optuna Bayesian optimisation for the data-preparation pipeline.
+# Each dataset gets its own tuning run on a small poisoned sample.
+# The downstream objective is a LightGBM loss (log-loss for classification,
+# RMSE for regression) — no ground-truth mask is used as signal.
+# Best params are then applied to the full AR and NAR cleaning runs.
+data_preparation_tuning:
+
+  # Enable per-dataset hyperparameter tuning before cleaning.
+  # Set to false to skip tuning and use the CLI / default values.
+  enabled: false
+
+  # Number of Optuna TPE trials per dataset.
+  n_trials: 30
+
+  # Parallel Optuna workers (threads).
+  # When > 1, internal RF/MICE n_jobs is forced to 1 to avoid CPU oversubscription.
+  # Set to n_jobs_optuna or a lower value to limit resource usage.
+  n_jobs: 8
+
+  # Fraction of the full poisoned dataset used as the tuning pool (train + val).
+  # Capped at max_sample_frac; guaranteed to be at least min_sample_rows rows.
+  sample_frac: 0.05
+  max_sample_frac: 0.10
+  min_sample_rows: 100
+
+  # Fraction of the tuning pool held out for validation (LightGBM evaluation).
+  val_frac: 0.20
+
+  # Random seed for row sampling and the Optuna TPE sampler.
+  seed: 42
+
+  # Search space for each tunable parameter.
+  # Format: [min, max]  (floats are suggest_float; int keys use suggest_int)
+  hyperparameter_ranges:
+    iqr_factor:        [1.0, 4.0]   # IQR whisker multiplier for outlier clipping
+    shap_top_pct:      [0.3, 1.0]   # fraction of top SHAP features used in cleaning
+    ar_min_support:    [0.5, 0.99]  # Apriori minimum support for AR rule mining
+    ar_min_confidence: [0.5, 0.99]  # Apriori minimum confidence for AR rule mining
+    mice_n_iterations: [1, 5]       # MICE RF imputation cycles (int)
+    mice_n_estimators: [5, 50]      # LightGBM trees per MICE column per iteration (int)
+    mice_num_leaves:   [10, 50]     # LightGBM max leaves per tree inside MICE (int)
