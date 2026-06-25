@@ -34,7 +34,7 @@ set -euo pipefail
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="${SCRIPT_DIR}/venv/bin/python"
+PYTHON="${SCRIPT_DIR}/.venv/bin/python"
 CONFIG="${SCRIPT_DIR}/config.yaml"
 
 # ── colours ───────────────────────────────────────────────────────────────────

@@ -27,6 +27,14 @@
 datasets:
   - dna
   - phishingwebsites
+  - car
+  - tic_tac_toe
+  - sick
+  - vowel
+  - climate_model_simulation_crashes
+  - connect_4
+  - vehicle
+  - cmc
 
 
 # Data quality modes to test
@@ -215,12 +223,12 @@ poisoning:
     clean_feature_frac: 0.4
 
     mild_rate: 0.06
-    moderate_frac: 0.30
+    moderate_frac: 0.35
     moderate_rate: 0.15
-    heavy_frac: 0.15
+    heavy_frac: 0.20
     heavy_rate: 0.35
-    severe_frac: 0.10
-    severe_rate: 0.50
+    severe_frac: 0.15
+    severe_rate: 0.60
 
   # AR (At Random) poisoning mechanisms.
   # Set to false to disable a specific mechanism.

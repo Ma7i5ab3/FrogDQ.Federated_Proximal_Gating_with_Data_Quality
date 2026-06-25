@@ -144,6 +144,9 @@ def _load_external_preproc_times() -> dict:
                 for mode in ("nar", "ar"):   # nar first so "ar" doesn't match inside "nar"
                     if stem.endswith(f"_{mode}"):
                         dataset   = stem[: -len(f"_{mode}")]
+                        # CSV filenames may carry a leading numeric prefix (e.g.
+                        # "010_00023_cmc") that is absent from Optuna study names
+                        dataset   = re.sub(r"^\d+_\d+_", "", dataset)
                         data_mode = mode
                         break
                 if data_mode is None:

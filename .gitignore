@@ -8,6 +8,9 @@ analysis/plots/*
 data_cleaned/*
 data_visualization/
 data_cleaned_cp/*
+data_knn/*
+evaluation/*
+data_baseline_zero/*
 */ar
 */nar
 */_ag_tmp

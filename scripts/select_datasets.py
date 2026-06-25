@@ -314,7 +314,7 @@ def main() -> None:
         help="Drop datasets with more rows than this.",
     )
     g1.add_argument(
-        "--max-cols", type=int, default=500,
+        "--max-cols", type=int, default=300,
         help="Drop datasets with more features than this (label excluded).",
     )
 
@@ -339,7 +339,7 @@ def main() -> None:
         help="Run pilot only when surviving datasets exceed this count.",
     )
     g3.add_argument(
-        "--pilot-select", type=int, default=2,
+        "--pilot-select", type=int, default=10,
         help="Number of datasets to retain after the pilot.",
     )
     g3.add_argument(
