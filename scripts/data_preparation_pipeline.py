@@ -136,7 +136,8 @@ class DataPreparation:
     # Helpers
     # ------------------------------------------------------------------
 
-    def identify_column_types(self, df: pd.DataFrame) -> Dict[str, list]:
+    @staticmethod
+    def identify_column_types(df: pd.DataFrame) -> Dict[str, list]:
         """Identify column types based on the prefix naming convention."""
         col_types: Dict[str, list] = {
             "numerical": [],
@@ -1196,11 +1197,17 @@ def process_all_datasets(
                         na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "],
                     )
                     _mask_tune = pd.read_csv(_ar_mask_tune).astype(bool)
-                    _ct_tune   = DataPreparation(seed=42).identify_column_types(_df_tune)
+                    # identify_column_types is a staticmethod — no DataPreparation
+                    # instance needed, avoids a spurious np.random.seed() reset.
+                    _ct_tune   = DataPreparation.identify_column_types(_df_tune)
                     _best      = _tune_dataset_hyperparams(
                         _df_tune, _mask_tune, _ct_tune, tuning_config,
                         seed=int(tuning_config.get("seed", 42)),
                     )
+                    # Free tuning data immediately — AR/NAR processing will load
+                    # the same files again and we don't want two full copies in RAM.
+                    del _df_tune, _mask_tune
+                    gc.collect()
                     if _best:
                         _preparer_kw.update(
                             {k: _best[k] for k in (
@@ -1218,6 +1225,18 @@ def process_all_datasets(
                     logger.warning(
                         f"  AR data not found for tuning {csv_file.name}; using default params"
                     )
+
+            # Capture the resolved params for provenance — saved alongside perf metrics.
+            _resolved_params = {
+                "hp_tuned":             bool(tuning_config and tuning_config.get("enabled", False)),
+                "hp_iqr_factor":        _preparer_kw.get("iqr_factor", iqr_factor),
+                "hp_shap_top_pct":      _prepare_kw.get("shap_top_pct", shap_top_pct),
+                "hp_ar_min_support":    _prepare_kw.get("ar_min_support", ar_min_support),
+                "hp_ar_min_confidence": _prepare_kw.get("ar_min_confidence", ar_min_confidence),
+                "hp_mice_n_iterations": _preparer_kw.get("mice_n_iterations", 3),
+                "hp_mice_n_estimators": _preparer_kw.get("mice_n_estimators", 10),
+                "hp_mice_num_leaves":   _preparer_kw.get("mice_num_leaves", 20),
+            }
 
             preparer = DataPreparation(**_preparer_kw)
 
@@ -1260,7 +1279,7 @@ def process_all_datasets(
                     os.path.join(output_dir, "metrics", csv_file.stem + "_ar_metrics.csv"),
                     index=False,
                 )
-                pd.DataFrame([{"dataset": csv_file.stem, "corruption": "ar", **perf_ar}]).to_csv(
+                pd.DataFrame([{"dataset": csv_file.stem, "corruption": "ar", **perf_ar, **_resolved_params}]).to_csv(
                     os.path.join(output_dir, "metrics", csv_file.stem + "_ar_perf_metrics.csv"),
                     index=False,
                 )
@@ -1309,7 +1328,7 @@ def process_all_datasets(
                     os.path.join(output_dir, "metrics", csv_file.stem + "_nar_metrics.csv"),
                     index=False,
                 )
-                pd.DataFrame([{"dataset": csv_file.stem, "corruption": "nar", **perf_nar}]).to_csv(
+                pd.DataFrame([{"dataset": csv_file.stem, "corruption": "nar", **perf_nar, **_resolved_params}]).to_csv(
                     os.path.join(output_dir, "metrics", csv_file.stem + "_nar_perf_metrics.csv"),
                     index=False,
                 )
