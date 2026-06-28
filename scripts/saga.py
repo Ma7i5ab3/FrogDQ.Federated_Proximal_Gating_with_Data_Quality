@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import psutil
+from joblib import Parallel, delayed
 from loguru import logger
 
 warnings.filterwarnings("ignore")
@@ -576,6 +577,7 @@ class SagaPP:
         seed: int = 42,
         n_cv_folds: int = 3,
         pop_size: int = 16,
+        n_jobs: int = 16,
     ):
         self.K = K
         self.max_iter = max_iter
@@ -583,6 +585,7 @@ class SagaPP:
         self.seed = seed
         self.n_cv_folds = n_cv_folds
         self.pop_size = pop_size
+        self.n_jobs = n_jobs
         self._rng = random.Random(seed)
         np.random.seed(seed)
 
@@ -932,16 +935,22 @@ class SagaPP:
         target_loss = dirty_loss * 0.95  # target: 5% improvement
 
         for iteration in range(self.max_iter):
-            # Score all pipelines in population
-            scored: List[Tuple[Pipeline, float]] = []
+            # Collect unseen pipelines, mark seen before dispatching to workers
+            unseen: List[Pipeline] = []
             for pip in population:
                 key = _pipeline_key(pip)
-                if key in seen:
-                    continue
-                seen.add(key)
-                loss = self._score_pipeline(pip, X, y, col_types)
-                scored.append((pip, loss))
-                all_logical.append((pip, loss))
+                if key not in seen:
+                    seen.add(key)
+                    unseen.append(pip)
+
+            # Score unseen pipelines in parallel across all cores
+            losses: List[float] = Parallel(n_jobs=self.n_jobs, backend="loky")(
+                delayed(self._score_pipeline)(pip, X, y, col_types)
+                for pip in unseen
+            )
+
+            scored: List[Tuple[Pipeline, float]] = list(zip(unseen, losses))
+            all_logical.extend(scored)
 
             if not scored:
                 break
@@ -1031,16 +1040,20 @@ class SagaPP:
             if not bucket_logical:
                 continue
 
-            # For each logical pipeline, materialise r_base physical pipelines
-            # (random samples from the param grid)
-            physical_candidates: List[Tuple[Pipeline, float]] = []
+            # Materialise all physical pipelines for this bucket, then score in parallel
+            all_phys_pips: List[Pipeline] = []
             for log_pip, _ in bucket_logical:
                 param_configs = self._sample_param_configs(log_pip, r_base)
                 for config in param_configs:
-                    phys_pip = [(name, config.get(name, params))
-                                for name, params in log_pip]
-                    loss = self._score_pipeline(phys_pip, X, y, col_types)
-                    physical_candidates.append((phys_pip, loss))
+                    all_phys_pips.append(
+                        [(name, config.get(name, params)) for name, params in log_pip]
+                    )
+
+            phys_losses: List[float] = Parallel(n_jobs=self.n_jobs, backend="loky")(
+                delayed(self._score_pipeline)(phys_pip, X, y, col_types)
+                for phys_pip in all_phys_pips
+            )
+            physical_candidates: List[Tuple[Pipeline, float]] = list(zip(all_phys_pips, phys_losses))
 
             # Successive halving within bucket
             current = sorted(physical_candidates, key=lambda t: t[1])
@@ -1196,9 +1209,10 @@ def process_all_datasets(
     output_dir: str,
     datasets: Optional[List[str]] = None,
     K: int = 3,
-    max_iter: int = 15,
-    resources: int = 20,
+    max_iter: int = 20,
+    resources: int = 40,
     seed: int = 42,
+    n_jobs: int = 16,
 ):
     """
     Apply the Saga++ cleaning pipeline to all poisoned datasets.
@@ -1221,7 +1235,7 @@ def process_all_datasets(
     os.makedirs(os.path.join(output_dir, "nar"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "metrics"), exist_ok=True)
 
-    cleaner = SagaPP(K=K, max_iter=max_iter, resources=resources, seed=seed)
+    cleaner = SagaPP(K=K, max_iter=max_iter, resources=resources, seed=seed, n_jobs=n_jobs)
 
     ar_dir = Path(input_dir) / "ar"
     nar_dir = Path(input_dir) / "nar"
@@ -1396,6 +1410,10 @@ if __name__ == "__main__":
         "--seed", type=int, default=42,
         help="Random seed (default: 42)",
     )
+    parser.add_argument(
+        "--n_jobs", type=int, default=16,
+        help="Parallel workers for pipeline scoring (default: 16; -1 = all cores)",
+    )
 
     args = parser.parse_args()
 
@@ -1417,4 +1435,5 @@ if __name__ == "__main__":
         max_iter=args.max_iter,
         resources=args.resources,
         seed=args.seed,
+        n_jobs=args.n_jobs,
     )

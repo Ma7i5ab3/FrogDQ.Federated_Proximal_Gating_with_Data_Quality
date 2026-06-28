@@ -50,15 +50,6 @@ logger.add(
 # One member per surviving group is kept (median-row-count representative).
 # Override via --families-file (YAML dict mapping name → [dataset, ...]).
 DEFAULT_FAMILIES: Dict[str, List[str]] = {
-    "mfeat": [
-        "mfeat_factors",
-        "mfeat_fourier",
-        "mfeat_karhunen",
-        "mfeat_morphological",
-        "mfeat_zernike",
-        "mfeat_pixel",
-    ],
-    "nasa_defect": ["pc1", "pc3", "pc4", "kc1", "kc2", "jm1"],
     "image_derived": [
         "mnist_784",
         "fashion_mnist",
@@ -69,6 +60,18 @@ DEFAULT_FAMILIES: Dict[str, List[str]] = {
     "analcatdata": ["analcatdata_authorship", "analcatdata_dmft"],
 }
 
+"""
+"mfeat": [
+        "mfeat_factors",
+        "mfeat_fourier",
+        "mfeat_karhunen",
+        "mfeat_morphological",
+        "mfeat_zernike",
+        "mfeat_pixel",
+    ],
+    "nasa_defect": ["pc1", "pc3", "pc4", "kc1", "kc2", "jm1"],
+*/
+"""
 
 # ── Step 1: size filter ───────────────────────────────────────────────────────
 
