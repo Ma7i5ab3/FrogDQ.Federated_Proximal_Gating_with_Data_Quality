@@ -49,6 +49,11 @@ logger.add(
 # Each key names a group of structurally similar datasets.
 # One member per surviving group is kept (median-row-count representative).
 # Override via --families-file (YAML dict mapping name → [dataset, ...]).
+# ── datasets to unconditionally exclude before any filtering step ─────────────
+# Add dataset names here to hard-drop them regardless of size/family/pilot.
+DEFAULT_EXCLUDED_DATASETS: List[str] = []
+
+
 DEFAULT_FAMILIES: Dict[str, List[str]] = {
     "image_derived": [
         "mnist_784",
@@ -72,6 +77,32 @@ DEFAULT_FAMILIES: Dict[str, List[str]] = {
     "nasa_defect": ["pc1", "pc3", "pc4", "kc1", "kc2", "jm1"],
 */
 """
+
+# ── Step 0: exclusion filter ─────────────────────────────────────────────────
+
+def step0_exclusion_filter(df: pd.DataFrame, excluded: List[str]) -> pd.DataFrame:
+    """Drop datasets listed in *excluded* before any other filtering step."""
+    if not excluded:
+        return df
+
+    excluded_set = set(excluded)
+    mask = df["dataset_name"].isin(excluded_set)
+    removed = df[mask]["dataset_name"].tolist()
+    unknown = excluded_set - set(df["dataset_name"])
+
+    result = df[~mask].reset_index(drop=True)
+    logger.info(
+        f"Step 0 — exclusion filter: {len(df)} → {len(result)} datasets  "
+        f"({len(removed)} removed)"
+    )
+    for name in removed:
+        logger.debug(f"  Excluded {name}")
+    if unknown:
+        logger.warning(
+            f"  Exclusion list names not found in catalogue: {sorted(unknown)}"
+        )
+    return result
+
 
 # ── Step 1: size filter ───────────────────────────────────────────────────────
 
@@ -310,6 +341,20 @@ def main() -> None:
         help="Write the final YAML dataset list to this file.",
     )
 
+    # ── step 0 ──
+    g0 = parser.add_argument_group("Step 0 — exclusion filter")
+    g0.add_argument(
+        "--exclude", nargs="*", default=[], metavar="DATASET",
+        help="Dataset names to unconditionally drop before any filtering step.",
+    )
+    g0.add_argument(
+        "--exclude-file", default=None, metavar="FILE",
+        help=(
+            "YAML file with a list of dataset names to exclude "
+            "(a YAML sequence, e.g. [name1, name2])."
+        ),
+    )
+
     # ── step 1 ──
     g1 = parser.add_argument_group("Step 1 — size filter")
     g1.add_argument(
@@ -342,7 +387,7 @@ def main() -> None:
         help="Run pilot only when surviving datasets exceed this count.",
     )
     g3.add_argument(
-        "--pilot-select", type=int, default=10,
+        "--pilot-select", type=int, default=30,
         help="Number of datasets to retain after the pilot.",
     )
     g3.add_argument(
@@ -378,6 +423,16 @@ def main() -> None:
         logger.error(str(e))
         sys.exit(1)
     logger.info(f"Found {len(df)} datasets.")
+
+    # ── step 0 ───────────────────────────────────────────────────────────────
+    excluded = list(DEFAULT_EXCLUDED_DATASETS) + list(args.exclude)
+    if args.exclude_file:
+        with open(args.exclude_file) as f:
+            excluded += yaml.safe_load(f) or []
+    df = step0_exclusion_filter(df, excluded)
+    if df.empty:
+        logger.error("No datasets remain after exclusion filter.")
+        sys.exit(1)
 
     # ── step 1 ───────────────────────────────────────────────────────────────
     df = step1_size_filter(df, max_rows=args.max_rows, max_cols=args.max_cols)

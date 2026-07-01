@@ -35,6 +35,26 @@ datasets:
   - connect_4
   - vehicle
   - cmc
+  - letter
+  - steel_plates_fault
+  - banknote_authentication
+  - wilt
+  - phoneme
+  - diabetes
+  - miceprotein
+  - bank_marketing
+  - wall_robot_navigation
+  - qsar_biodeg
+  - first_order_theorem_proving
+  - pendigits
+  - segment
+  - kr_vs_kp
+  - cylinder_bands
+  - nomao
+  - pc4
+  - texture
+  - spambase
+  - satimage
 
 
 # Data quality modes to test
@@ -220,15 +240,15 @@ poisoning:
     # 0.0 = all features may be poisoned (current behaviour).
     # e.g. 0.3 = 30 % of columns are randomly selected and never touched.
 
-    clean_feature_frac: 0.4
+    clean_feature_frac: 0.40
 
-    mild_rate: 0.06
+    mild_rate: 0.08
     moderate_frac: 0.35
     moderate_rate: 0.15
-    heavy_frac: 0.20
-    heavy_rate: 0.35
-    severe_frac: 0.15
-    severe_rate: 0.60
+    heavy_frac: 0.22
+    heavy_rate: 0.28
+    severe_frac: 0.10
+    severe_rate: 0.45
 
   # AR (At Random) poisoning mechanisms.
   # Set to false to disable a specific mechanism.
@@ -308,7 +328,7 @@ data_preparation_tuning:
 
   # Enable per-dataset hyperparameter tuning before cleaning.
   # Set to false to skip tuning and use the CLI / default values.
-  enabled: false
+  enabled: true
 
   # Number of Optuna TPE trials per dataset.
   n_trials: 30
@@ -316,11 +336,11 @@ data_preparation_tuning:
   # Parallel Optuna workers (threads).
   # When > 1, internal RF/MICE n_jobs is forced to 1 to avoid CPU oversubscription.
   # Set to n_jobs_optuna or a lower value to limit resource usage.
-  n_jobs: 8
+  n_jobs: 16
 
   # Fraction of the full poisoned dataset used as the tuning pool (train + val).
   # Capped at max_sample_frac; guaranteed to be at least min_sample_rows rows.
-  sample_frac: 0.05
+  sample_frac: 0.08
   max_sample_frac: 0.10
   min_sample_rows: 100
 
@@ -334,9 +354,9 @@ data_preparation_tuning:
   # Format: [min, max]  (floats are suggest_float; int keys use suggest_int)
   hyperparameter_ranges:
     iqr_factor:        [1.0, 4.0]   # IQR whisker multiplier for outlier clipping
-    shap_top_pct:      [0.3, 1.0]   # fraction of top SHAP features used in cleaning
-    ar_min_support:    [0.5, 0.99]  # Apriori minimum support for AR rule mining
-    ar_min_confidence: [0.5, 0.99]  # Apriori minimum confidence for AR rule mining
+    shap_top_pct:      [0.3, 0.8]   # fraction of top SHAP features used in cleaning
+    ar_min_support:    [0.8, 0.99]  # Apriori minimum support for AR rule mining
+    ar_min_confidence: [0.8, 0.99]  # Apriori minimum confidence for AR rule mining
     mice_n_iterations: [1, 5]       # MICE RF imputation cycles (int)
     mice_n_estimators: [5, 50]      # LightGBM trees per MICE column per iteration (int)
     mice_num_leaves:   [10, 50]     # LightGBM max leaves per tree inside MICE (int)

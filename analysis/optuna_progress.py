@@ -13,6 +13,9 @@ CLI arguments
     all configurations, ensuring a fair comparison.
 --model-type {linear,mlp,all}
     Restrict plots to a single model family (default: all).
+--convergence
+    Also produce HPO convergence plots (best-so-far curves, convergence AUC,
+    best-trial position).  Requires loading all trials, so it is slower.
 
 Examples
 --------
@@ -27,6 +30,9 @@ python optuna_progress.py --metric recall --model-type mlp
 
 # Test precision, complete datasets, linear model
 python optuna_progress.py --metric precision --complete-only --model-type linear
+
+# Test F1 + HPO convergence analysis
+python optuna_progress.py --convergence
 """
 
 import argparse
@@ -313,22 +319,60 @@ def load_studies(split: str = "test", metric: str = "f1") -> pd.DataFrame:
         else:
             cpu_time_mean = float("nan")
 
+        # ── HPO convergence stats (all completed trials, already loaded)
+        completed = [
+            t for t in study.trials
+            if t.state == optuna.trial.TrialState.COMPLETE and t.value is not None
+        ]
+        n_trials = len(completed)
+        if n_trials > 0:
+            maximize = study.direction == optuna.study.StudyDirection.MAXIMIZE
+            best_trial_idx = next(
+                (i for i, t in enumerate(completed) if t.number == best.number),
+                n_trials - 1,
+            )
+            best_trial_idx_ratio = best_trial_idx / max(n_trials - 1, 1)
+
+            # Best-so-far curve
+            bsf_vals: list[float] = []
+            cur = -np.inf if maximize else np.inf
+            for t in completed:
+                cur = max(cur, t.value) if maximize else min(cur, t.value)
+                bsf_vals.append(cur)
+
+            v_start, v_end = bsf_vals[0], bsf_vals[-1]
+            span = abs(v_end - v_start)
+            if span > 1e-9 and n_trials > 1:
+                norm = [(b - v_start) / span if maximize else (v_start - b) / span
+                        for b in bsf_vals]
+                xs = [i / (n_trials - 1) for i in range(n_trials)]
+                convergence_auc = float(np.trapz(norm, xs))
+            else:
+                convergence_auc = 1.0
+        else:
+            best_trial_idx_ratio = float("nan")
+            convergence_auc = float("nan")
+
         rows.append({
-            "dataset":       d["dataset"],
-            "data_mode":     d["data_mode"],
-            "model_type":    d["model_type"],
-            "config":        d["config"],
-            "config_label":  CONFIG_LABELS.get(d["config"], d["config"]),
-            "metric_mean":   mean_val,
-            "metric_std":    std_val,
-            "n_seeds":       len(metric_values),
-            "cpu_time_mean": cpu_time_mean,
+            "dataset":             d["dataset"],
+            "data_mode":           d["data_mode"],
+            "model_type":          d["model_type"],
+            "config":              d["config"],
+            "config_label":        CONFIG_LABELS.get(d["config"], d["config"]),
+            "metric_mean":         mean_val,
+            "metric_std":          std_val,
+            "n_seeds":             len(metric_values),
+            "cpu_time_mean":       cpu_time_mean,
+            "n_trials":            n_trials,
+            "best_trial_idx_ratio": best_trial_idx_ratio,
+            "convergence_auc":     convergence_auc,
         })
 
     df = pd.DataFrame(rows)
-    n_ds   = df["dataset"].nunique()    if not df.empty else 0
+    n_ds   = df["dataset"].nunique()      if not df.empty else 0
     n_cfg  = df["config_label"].nunique() if not df.empty else 0
     has_t  = df["cpu_time_mean"].notna().sum() if not df.empty else 0
+    has_c  = df["convergence_auc"].notna().sum() if not df.empty else 0
     print(
         f"\n{'─'*60}\n"
         f" Studies loaded : {len(df):>4}  matched  |  {skipped:>3} skipped\n"
@@ -336,6 +380,7 @@ def load_studies(split: str = "test", metric: str = "f1") -> pd.DataFrame:
         f" Datasets       : {n_ds}\n"
         f" Configs        : {n_cfg}\n"
         f" With CPU time  : {has_t} / {len(df)}\n"
+        f" With conv.stats: {has_c} / {len(df)}\n"
         f"{'─'*60}"
     )
     return df
@@ -887,6 +932,267 @@ def overall_aggr_results(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Convergence data loading
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_convergence_curves() -> pd.DataFrame:
+    """
+    Load per-trial objective values for every matched study.
+
+    Returns one row per (study, trial) so that convergence curves can be
+    plotted or aggregated downstream.  Only COMPLETE trials with a non-null
+    value are included.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: ``dataset``, ``data_mode``, ``model_type``, ``config``,
+        ``config_label``, ``trial_number`` (0-based within completed trials),
+        ``relative_trial`` (0–1), ``trial_value``, ``best_so_far``,
+        ``norm_best_so_far`` (0 = start of search, 1 = final best),
+        ``n_trials``, ``maximize``.
+    """
+    _RE = re.compile(
+        r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
+        r"_(?P<config>curr[01]_gate[01]|ag|saga|cp|baseline_zero|knn)$"
+    )
+
+    rows, skipped = [], 0
+    for name in optuna.get_all_study_names(storage=STORAGE):
+        m = _RE.match(name)
+        if not m:
+            skipped += 1
+            continue
+        study = optuna.load_study(study_name=name, storage=STORAGE)
+
+        completed = [
+            t for t in study.trials
+            if t.state == optuna.trial.TrialState.COMPLETE and t.value is not None
+        ]
+        if not completed:
+            skipped += 1
+            continue
+
+        d = m.groupdict()
+        maximize = study.direction == optuna.study.StudyDirection.MAXIMIZE
+        n_trials = len(completed)
+
+        # Best-so-far curve
+        bsf_vals: list[float] = []
+        cur = -np.inf if maximize else np.inf
+        for t in completed:
+            cur = max(cur, t.value) if maximize else min(cur, t.value)
+            bsf_vals.append(cur)
+
+        v_start, v_end = bsf_vals[0], bsf_vals[-1]
+        span = abs(v_end - v_start)
+
+        for i, (t, bsf) in enumerate(zip(completed, bsf_vals)):
+            if span > 1e-9:
+                norm = (bsf - v_start) / span if maximize else (v_start - bsf) / span
+            else:
+                norm = 1.0
+            rows.append({
+                "dataset":         d["dataset"],
+                "data_mode":       d["data_mode"],
+                "model_type":      d["model_type"],
+                "config":          d["config"],
+                "config_label":    CONFIG_LABELS.get(d["config"], d["config"]),
+                "trial_number":    i,
+                "relative_trial":  i / max(n_trials - 1, 1),
+                "trial_value":     t.value,
+                "best_so_far":     bsf,
+                "norm_best_so_far": norm,
+                "n_trials":        n_trials,
+                "maximize":        maximize,
+            })
+
+    if skipped:
+        print(f"  [convergence] {skipped} studies skipped (no name match or no complete trials).")
+    return pd.DataFrame(rows)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Convergence curve plot
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_convergence(
+    curves_df: pd.DataFrame,
+    model_type: str,
+    noise_mode: str,
+) -> None:
+    """
+    Aggregated HPO best-so-far convergence curves, one line per configuration.
+
+    Each study's best-so-far objective is normalised to [0, 1] (0 = starting
+    value, 1 = final best found), then interpolated onto a common 20-bin grid
+    of relative trial progress.  The plot shows the mean ± 1 std across all
+    (dataset, study) combinations for each config.
+
+    Parameters
+    ----------
+    curves_df : pd.DataFrame
+        Output of :func:`load_convergence_curves`.
+    model_type : {'linear', 'mlp'}
+        Model family to filter on.
+    noise_mode : {'ar', 'nar'}
+        Noise regime to include.
+    """
+    noise_rows = curves_df[
+        (curves_df["model_type"] == model_type)
+        & (curves_df["data_mode"] == noise_mode)
+    ]
+    if noise_rows.empty:
+        print(f"  [convergence] No data for {model_type}/{noise_mode}. Skipping.")
+        return
+
+    N_BINS = 30
+    bin_edges   = np.linspace(0, 1, N_BINS + 1)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+    _, ax = plt.subplots(figsize=(9, 5))
+    present_configs = [c for c in BAR_ORDER if c in noise_rows["config_label"].unique()]
+
+    for config_label in present_configs:
+        cfg_rows = noise_rows[noise_rows["config_label"] == config_label]
+        color = BAR_COLORS.get(config_label, "#999999")
+
+        study_curves = []
+        for _, grp in cfg_rows.groupby(["dataset", "data_mode", "model_type", "config"]):
+            grp = grp.sort_values("trial_number")
+            rel  = grp["relative_trial"].values
+            norm = grp["norm_best_so_far"].values
+            if len(rel) > 1:
+                interp = np.interp(bin_centers, rel, norm)
+            else:
+                interp = np.full(N_BINS, norm[0])
+            study_curves.append(interp)
+
+        if not study_curves:
+            continue
+
+        mat        = np.array(study_curves)
+        mean_curve = np.nanmean(mat, axis=0)
+        std_curve  = np.nanstd(mat, axis=0, ddof=min(1, mat.shape[0] - 1))
+
+        ax.plot(bin_centers, mean_curve, color=color, linewidth=1.8, label=config_label)
+        ax.fill_between(
+            bin_centers,
+            np.clip(mean_curve - std_curve, 0, None),
+            np.clip(mean_curve + std_curve, None, 1.05),
+            color=color, alpha=0.15,
+        )
+
+    ax.set_xlabel("Relative trial progress  (0 = first trial, 1 = last)", fontsize=9)
+    ax.set_ylabel("Normalised best-so-far objective\n(0 = start, 1 = final best)", fontsize=9)
+    ax.set_title(
+        f"{model_type.upper()} / {noise_mode.upper()} — HPO Convergence Curves",
+        fontsize=11, fontweight="bold",
+    )
+    ax.legend(fontsize=7, loc="lower right")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(-0.05, 1.1)
+    ax.grid(linewidth=0.3, alpha=0.4)
+    plt.tight_layout()
+    out = f"plots/{model_type}_{noise_mode}_convergence_curves.png"
+    plt.savefig(out, bbox_inches="tight")
+    print(f"  Saved: {out}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Convergence statistics bar charts
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_convergence_stats(
+    df: pd.DataFrame,
+    model_type: str,
+    noise_mode: str,
+) -> None:
+    """
+    Three-panel bar chart of HPO convergence statistics per configuration.
+
+    * **Left**   — Convergence AUC (area under the normalised best-so-far
+                   curve; higher → found good HPs earlier)
+    * **Middle** — Best-trial position ratio (index of best trial / total
+                   trials; lower → converged earlier)
+    * **Right**  — Mean number of completed trials per study
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Output of :func:`load_studies` (must contain convergence columns added
+        by that function: ``convergence_auc``, ``best_trial_idx_ratio``,
+        ``n_trials``).
+    model_type : {'linear', 'mlp'}
+        Model family to filter on.
+    noise_mode : {'ar', 'nar'}
+        Noise regime to include.
+    """
+    noise_rows = df[
+        (df["model_type"] == model_type)
+        & (df["data_mode"] == noise_mode)
+        & df["convergence_auc"].notna()
+    ]
+    if noise_rows.empty:
+        print(f"  [conv-stats] No convergence stats for {model_type}/{noise_mode}. Skipping.")
+        return
+
+    present_lbl = noise_rows["config_label"].unique()
+    bar_labels  = [b for b in BAR_ORDER if b in present_lbl]
+    colors      = [BAR_COLORS.get(l, "#cccccc") for l in bar_labels]
+
+    agg = (
+        noise_rows
+        .groupby("config_label")
+        .agg(
+            auc_mean=("convergence_auc",      "mean"),
+            auc_std=("convergence_auc",       "std"),
+            idx_mean=("best_trial_idx_ratio",  "mean"),
+            idx_std=("best_trial_idx_ratio",   "std"),
+            n_mean=("n_trials",               "mean"),
+            n_std=("n_trials",                "std"),
+        )
+        .reindex(bar_labels)
+        .fillna(0)
+        .reset_index()
+    )
+
+    x   = np.arange(len(bar_labels))
+    ekw = {"elinewidth": 0.9, "ecolor": "#333"}
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+    def _bar(ax, means, stds, title, ylabel, ylim=None):
+        ax.bar(x, means, width=0.65, yerr=stds, capsize=3,
+               color=colors, error_kw=ekw)
+        for xi, m, s in zip(x, means, stds):
+            ax.text(xi, m + s + 0.01, f"{m:.3f}",
+                    ha="center", va="bottom", fontsize=6, rotation=90)
+        ax.set_title(title, fontsize=9)
+        ax.set_xticks(x)
+        ax.set_xticklabels(bar_labels, rotation=40, ha="right", fontsize=7)
+        ax.set_ylabel(ylabel, fontsize=8)
+        if ylim:
+            ax.set_ylim(*ylim)
+        ax.grid(axis="y", linewidth=0.3, alpha=0.5)
+
+    _bar(axes[0], agg["auc_mean"], agg["auc_std"],
+         "Convergence AUC\n(↑ = faster convergence)", "Mean AUC", (0, 1.2))
+    _bar(axes[1], agg["idx_mean"], agg["idx_std"],
+         "Best-trial position\n(↓ = converged earlier)", "Mean best-idx / n_trials", (0, 1.2))
+    _bar(axes[2], agg["n_mean"], agg["n_std"],
+         "Trials per study", "Mean completed trials")
+
+    fig.suptitle(
+        f"{model_type.upper()} / {noise_mode.upper()} — HPO Convergence Statistics",
+        fontsize=12, fontweight="bold",
+    )
+    plt.tight_layout()
+    out = f"plots/{model_type}_{noise_mode}_convergence_stats.png"
+    plt.savefig(out, bbox_inches="tight")
+    print(f"  Saved: {out}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -928,6 +1234,15 @@ if __name__ == "__main__":
         default="all",
         help="Restrict plots to a single model family (default: all).",
     )
+    parser.add_argument(
+        "--convergence",
+        action="store_true",
+        help=(
+            "Also produce HPO convergence plots: best-so-far curves and bar "
+            "charts of convergence AUC, best-trial position, and trial count.  "
+            "Requires loading all trials so it is slower than the default run."
+        ),
+    )
     args = parser.parse_args()
 
     metric_label = _METRIC_LABELS.get(args.metric, args.metric.upper())
@@ -959,3 +1274,16 @@ if __name__ == "__main__":
             plot_efficiency(df, model_type, noise_mode, metric_col, metric_label)
 
     overall_aggr_results(df, metric_col, metric_label)
+
+    if args.convergence:
+        print("\n\n── Convergence analysis ──")
+        print("Loading per-trial data…")
+        curves_df = load_convergence_curves()
+        if curves_df.empty:
+            print("  No per-trial data found; skipping convergence plots.")
+        else:
+            for model_type in model_types:
+                for noise_mode in ["ar", "nar"]:
+                    print(f"\n── {model_type.upper()} / {noise_mode.upper()} — convergence ──")
+                    plot_convergence(curves_df, model_type, noise_mode)
+                    plot_convergence_stats(df, model_type, noise_mode)
