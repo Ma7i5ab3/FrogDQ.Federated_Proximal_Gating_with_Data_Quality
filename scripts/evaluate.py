@@ -15,6 +15,7 @@ Plots are saved as PNG files under --output-dir.
 Usage:
     python scripts/evaluate.py --results-dir results --output-dir evaluation
     python scripts/evaluate.py --config config.yaml
+    python scripts/evaluate.py --comparison-methods clean baseline gate saga catboost_dirty
 """
 
 import argparse
@@ -26,6 +27,9 @@ matplotlib.use("Agg")  # non-interactive backend; must be set before pyplot impo
 import matplotlib.pyplot as plt
 import pandas as pd
 from scipy.stats import friedmanchisquare
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from frogdq.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_label
 
 try:
     import scikit_posthocs as sp
@@ -44,6 +48,12 @@ if not hasattr(sp, "critical_difference_diagram"):
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def method_label(data_mode, use_curriculum, use_gate, preparation):
+    # CatBoost is a standalone model baseline (not tied to model_types), run
+    # once on clean data and once on AR/NAR data. Checked before the
+    # data_mode == "clean" shortcut below so its clean-mode row doesn't get
+    # merged into the "clean" reference method.
+    if preparation == "catboost":
+        return "catboost_clean" if data_mode == "clean" else "catboost_dirty"
     if data_mode == "clean":
         return "clean"
     if preparation != "standard":
@@ -68,8 +78,16 @@ def best_trial_seed_scores(trial_rows):
     return dict(zip(best["seed"].astype(int), best[metric_col]))
 
 
-def build_results(combined_results):
-    """Build results[model_type][data_mode][method][(dataset, seed)] -> test metric."""
+def build_results(combined_results, selected_methods=None):
+    """
+    Build results[model_type][data_mode][method][(dataset, seed)] -> test metric.
+
+    Parameters
+    ----------
+    selected_methods : list of str, optional
+        Canonical method keys (see frogdq.comparison_methods.METHOD_CHOICES)
+        to restrict to. None (default) includes every method found.
+    """
     results = {}
     group_cols = [
         "model_type", "data_mode", "use_curriculum", "use_gate", "preparation", "dataset",
@@ -78,6 +96,8 @@ def build_results(combined_results):
         combined_results.groupby(group_cols)
     ):
         method = method_label(data_mode, use_curriculum, use_gate, preparation)
+        if selected_methods is not None and resolve_from_label(method) not in selected_methods:
+            continue
         seed_scores = best_trial_seed_scores(rows)
         method_dict = (
             results.setdefault(model_type, {})
@@ -86,13 +106,33 @@ def build_results(combined_results):
         )
         for seed, score in seed_scores.items():
             method_dict[(dataset, seed)] = score
+
+    # CatBoost is a standalone model baseline (model_type == "catboost"), not
+    # tied to linear/mlp architecture, so it never shares a model_type bucket
+    # with them. Broadcast its two methods ("catboost_clean"/"catboost_dirty")
+    # into every other model_type present, so they show up as two extra
+    # competitor baselines in every comparison below — exactly like Saga/CP.
+    catboost_by_mode = results.pop("catboost", None)
+    if catboost_by_mode:
+        for model_type, by_mode in results.items():
+            for data_mode, methods in catboost_by_mode.items():
+                for method, scores in methods.items():
+                    by_mode.setdefault(data_mode, {})[method] = dict(scores)
+
     return results
 
 
 def score_matrix(results, model_type, corruption_mode):
     """(dataset, seed) × methods matrix for the Friedman test."""
+    # Every method under the "clean" data_mode bucket ("clean" itself, plus
+    # "catboost_clean" — a second fixed reference of the same kind, since
+    # CatBoost trained on clean data has no AR/NAR variant) is a fixed
+    # reference reused across both corruption modes. Built with .get() /
+    # dict unpacking (not indexing) since comparison_methods filtering may
+    # have dropped either or both of them.
+    clean_methods = results[model_type].get("clean", {})
     methods_scores = {
-        "clean": results[model_type]["clean"]["clean"],
+        **clean_methods,
         **results[model_type][corruption_mode],
     }
     common_blocks = sorted(
@@ -132,7 +172,7 @@ def friedman_and_cd_plot(matrix, title, output_path):
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
-def run_evaluation(results_csv: Path, output_dir: Path):
+def run_evaluation(results_csv: Path, output_dir: Path, selected_methods=None):
     if not results_csv.exists():
         print(f"ERROR: results CSV not found: {results_csv}")
         sys.exit(1)
@@ -141,7 +181,10 @@ def run_evaluation(results_csv: Path, output_dir: Path):
     combined_results = pd.read_csv(results_csv)
     print(f"  {len(combined_results)} rows loaded.")
 
-    results = build_results(combined_results)
+    if selected_methods is not None:
+        print(f"  Restricting to comparison_methods: {selected_methods}")
+
+    results = build_results(combined_results, selected_methods=selected_methods)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -171,8 +214,8 @@ def run_evaluation(results_csv: Path, output_dir: Path):
             )
             cd_summary[(model_type, corruption_mode, "with_clean")] = (stat, p, avg_ranks)
 
-            # Plot 2: competitors only (clean removed)
-            competitors = matrix.drop(columns="clean")
+            # Plot 2: competitors only (clean removed, if present)
+            competitors = matrix.drop(columns="clean", errors="ignore")
             if competitors.shape[1] < 2:
                 print(f"  Skipping competitors-only plot for {base_title}: only one method left.")
                 continue
@@ -232,7 +275,17 @@ def main():
         "--config",
         type=str,
         default="config.yaml",
-        help="Path to config.yaml — used only to read output_dir when --results-dir is omitted",
+        help="Path to config.yaml — used to read output_dir (when --results-dir is omitted) "
+             "and comparison_methods (when --comparison-methods is omitted)",
+    )
+    parser.add_argument(
+        "--comparison-methods",
+        type=str,
+        nargs="+",
+        choices=METHOD_CHOICES,
+        default=None,
+        help="Restrict the comparison to these methods (overrides config.yaml's "
+             "comparison_methods). Default: use config.yaml, or every method found if unset there.",
     )
     args = parser.parse_args()
 
@@ -253,7 +306,9 @@ def main():
             output_dir_cfg = "results"
         results_csv = Path(output_dir_cfg) / "all_experiments_results.csv"
 
-    run_evaluation(results_csv=results_csv, output_dir=Path(args.output_dir))
+    selected_methods = resolve_comparison_methods(args.comparison_methods, args.config)
+
+    run_evaluation(results_csv=results_csv, output_dir=Path(args.output_dir), selected_methods=selected_methods)
 
 
 if __name__ == "__main__":

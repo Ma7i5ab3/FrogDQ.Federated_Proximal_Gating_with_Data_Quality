@@ -24,6 +24,19 @@ logger.add(
 )
 
 
+def compute_ar_expected_rate(noise_percentages: Dict[str, tuple]) -> float:
+    """
+    Expected fraction of a poisonable column's cells corrupted by AR poisoning.
+
+    Each column is hit by a value-level mechanism (Gaussian noise / categorical
+    flip) at its tier rate, plus MCAR missingness at an additional 0.75x that
+    rate -> effective rate = tier_rate * 1.75. Used as the default NAR
+    corruption budget so NAR's total lands on AR's total.
+    """
+    weighted_rate = sum((frac or 0.0) * rate for frac, rate in noise_percentages.values())
+    return weighted_rate * 1.75
+
+
 class DataPoisoner:
     """
     Implements data poisoning mechanisms for tabular datasets.
@@ -38,15 +51,13 @@ class DataPoisoner:
         self,
         seed=42,
         noise_percentages=None,
-        nar_min_corruption: float = 0.25,
-        nar_max_corruption: float = 0.50,
+        nar_min_corruption: float = None,
+        nar_max_corruption: float = None,
         clean_feature_frac: float = 0.0,
     ):
         self.seed = seed
         np.random.seed(seed)
         self.poison_log = {}
-        self.nar_min_corruption = nar_min_corruption
-        self.nar_max_corruption = nar_max_corruption
         self.clean_feature_frac = max(0.0, min(1.0, clean_feature_frac))
 
         if noise_percentages is None:
@@ -60,6 +71,13 @@ class DataPoisoner:
             }
         else:
             self.noise_percentages = noise_percentages
+
+        # NAR's corruption budget defaults to AR's expected total (over the same
+        # poisonable-column base) when not explicitly overridden, so the two
+        # modes corrupt the same share of cells by construction.
+        ar_rate = compute_ar_expected_rate(self.noise_percentages)
+        self.nar_min_corruption = nar_min_corruption if nar_min_corruption is not None else ar_rate
+        self.nar_max_corruption = nar_max_corruption if nar_max_corruption is not None else ar_rate
 
     def identify_column_types(self, df: pd.DataFrame) -> Dict[str, list]:
         """Identify column types based on prefix naming convention."""
@@ -710,8 +728,8 @@ def process_all_datasets(
     ar_mechanisms: dict = None,
     nar_mechanisms: dict = None,
     test_size: float = 0.3,
-    nar_min_corruption: float = 0.25,
-    nar_max_corruption: float = 0.50,
+    nar_min_corruption: float = None,
+    nar_max_corruption: float = None,
     clean_feature_frac: float = 0.0,
 ):
     """
@@ -725,8 +743,11 @@ def process_all_datasets(
         ar_mechanisms: Dict of enabled AR mechanisms
         nar_mechanisms: Dict of enabled NAR mechanisms
         test_size: Fraction of data to hold out as clean test set
-        nar_min_corruption: Minimum total cell corruption for NAR (floor)
-        nar_max_corruption: Maximum total cell corruption for NAR (cap)
+        nar_min_corruption: Minimum total cell corruption for NAR (floor). None
+                            defaults to AR's expected corruption rate (see
+                            compute_ar_expected_rate).
+        nar_max_corruption: Maximum total cell corruption for NAR (cap). None
+                            defaults to AR's expected corruption rate.
         clean_feature_frac: Fraction of feature columns kept completely unpoisoned (0–1)
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -980,11 +1001,15 @@ if __name__ == "__main__":
     )
     nar_group.add_argument(
         "--nar-min-corruption", type=float, default=None,
-        help="Minimum total cell corruption for NAR, 0–1 (config default: 0.25)",
+        help="Minimum total cell corruption for NAR, 0-1 "
+             "(default: computed from the AR noise settings, so NAR's total "
+             "corruption matches AR's)",
     )
     nar_group.add_argument(
         "--nar-max-corruption", type=float, default=None,
-        help="Maximum total cell corruption for NAR, 0–1 (config default: 0.50)",
+        help="Maximum total cell corruption for NAR, 0-1 "
+             "(default: computed from the AR noise settings, so NAR's total "
+             "corruption matches AR's)",
     )
 
     noise_group.add_argument(
@@ -1048,8 +1073,10 @@ if __name__ == "__main__":
     }
 
     # ── NAR mechanisms ─────────────────────────────────────────────────────────
-    nar_min_corruption = _resolve(args.nar_min_corruption, _nar_cfg, "min_corruption", 0.25)
-    nar_max_corruption = _resolve(args.nar_max_corruption, _nar_cfg, "max_corruption", 0.50)
+    # None (unset here, unset in config.yaml) means "compute it from the AR
+    # noise settings above" — see DataPoisoner.__init__ / compute_ar_expected_rate.
+    nar_min_corruption = _resolve(args.nar_min_corruption, _nar_cfg, "min_corruption", None)
+    nar_max_corruption = _resolve(args.nar_max_corruption, _nar_cfg, "max_corruption", None)
 
     nar_mechanisms = {
         "enable_nnar":             _nar_cfg.get("enable_nnar",             True) and not args.no_nar_nnar,

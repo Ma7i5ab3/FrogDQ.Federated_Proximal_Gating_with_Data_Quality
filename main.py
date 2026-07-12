@@ -231,6 +231,18 @@ def parse_args():
         help='Directory containing KNN-imputed data (default: data_knn)'
     )
 
+    parser.add_argument(
+        '--run-catboost',
+        action='store_true',
+        help=(
+            'Include CatBoost as an additional model baseline. '
+            'Unlike the other benchmarks, this is a model (not a data-preparation) '
+            'baseline: it runs once per dataset/data_mode, independent of model_types, '
+            'and needs no precomputation script. No preprocessing is applied — CatBoost '
+            'trains directly on raw data (NaN preserved, categorical features native).'
+        )
+    )
+
     return parser.parse_args()
 
 
@@ -370,6 +382,8 @@ def main():
         config['run_knn'] = True
     if args.knn_data_dir:
         config['knn_data_dir'] = args.knn_data_dir
+    if args.run_catboost:
+        config['run_catboost'] = True
 
     # Validate configuration
     if not config.get('datasets'):
@@ -425,6 +439,10 @@ def main():
     if config.get('run_knn'):
         print(f"  - Imputed data dir: {config.get('knn_data_dir', 'data_knn')}")
         print(f"  - To pre-compute: python scripts/knn.py")
+    print(f"CatBoost benchmark: {config.get('run_catboost', False)}")
+    if config.get('run_catboost'):
+        print(f"  - Model baseline (independent of model_types), no precomputation needed")
+        print(f"  - No preprocessing: raw data (NaN + native categoricals, no scaling)")
 
     # Calculate total configurations per model × n_models × n_datasets,
     # adjusted for which optional benchmarks are enabled.
@@ -449,7 +467,13 @@ def main():
 
     clean_configs = n_datasets * n_models * int(has_clean)
     ar_nar_configs = n_datasets * n_models * n_ar_nar * per_model_ar_nar
-    total_configs = clean_configs + ar_nar_configs
+
+    # CatBoost is a model baseline, not a per-model data-preparation baseline:
+    # it runs once per dataset/data_mode, independent of model_types.
+    catboost_clean_configs = n_datasets * int(has_clean) * int(config.get('run_catboost', False))
+    catboost_ar_nar_configs = n_datasets * n_ar_nar * int(config.get('run_catboost', False))
+
+    total_configs = clean_configs + ar_nar_configs + catboost_clean_configs + catboost_ar_nar_configs
     total_trials = total_configs * config['n_trials']
     total_evaluations = total_trials * config['n_seeds']
 
@@ -468,6 +492,9 @@ def main():
     if config.get('run_knn'):
         print(f"    - KNN imputation baseline: 1 config")
     print(f"  AR/NAR configs total: {ar_nar_configs}")
+    if config.get('run_catboost'):
+        print(f"  CatBoost configs (independent of model_types): "
+              f"{catboost_clean_configs + catboost_ar_nar_configs}")
     print(f"  Total configurations: {total_configs}")
     print(f"  Total trials: {total_trials}")
     print(f"  Total evaluations: {total_evaluations}")

@@ -16,6 +16,12 @@ CLI arguments
 --convergence
     Also produce HPO convergence plots (best-so-far curves, convergence AUC,
     best-trial position).  Requires loading all trials, so it is slower.
+--comparison-methods {clean,baseline,curriculum,gate,gate_curriculum,autogluon,saga,cp,baseline_zero,knn,catboost_clean,catboost_dirty}
+    Restrict every plot/table to these methods (overrides config.yaml's
+    comparison_methods; see frogdq/comparison_methods.py).
+--config PATH
+    Path to config.yaml (default: ../config.yaml), used to read
+    comparison_methods when --comparison-methods is omitted.
 
 Examples
 --------
@@ -33,18 +39,26 @@ python optuna_progress.py --metric precision --complete-only --model-type linear
 
 # Test F1 + HPO convergence analysis
 python optuna_progress.py --convergence
+
+# Only compare gate vs saga vs catboost
+python optuna_progress.py --comparison-methods clean baseline gate saga catboost_dirty
 """
 
 import argparse
 import re
+import sys
 import warnings
 from pathlib import Path
+from typing import List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 import optuna
 import math
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from frogdq.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_config_token
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 warnings.filterwarnings("ignore")
@@ -57,40 +71,46 @@ print(f"DB: {DB_PATH.resolve()}  |  exists: {DB_PATH.exists()}")
 
 # Config suffix → human-readable label (shown in legend / axes)
 CONFIG_LABELS = {
-    "curr0_gate0":  "Baseline",
-    "curr1_gate0":  "+ Curriculum",
-    "curr0_gate1":  "+ Gate",
+    "curr0_gate0":  "Standard prep",
+    "curr1_gate0":  "Curriculum",
+    "curr0_gate1":  "QuAIL",
     "curr1_gate1":  "+ Gate + Curr",
     "ag":           "AutoGluon prep",
     "saga":         "Saga++ prep",
     "cp":           "CP prep",
     "baseline_zero": "Zero imputation",
     "knn":          "KNN imputation",
+    "catboost_clean": "CatBoost Clean",
+    "catboost_dirty":  "CatBoost Dirty",
 }
 
 BAR_ORDER = [
     "Clean",
-    "Baseline",
-    "+ Curriculum",
+    "Standard prep",
+    "Curriculum",
     "AutoGluon prep",
     "Saga++ prep",
     "CP prep",
     "Zero imputation",
     "KNN imputation",
-    "+ Gate",
+    "CatBoost Clean",
+    "CatBoost Dirty",
+    "QuAIL",
     "+ Gate + Curr",
 ]
 
 BAR_COLORS = {
     "Clean":            "#4c9bcd",
-    "Baseline":         "#aaaaaa",
-    "+ Curriculum":     "#e07b39",
+    "Standard prep":         "#aaaaaa",
+    "Curriculum":     "#e07b39",
     "AutoGluon prep":   "#9b59b6",
     "Saga++ prep":      "#1abc9c",
     "CP prep":          "#f39c12",
     "Zero imputation":  "#778ca3",
     "KNN imputation":   "#00acc1",
-    "+ Gate":           "#e74c3c",
+    "CatBoost Clean":   "#27ae60",
+    "CatBoost Dirty":   "#8e44ad",
+    "QuAIL":           "#e74c3c",
     "+ Gate + Curr":    "#2ecc71",
 }
 
@@ -188,6 +208,101 @@ def _load_external_preproc_times() -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Study-name parsing
+# ─────────────────────────────────────────────────────────────────────────────
+
+_RE_STANDARD = re.compile(
+    r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
+    r"_(?P<config>curr[01]_gate[01]|ag|saga|cp|baseline_zero|knn)$"
+)
+
+# CatBoost is a standalone model baseline: study names are
+# {dataset}_{data_mode}_catboost (no model_type/curr/gate suffix). Its
+# "model_type" is kept as a synthetic "catboost" value here and later
+# broadcast into every real model_type by broadcast_catboost() so it shows
+# up as two extra competitor bars ("catboost_clean"/"catboost_dirty") in
+# every linear/mlp comparison, rather than living in an isolated bucket.
+_RE_CATBOOST = re.compile(
+    r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_catboost$"
+)
+
+
+def _parse_study_name(name: str) -> dict | None:
+    """Parse a study name into {dataset, data_mode, model_type, config}, or None."""
+    m = _RE_STANDARD.match(name)
+    if m:
+        return m.groupdict()
+    m = _RE_CATBOOST.match(name)
+    if m:
+        gd = m.groupdict()
+        return {
+            "dataset":    gd["dataset"],
+            "data_mode":  gd["data_mode"],
+            "model_type": "catboost",
+            "config":     "catboost_clean" if gd["data_mode"] == "clean" else "catboost_dirty",
+        }
+    return None
+
+
+def broadcast_catboost(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Broadcast CatBoost's standalone model_type=="catboost" rows into every
+    other model_type present, so "CatBoost Clean"/"CatBoost Dirty" appear as
+    two extra competitor methods in every existing linear/mlp comparison
+    (bar charts, heatmaps, efficiency scatter, convergence plots, ...).
+
+    CatBoost Clean has no AR/NAR variant (it's trained once on clean data),
+    so its single data_mode=="clean" row is also duplicated into synthetic
+    data_mode=="ar"/"nar" copies, letting it slot into every noise_mode-
+    filtered plot exactly like the fixed "Clean" reference already does.
+
+    Works on both `load_studies()`'s output and `load_convergence_curves()`'s
+    output — both have a `model_type` column.
+    """
+    catboost_rows = df[df["model_type"] == "catboost"].copy()
+    if catboost_rows.empty:
+        return df
+
+    clean_mask = catboost_rows["data_mode"] == "clean"
+    dupes = [catboost_rows]
+    for noise_mode in ("ar", "nar"):
+        dup = catboost_rows[clean_mask].copy()
+        dup["data_mode"] = noise_mode
+        dupes.append(dup)
+    catboost_rows = pd.concat(dupes, ignore_index=True)
+
+    other_model_types = sorted(df.loc[df["model_type"] != "catboost", "model_type"].unique())
+    if not other_model_types:
+        return df
+
+    broadcasted = []
+    for mt in other_model_types:
+        dup = catboost_rows.copy()
+        dup["model_type"] = mt
+        broadcasted.append(dup)
+
+    return pd.concat([df[df["model_type"] != "catboost"]] + broadcasted, ignore_index=True)
+
+
+def filter_selected_methods(df: pd.DataFrame, selected: Optional[List[str]]) -> pd.DataFrame:
+    """
+    Restrict a load_studies()/load_convergence_curves() dataframe (post
+    broadcast_catboost()) to a comparison_methods selection.
+
+    Every downstream function in this file derives what to plot from the
+    dataframe's contents (BAR_ORDER is only ever intersected with whatever
+    config_label values are actually present), so filtering once here — by
+    the raw (config, data_mode) pair rather than the display label — is
+    enough to propagate the restriction everywhere, including
+    overall_aggr_results() which doesn't go through BAR_ORDER at all.
+    """
+    if selected is None:
+        return df
+    canonical = df.apply(lambda r: resolve_from_config_token(r["config"], r["data_mode"]), axis=1)
+    return df[canonical.isin(selected)].reset_index(drop=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Data loading
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -244,18 +359,14 @@ def load_studies(split: str = "test", metric: str = "f1") -> pd.DataFrame:
         ``model_type``, ``config``, ``config_label``, ``metric_mean``,
         ``metric_std``, ``n_seeds``, ``cpu_time_mean``.
     """
-    _RE = re.compile(
-        r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-        r"_(?P<config>curr[01]_gate[01]|ag|saga|cp|baseline_zero|knn)$"
-    )
     metric_key = f"{split}_{metric}"
 
     external_preproc = _load_external_preproc_times()
 
     rows, skipped = [], 0
     for name in optuna.get_all_study_names(storage=STORAGE):
-        m = _RE.match(name)
-        if not m:
+        d = _parse_study_name(name)
+        if d is None:
             skipped += 1
             continue
         study = optuna.load_study(study_name=name, storage=STORAGE)
@@ -281,8 +392,6 @@ def load_studies(split: str = "test", metric: str = "f1") -> pd.DataFrame:
         if mean_val is None:
             skipped += 1
             continue
-
-        d = m.groupdict()
 
         # ── Per-seed in-process preprocessing time (load_*_data inside _evaluate_single_seed)
         preproc_vals = [
@@ -799,6 +908,80 @@ def plot_efficiency(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Relative CPU/wall time bar plot
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_time_percentage(
+    df: pd.DataFrame,
+    model_type: str,
+    noise_mode: str,
+) -> None:
+    """
+    Bar plot of macro-averaged CPU/wall time, expressed as a percentage of
+    the slowest configuration's time.
+
+    Aggregates ``cpu_time_mean`` per config as the macro-average across all
+    datasets (same aggregation as :func:`plot_efficiency`), then normalises
+    so the slowest configuration reads 100%.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Output of :func:`load_studies`.  Must contain ``cpu_time_mean``.
+    model_type : {'linear', 'mlp'}
+        Model family to filter on.
+    noise_mode : {'ar', 'nar'}
+        Noise regime to include.
+    """
+    noise_rows = df[
+        (df["model_type"] == model_type)
+        & (df["data_mode"] == noise_mode)
+        & df["cpu_time_mean"].notna()
+    ]
+
+    if noise_rows["config_label"].nunique() < 2:
+        print(f"  [time-pct] Not enough timing data for {model_type}/{noise_mode}. Skipping.")
+        return
+
+    agg = (
+        noise_rows
+        .groupby("config_label")["cpu_time_mean"]
+        .mean()
+        .reset_index(name="cpu_macro")
+    )
+
+    present_lbl = agg["config_label"].unique()
+    bar_labels  = [b for b in BAR_ORDER if b in present_lbl]
+    agg = agg.set_index("config_label").reindex(bar_labels).reset_index()
+
+    slowest = agg["cpu_macro"].max()
+    agg["pct"] = agg["cpu_macro"] / slowest * 100.0
+
+    colors = [BAR_COLORS.get(l, "#cccccc") for l in bar_labels]
+    x = np.arange(len(bar_labels))
+
+    _, ax = plt.subplots(figsize=(8, 5))
+    ax.bar(x, agg["pct"], width=0.6, color=colors, alpha=0.85)
+
+    for xi, pct in zip(x, agg["pct"]):
+        ax.text(xi, pct + 1, f"{pct:.1f}%", ha="center", va="bottom", fontsize=8)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(bar_labels, rotation=40, ha="right", fontsize=8)
+    ax.set_ylabel("CPU / wall time  (% of slowest config)", fontsize=9)
+    ax.set_ylim(0, 110)
+    ax.set_title(
+        f"{model_type.upper()} / {noise_mode.upper()} — Relative CPU/wall time",
+        fontsize=11, fontweight="bold",
+    )
+    ax.grid(axis="y", linewidth=0.3, alpha=0.4)
+    plt.tight_layout()
+    out = f"plots/{model_type}_{noise_mode}_time_pct.png"
+    plt.savefig(out, bbox_inches="tight")
+    print(f"  Saved: {out}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Aggregate results table
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -952,15 +1135,10 @@ def load_convergence_curves() -> pd.DataFrame:
         ``norm_best_so_far`` (0 = start of search, 1 = final best),
         ``n_trials``, ``maximize``.
     """
-    _RE = re.compile(
-        r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-        r"_(?P<config>curr[01]_gate[01]|ag|saga|cp|baseline_zero|knn)$"
-    )
-
     rows, skipped = [], 0
     for name in optuna.get_all_study_names(storage=STORAGE):
-        m = _RE.match(name)
-        if not m:
+        d = _parse_study_name(name)
+        if d is None:
             skipped += 1
             continue
         study = optuna.load_study(study_name=name, storage=STORAGE)
@@ -973,7 +1151,6 @@ def load_convergence_curves() -> pd.DataFrame:
             skipped += 1
             continue
 
-        d = m.groupdict()
         maximize = study.direction == optuna.study.StudyDirection.MAXIMIZE
         n_trials = len(completed)
 
@@ -1243,7 +1420,22 @@ if __name__ == "__main__":
             "Requires loading all trials so it is slower than the default run."
         ),
     )
+    parser.add_argument(
+        "--config", default="../config.yaml",
+        help="Path to config.yaml (default: ../config.yaml, i.e. the project root — "
+             "this script is meant to be run from analysis/), used to read "
+             "comparison_methods when --comparison-methods is omitted.",
+    )
+    parser.add_argument(
+        "--comparison-methods", nargs="+", choices=METHOD_CHOICES, default=None,
+        help="Restrict every plot/table in this script to these methods "
+             "(overrides config.yaml's comparison_methods).",
+    )
     args = parser.parse_args()
+
+    selected_methods = resolve_comparison_methods(args.comparison_methods, args.config)
+    if selected_methods is not None:
+        print(f"Restricting to comparison_methods: {selected_methods}")
 
     metric_label = _METRIC_LABELS.get(args.metric, args.metric.upper())
     metric_col   = "metric_mean"
@@ -1252,6 +1444,9 @@ if __name__ == "__main__":
     if df.empty:
         print("No studies found. Check DB path and study naming convention.")
         raise SystemExit(1)
+
+    df = broadcast_catboost(df)
+    df = filter_selected_methods(df, selected_methods)
 
     if args.complete_only:
         print("\n[complete-only] Filtering datasets…")
@@ -1272,6 +1467,7 @@ if __name__ == "__main__":
             plot_comparison(df, model_type, noise_mode, metric_col, metric_label)
             plot_heatmap(df, model_type, noise_mode, metric_col, metric_label)
             plot_efficiency(df, model_type, noise_mode, metric_col, metric_label)
+            plot_time_percentage(df, model_type, noise_mode)
 
     overall_aggr_results(df, metric_col, metric_label)
 
@@ -1282,6 +1478,8 @@ if __name__ == "__main__":
         if curves_df.empty:
             print("  No per-trial data found; skipping convergence plots.")
         else:
+            curves_df = broadcast_catboost(curves_df)
+            curves_df = filter_selected_methods(curves_df, selected_methods)
             for model_type in model_types:
                 for noise_mode in ["ar", "nar"]:
                     print(f"\n── {model_type.upper()} / {noise_mode.upper()} — convergence ──")

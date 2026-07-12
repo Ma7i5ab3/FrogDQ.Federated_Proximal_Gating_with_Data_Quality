@@ -4,8 +4,10 @@ run_gate_evidence_report.py — Reproduce the full Gate-vs-Baseline evidence
 report end to end.
 
 Runs, in order:
-  1. optuna_progress.py  --metric {metric}
-  2. gate_analysis.py    --metric {metric} --latex   (includes Nemenyi post-hoc)
+  1. optuna_progress.py       --metric {metric}
+  2. gate_analysis.py         --metric {metric} --latex   (includes Nemenyi post-hoc)
+  3. elo_ratings.py           --metric {metric}
+  4. latex_evidence_table.py  (all metrics x comparison_methods, per dataset)
 
 Captures both scripts' output verbatim, re-derives the headline numbers
 (Friedman p-values, best-ranked method, Gate-vs-Baseline win rate and
@@ -17,6 +19,7 @@ Usage
 -----
     python run_gate_evidence_report.py
     python run_gate_evidence_report.py --metric accuracy
+    python run_gate_evidence_report.py --comparison-methods baseline gate saga catboost_dirty
 """
 
 import argparse
@@ -24,6 +27,9 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from frogdq.comparison_methods import METHOD_CHOICES, resolve_comparison_methods
 
 HERE = Path(__file__).resolve().parent
 REPORTS_DIR = HERE / "reports"
@@ -65,15 +71,20 @@ def run_script(args_list: list) -> str:
     return buf.getvalue()
 
 
-def key_findings(metric: str) -> str:
+def key_findings(metric: str, selected_methods=None) -> str:
     """Re-derive the headline numbers using gate_analysis's own functions."""
     sys.path.insert(0, str(HERE))
     import gate_analysis as ga
 
     seed_df = ga.load_seed_data(metric=metric)
     dm = ga.dataset_means(seed_df)
+    dm = ga.broadcast_catboost_clean(dm)
 
-    methods_order = ["curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp"]
+    ga._SELECTED_METHODS = selected_methods
+    methods_order = ga._filter_tokens([
+        "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp",
+        "catboost_clean", "catboost_dirty",
+    ])
     lines = []
 
     for noise_mode in ["ar", "nar"]:
@@ -124,8 +135,21 @@ def main() -> None:
         choices=["f1", "accuracy", "precision", "recall", "auc", "loss"],
         help="Performance metric to analyse (default: f1).",
     )
+    parser.add_argument(
+        "--config", default=str(HERE.parent / "config.yaml"),
+        help="Path to config.yaml, used to read comparison_methods when "
+             "--comparison-methods is omitted (default: project root config.yaml).",
+    )
+    parser.add_argument(
+        "--comparison-methods", nargs="+", choices=METHOD_CHOICES, default=None,
+        help="Restrict the whole report (optuna_progress.py, gate_analysis.py, and "
+             "the key-findings summary below) to these methods (overrides "
+             "config.yaml's comparison_methods).",
+    )
     args = parser.parse_args()
     metric_name = _METRIC_LABELS[args.metric]
+    selected_methods = resolve_comparison_methods(args.comparison_methods, args.config)
+    extra_args = ["--comparison-methods", *selected_methods] if selected_methods else []
 
     # Both optuna_progress.py and gate_analysis.py resolve DB_PATH and
     # "plots/" relative to the current working directory, so anchor it here
@@ -136,48 +160,20 @@ def main() -> None:
     (HERE / "plots").mkdir(exist_ok=True)
 
     print(f"Reproducing Gate-vs-Baseline evidence report  [{metric_name}]\n")
+    if selected_methods is not None:
+        print(f"Restricting to comparison_methods: {selected_methods}\n")
 
-    print(f"── Step 1/3: optuna_progress.py --metric {args.metric} ──")
-    out1 = run_script(["optuna_progress.py", "--metric", args.metric, "--complete-only"])
+    print(f"── Step 1/4: optuna_progress.py --metric {args.metric} ──")
+    out1 = run_script(["optuna_progress.py", "--metric", args.metric, "--complete-only", *extra_args])
 
-    print(f"\n── Step 2/3: gate_analysis.py --metric {args.metric} --latex ──")
-    out2 = run_script(["gate_analysis.py", "--metric", args.metric, "--latex"])
+    print(f"\n── Step 2/4: gate_analysis.py --metric {args.metric} --latex ──")
+    out2 = run_script(["gate_analysis.py", "--metric", args.metric, "--latex", *extra_args])
 
-    print("\n── Step 3/3: deriving key findings ──")
-    findings = key_findings(args.metric)
+    print(f"\n── Step 3/4: elo_ratings.py --metric {args.metric} --latex ──")
+    out3 = run_script(["elo_ratings.py", "--metric", args.metric])
 
-    timestamp   = datetime.now().strftime("%Y-%m-%d %H:%M")
-    report_path = REPORTS_DIR / f"gate_evidence_{args.metric}.md"
-
-    report = f"""# Gate Evidence Report — {metric_name}
-
-Generated: {timestamp}
-Reproduce with: `python run_gate_evidence_report.py --metric {args.metric}`
-(equivalent to running `optuna_progress.py --metric {args.metric}` then
-`gate_analysis.py --metric {args.metric} --latex` from this directory)
-
-## Key findings (auto-derived)
-
-{findings}
-
-Full statistical detail (per-competitor Wilcoxon tests, per-dataset delta
-table, Nemenyi post-hoc pairwise p-values, gate-behaviour correlations) is in
-section 2 below. All referenced figures are in `analysis/plots/`.
-
-## 1. Performance comparison — `optuna_progress.py --metric {args.metric}`
-
-```
-{out1.strip()}
-```
-
-## 2. Statistical evidence for Gate — `gate_analysis.py --metric {args.metric} --latex`
-
-```
-{out2.strip()}
-```
-"""
-    report_path.write_text(report)
-    print(f"\nReport saved to {report_path}")
+    print("\n── Step 4/4: latex_evidence_table.py ──")
+    out4 = run_script(["latex_evidence_table.py", "--split-by-metric", "--config", args.config, *extra_args])
 
 
 if __name__ == "__main__":

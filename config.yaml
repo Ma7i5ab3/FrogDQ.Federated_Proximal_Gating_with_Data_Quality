@@ -26,34 +26,19 @@
 # Datasets 001-068
 datasets:
   - dna
-  - phishingwebsites
   - car
   - tic_tac_toe
   - sick
   - vowel
   - climate_model_simulation_crashes
-  - connect_4
-  - vehicle
-  - cmc
-  - letter
-  - steel_plates_fault
-  - banknote_authentication
   - wilt
-  - phoneme
-  - diabetes
   - miceprotein
-  - bank_marketing
-  - wall_robot_navigation
-  - qsar_biodeg
   - first_order_theorem_proving
-  - pendigits
   - segment
   - kr_vs_kp
   - cylinder_bands
   - nomao
   - pc4
-  - texture
-  - spambase
   - satimage
 
 
@@ -94,7 +79,7 @@ test_size: 0.3
 # Whether to use clean validation data even when training on poisoned data
 # true: Always validate on clean data (recommended for measuring real performance)
 # false: Use same mode as training data
-clean_val: false
+clean_val: False
 
 # Whether to use clean test data even when training on poisoned data
 # true: Always test on clean data (recommended for final evaluation)
@@ -217,12 +202,66 @@ run_knn: false
 # Directory containing KNN-imputed data produced by scripts/knn.py.
 knn_data_dir: data_knn
 
+# CatBoost Benchmark Settings
+# -----------------------------
+# Whether to include CatBoost as an additional model baseline.
+# Unlike the AutoGluon/CP/Saga/Baseline-0/KNN benchmarks above (which change
+# the data-preparation step but still train the linear/MLP neural nets),
+# CatBoost is itself a different model: it runs once per dataset/data_mode,
+# independent of model_types, and requires no precomputation script.
+#
+# IMPORTANT: no preprocessing is applied for CatBoost. It is trained directly
+# on raw data — NaN values are left untouched (no imputation), categorical
+# features are passed as native strings (no one-hot encoding), and numerical
+# features are not scaled. CatBoost's own missing-value handling and
+# categorical-feature support are used instead.
+#
+# false: skip CatBoost benchmark (default)
+# true:  include CatBoost benchmark experiments (on all enabled data_modes)
+run_catboost: false
+
+# CPU threads for CatBoost (-1 = use all available cores).
+catboost_thread_count: -1
+
 # Gate + Curriculum Experiment Settings
 # ---------------------------------------
 # Whether to include the combined gate+curriculum experiment.
 # true:  run gate+curriculum (default)
 # false: skip gate+curriculum
 run_gate_curriculum: false
+
+# Comparison Methods (Evaluation / Analysis Scripts)
+# -----------------------------------------------------
+# Restricts scripts/evaluate.py, scripts/generate_latex_tables.py, and the
+# analysis/*.py scripts (gate_analysis.py, optuna_progress.py,
+# run_gate_evidence_report.py) to a chosen subset of methods/baselines,
+# instead of showing every method found in the results. Useful once you've
+# accumulated many optional baselines and only want a couple in a given
+# report — pass --comparison-methods on any of those scripts' CLIs to
+# override this per-run without editing the file.
+#
+# null (default): include every method found in the results.
+# List of method keys to restrict to. Valid keys:
+#   clean            - un-poisoned reference (Linear/MLP trained & tested on clean data)
+#   baseline         - Linear/MLP trained directly on poisoned (AR/NAR) data, no mitigation
+#   curriculum       - + curriculum learning
+#   gate             - + quAIL proximal gate (this paper's method)
+#   gate_curriculum  - + gate + curriculum combined
+#   autogluon        - AutoGluon data-preparation baseline (requires run_autogluon)
+#   saga             - Saga++ data-preparation baseline (requires run_saga)
+#   cp               - Custom pipeline (CP) data-preparation baseline (requires run_cp)
+#   baseline_zero    - Zero/random imputation baseline (requires run_baseline_zero)
+#   knn              - KNN imputation baseline (requires run_knn)
+#   catboost_clean   - CatBoost trained on clean data (requires run_catboost)
+#   catboost_dirty   - CatBoost trained on AR/NAR data (requires run_catboost)
+#
+# Note: gate_analysis.py always keeps its own "Clean" reference regardless of
+# this setting — its noise-robustness analysis is built around measuring
+# degradation *from* clean, so dropping "clean" there would break it.
+#
+# Example: only compare the quAIL gate against Saga++ and CatBoost:
+#   comparison_methods: ['clean', 'baseline', 'gate', 'saga', 'catboost_clean', 'catboost_dirty']
+comparison_methods: ['clean', 'baseline', 'curriculum', 'gate', 'saga', 'cp']
 
 # Data Poisoning Settings
 # -----------------------
@@ -242,13 +281,13 @@ poisoning:
 
     clean_feature_frac: 0.40
 
-    mild_rate: 0.08
+    mild_rate: 0.041
     moderate_frac: 0.35
-    moderate_rate: 0.15
+    moderate_rate: 0.077
     heavy_frac: 0.22
-    heavy_rate: 0.28
+    heavy_rate: 0.144
     severe_frac: 0.10
-    severe_rate: 0.45
+    severe_rate: 0.231
 
   # AR (At Random) poisoning mechanisms.
   # Set to false to disable a specific mechanism.
@@ -265,8 +304,16 @@ poisoning:
     enable_systematic_flips: true # Systematic categorical confusion patterns
     enable_correlated_noise: true # Correlated noise propagation across features
     enable_rare_missing: true     # Rare categories more likely to be missing
-    min_corruption: 0.25          # Minimum total cell corruption rate (floor)
-    max_corruption: 0.50          # Maximum total cell corruption rate (cap)
+
+    # Total cell corruption rate (floor/cap), applied over the poisonable
+    # (non-clean-reserved) columns after all NAR mechanisms run.
+    # Left unset here on purpose: poison_data.py then computes both bounds
+    # dynamically from the AR noise-tier settings above (mild/moderate/heavy/
+    # severe fracs and rates), so NAR's total corrupted-cell share always
+    # matches AR's — no matter how those tier settings change.
+    # Uncomment to pin explicit bounds instead of tracking AR:
+    # min_corruption: 0.25
+    # max_corruption: 0.50
 
 # Output Settings
 # ---------------
@@ -316,6 +363,19 @@ hyperparameter_ranges:
   gate_anchor_interval: [1, 20]
   gate_quality_weighting_choices: ['linear', 'quadratic', 'exp', 'inv_exp']
   gate_loss_scheduler_choices: ['none', 'decay', 'cosine']
+
+  # CatBoost-specific hyperparameters (trained on raw data: NaN preserved,
+  # categorical features passed natively — no imputation/one-hot/scaling)
+  catboost_iterations: [1000, 1000]
+  catboost_early_stopping_rounds: [50, 50]
+  catboost_learning_rate: [0.01, 0.3, 'log']
+  catboost_depth: [4, 10]
+  catboost_l2_leaf_reg: [1.0, 10.0, 'log']
+  catboost_random_strength: [0.000000001, 10.0, 'log']
+  catboost_bagging_temperature: [0.0, 1.0]
+  catboost_border_count: [32, 255]
+  catboost_min_data_in_leaf: [1, 100]
+  catboost_grow_policy_choices: ['SymmetricTree', 'Depthwise', 'Lossguide']
 
 # Data Preparation Pipeline Tuning
 # -----------------------------------

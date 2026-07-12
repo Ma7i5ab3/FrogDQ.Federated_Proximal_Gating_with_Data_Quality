@@ -9,9 +9,11 @@ Usage:
     python scripts/generate_latex_tables.py --aggregate-gates       # Aggregate MLP+gates columns
     python scripts/generate_latex_tables.py --confidence-intervals  # Include confidence intervals
     python scripts/generate_latex_tables.py --include-shape         # Include dataset shape column
+    python scripts/generate_latex_tables.py --comparison-methods clean baseline gate saga catboost_dirty
 """
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -19,6 +21,9 @@ import numpy as np
 import optuna
 import pandas as pd
 from tqdm import tqdm
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from frogdq.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_column
 
 # =============================================================================
 # CAPTIONS - Edit these strings to modify table captions
@@ -149,17 +154,22 @@ DATASET_ABBREVIATIONS = {
 }
 
 # Column configuration: (data_mode, model_type, use_curriculum, use_gate)
+# CatBoost is a standalone model baseline (not tied to curriculum/gate), run
+# once per data_mode on raw (unpreprocessed) data — see frogdq/catboost_model.py.
 # Full mode: all columns including separate MLP+gates and MLP+gates+curr
 COLUMNS_ORDER_FULL = [
     ('clean', 'linear', False, False),
     ('clean', 'mlp', False, False),
+    ('clean', 'catboost', False, False),
     ('ar', 'linear', False, False),
     ('ar', 'mlp', False, False),
+    ('ar', 'catboost', False, False),
     ('ar', 'mlp', True, False),
     ('ar', 'mlp', False, True),
     ('ar', 'mlp', True, True),
     ('nar', 'linear', False, False),
     ('nar', 'mlp', False, False),
+    ('nar', 'catboost', False, False),
     ('nar', 'mlp', True, False),
     ('nar', 'mlp', False, True),
     ('nar', 'mlp', True, True),
@@ -170,12 +180,15 @@ COLUMNS_ORDER_FULL = [
 COLUMNS_ORDER_AGGREGATED = [
     ('clean', 'linear', False, False),
     ('clean', 'mlp', False, False),
+    ('clean', 'catboost', False, False),
     ('ar', 'linear', False, False),
     ('ar', 'mlp', False, False),
+    ('ar', 'catboost', False, False),
     ('ar', 'mlp', True, False),
     ('ar', 'mlp', 'aggregated', True),  # Aggregates (False, True) and (True, True)
     ('nar', 'linear', False, False),
     ('nar', 'mlp', False, False),
+    ('nar', 'catboost', False, False),
     ('nar', 'mlp', True, False),
     ('nar', 'mlp', 'aggregated', True),  # Aggregates (False, True) and (True, True)
 ]
@@ -189,6 +202,25 @@ CACHE_FILENAME = 'results_cache.csv'
 
 def parse_study_name(study_name: str) -> Optional[Dict[str, str]]:
     """Parse study name to extract configuration."""
+    if study_name.endswith('_catboost'):
+        # CatBoost study names: {dataset}_{data_mode}_catboost. It's a
+        # standalone model baseline (not tied to model_types or curriculum/
+        # gate settings), so there's no curr/gate suffix to parse — checked
+        # before the generic rsplit below, which would otherwise silently
+        # misparse it for underscore-heavy dataset names (e.g. "kr_vs_kp").
+        remainder = study_name[: -len('_catboost')]
+        parts = remainder.rsplit('_', 1)
+        if len(parts) != 2 or parts[1] not in ('clean', 'ar', 'nar'):
+            return None
+        dataset, data_mode = parts
+        return {
+            'dataset': dataset,
+            'data_mode': data_mode,
+            'model_type': 'catboost',
+            'use_curriculum': False,
+            'use_gate': False,
+        }
+
     parts = study_name.rsplit('_', 4)
     if len(parts) != 5:
         return None
@@ -478,39 +510,56 @@ def format_epoch_cell(
 # LATEX TABLE GENERATION
 # =============================================================================
 
+def get_column_counts(columns_order: List) -> Tuple[int, int, int]:
+    """Count how many columns belong to each data_mode group (clean/ar/nar)."""
+    clean_cols = sum(1 for c in columns_order if c[0] == 'clean')
+    ar_cols    = sum(1 for c in columns_order if c[0] == 'ar')
+    nar_cols   = sum(1 for c in columns_order if c[0] == 'nar')
+    return clean_cols, ar_cols, nar_cols
+
+
 def generate_table_header(columns_order: List, include_shape: bool = False) -> List[str]:
     """Generate the common table header rows."""
     lines = []
 
-    # Determine column counts based on mode
-    if len(columns_order) == 12:  # Full mode
-        ar_cols = 5
-        nar_cols = 5
-    else:  # Aggregated mode (10 columns)
-        ar_cols = 4
-        nar_cols = 4
+    clean_cols, ar_cols, nar_cols = get_column_counts(columns_order)
 
-    # Build column spec
+    # A section (Clean/AR/NAR) can end up with zero columns if
+    # comparison_methods filtered every method out of it (e.g. excluding
+    # "clean" and "catboost_clean" both). Skip empty sections entirely
+    # rather than emit an invalid \multicolumn{0}{...}.
+    sections = [
+        ("Clean", clean_cols),
+        ("Noise At Random", ar_cols),
+        ("Noise Not At Random", nar_cols),
+    ]
+    active_sections = [(name, n) for name, n in sections if n > 0]
+
+    col_spec_middle = "| ".join(("Y " * n).strip() for _, n in active_sections)
     if include_shape:
-        col_spec = f"@{{}} l c | Y Y | {'Y ' * ar_cols}| {'Y ' * nar_cols}@{{}}"
+        col_spec = f"@{{}} l c | {col_spec_middle} @{{}}"
     else:
-        col_spec = f"@{{}} l | Y Y | {'Y ' * ar_cols}| {'Y ' * nar_cols}@{{}}"
+        col_spec = f"@{{}} l | {col_spec_middle} @{{}}"
 
     lines.append(f"\\begin{{tabularx}}{{\\textwidth}}{{{col_spec.strip()}}}")
     lines.append(r"\toprule")
 
-    # Header row 1: multicolumn for data modes
-    if include_shape:
-        lines.append(f"Dataset (ID) & Shape & \\multicolumn{{2}}{{c|}}{{Clean}} & \\multicolumn{{{ar_cols}}}{{c|}}{{Noise At Random}} & \\multicolumn{{{nar_cols}}}{{c}}{{Noise Not At Random}} \\\\")
-    else:
-        lines.append(f"Dataset (ID) & \\multicolumn{{2}}{{c|}}{{Clean}} & \\multicolumn{{{ar_cols}}}{{c|}}{{Noise At Random}} & \\multicolumn{{{nar_cols}}}{{c}}{{Noise Not At Random}} \\\\")
+    # Header row 1: multicolumn for data modes. Every section gets a right
+    # border ("c|") except the very last one, which closes the table ("c").
+    header_cells = []
+    for i, (name, n) in enumerate(active_sections):
+        align = "c" if i == len(active_sections) - 1 else "c|"
+        header_cells.append(f"\\multicolumn{{{n}}}{{{align}}}{{{name}}}")
+
+    first_col = "Dataset (ID) & Shape" if include_shape else "Dataset (ID)"
+    lines.append(f"{first_col} & " + " & ".join(header_cells) + r" \\")
 
     lines.append(r"\midrule")
 
     # Model configuration rows
     shape_col = " & " if include_shape else ""
 
-    for label in ["Linear", "MLP", "Curriculum", "Gates"]:
+    for label in ["Linear", "MLP", "CatBoost", "Curriculum", "Gates"]:
         marks = []
         for col in columns_order:
             data_mode, model_type, use_curr, use_gate = col
@@ -518,6 +567,8 @@ def generate_table_header(columns_order: List, include_shape: bool = False) -> L
                 marks.append(r"$\checkmark$" if model_type == 'linear' else "")
             elif label == "MLP":
                 marks.append(r"$\checkmark$" if model_type == 'mlp' else "")
+            elif label == "CatBoost":
+                marks.append(r"$\checkmark$" if model_type == 'catboost' else "")
             elif label == "Curriculum":
                 # In aggregated mode, curriculum column shows checkmark only for curriculum-only
                 if use_curr == 'aggregated':
@@ -554,21 +605,23 @@ def generate_latex_table(
     aggregate_gates: bool = False,
     show_ci: bool = False,
     include_shape: bool = False,
-    dataset_shapes: Optional[Dict[str, Tuple[int, int]]] = None
+    dataset_shapes: Optional[Dict[str, Tuple[int, int]]] = None,
+    selected_methods: Optional[List[str]] = None,
 ) -> str:
     """Generate a complete LaTeX table for the given task type."""
     task_df = df[df['task_type'] == task_type].copy()
     datasets = sorted(task_df['dataset'].unique())
 
     columns_order = COLUMNS_ORDER_AGGREGATED if aggregate_gates else COLUMNS_ORDER_FULL
+    if selected_methods is not None:
+        columns_order = [c for c in columns_order if resolve_from_column(*c) in selected_methods]
 
-    # Determine index ranges for AR and NAR based on mode
-    if aggregate_gates:
-        ar_range = (2, 6)  # indices 2-5 (4 columns)
-        nar_range = (6, 10)  # indices 6-9 (4 columns)
-    else:
-        ar_range = (2, 7)  # indices 2-6 (5 columns)
-        nar_range = (7, 12)  # indices 7-11 (5 columns)
+    # Determine index ranges for AR and NAR based on how many columns each
+    # data_mode group actually has (avoids hardcoded indices going stale
+    # whenever a column is added/removed from COLUMNS_ORDER_*, e.g. CatBoost).
+    clean_cols, ar_cols, nar_cols = get_column_counts(columns_order)
+    ar_range = (clean_cols, clean_cols + ar_cols)
+    nar_range = (clean_cols + ar_cols, clean_cols + ar_cols + nar_cols)
 
     # Collect performance data
     table_data = {}  # {dataset: [(mean, std), ...]}
@@ -597,7 +650,11 @@ def generate_latex_table(
     avg_epochs_95 = []
     for col in columns_order:
         data_mode, model_type, use_curr, use_gate = col
-        if model_type == 'linear':
+        if model_type in ('linear', 'catboost'):
+            # Epoch-based convergence doesn't apply to CatBoost (boosting
+            # rounds, not epochs) any more than it does to the linear model;
+            # its seed results carry a trivial epochs_to_90pct=0 placeholder
+            # that would otherwise misleadingly "win" this comparison.
             avg_epochs_90.append((None, None))
             avg_epochs_95.append((None, None))
         elif use_curr == 'aggregated':
@@ -713,12 +770,31 @@ def main():
         action="store_true",
         help="Include a Shape column with original dataset dimensions (n_samples x n_features)"
     )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to config.yaml (default: <project root>/config.yaml), used to read "
+             "comparison_methods when --comparison-methods is omitted."
+    )
+    parser.add_argument(
+        "--comparison-methods",
+        nargs="+",
+        choices=METHOD_CHOICES,
+        default=None,
+        help="Restrict the table(s) to these method columns (overrides config.yaml's "
+             "comparison_methods)."
+    )
     args = parser.parse_args()
 
     # Paths
     script_dir = Path(__file__).parent
     project_root = script_dir.parent
     results_dir = project_root / 'results'
+    config_path = args.config or str(project_root / 'config.yaml')
+    selected_methods = resolve_comparison_methods(args.comparison_methods, config_path)
+    if selected_methods is not None:
+        print(f"Restricting to comparison_methods: {selected_methods}")
 
     # Check for alternative path
     if not (results_dir / 'optuna_studies.db').exists() and not args.use_cache:
@@ -761,7 +837,8 @@ def main():
         aggregate_gates=args.aggregate_gates,
         show_ci=args.confidence_intervals,
         include_shape=args.include_shape,
-        dataset_shapes=dataset_shapes
+        dataset_shapes=dataset_shapes,
+        selected_methods=selected_methods
     )
     print(classification_table)
 
@@ -779,7 +856,8 @@ def main():
         aggregate_gates=args.aggregate_gates,
         show_ci=args.confidence_intervals,
         include_shape=args.include_shape,
-        dataset_shapes=dataset_shapes
+        dataset_shapes=dataset_shapes,
+        selected_methods=selected_methods
     )
     print(regression_table)
 

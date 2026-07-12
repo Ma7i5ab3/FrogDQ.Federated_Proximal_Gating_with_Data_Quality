@@ -5,6 +5,7 @@ data_cleaned_saga/*
 results/*
 results_old/*
 analysis/plots/*
+analysis/reports/*
 data_cleaned/*
 data_visualization/
 data_cleaned_cp/*

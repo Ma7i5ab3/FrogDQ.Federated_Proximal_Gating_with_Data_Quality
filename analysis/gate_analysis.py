@@ -17,12 +17,22 @@ Usage
     python gate_analysis.py
     python gate_analysis.py --metric accuracy
     python gate_analysis.py --metric auc --latex
+    python gate_analysis.py --comparison-methods baseline gate saga catboost_dirty
+
+Every competitor list in this file can be restricted to a chosen subset of
+methods via --comparison-methods (or the comparison_methods key in
+config.yaml) — see frogdq/comparison_methods.py for the full list of keys.
+The "Clean" reference stays on regardless of this setting, since the
+noise-robustness analysis here is built around measuring degradation *from*
+clean.
 """
 
 import argparse
 import re
+import sys
 import warnings
 from pathlib import Path
+from typing import List, Optional
 
 import matplotlib
 matplotlib.use("Agg")
@@ -33,6 +43,9 @@ import optuna
 import pandas as pd
 import scikit_posthocs as sp
 from scipy import stats
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from frogdq.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_config_token
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 warnings.filterwarnings("ignore")
@@ -52,23 +65,65 @@ _RE = re.compile(
     r"_(?P<config>curr[01]_gate[01]|ag|saga|cp|baseline_zero|knn)$"
 )
 
+# CatBoost is a standalone model baseline: study names are
+# {dataset}_{data_mode}_catboost (no model_type/curr/gate suffix), so it
+# needs its own pattern. Its "config" is synthesized as catboost_clean /
+# catboost_dirty in load_seed_data() below.
+_RE_CATBOOST = re.compile(
+    r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_catboost$"
+)
+
 CONFIG_LABELS = {
-    "curr0_gate0": "Baseline",
-    "curr1_gate0": "+ Curriculum",
-    "curr0_gate1": "+ Gate",
+    "curr0_gate0": "Standard prep",
+    "curr1_gate0": "Curriculum",
+    "curr0_gate1": "QuAIL",
     "curr1_gate1": "+ Gate + Curr",
     "saga":        "Saga++",
     "cp":          "CP prep",
     "ag":          "AutoGluon",
+    "catboost_clean": "CatBoost Clean",
+    "catboost_dirty":  "CatBoost Dirty",
 }
 
 COLORS = {
-    "Baseline":     "#aaaaaa",
-    "+ Gate":       "#e74c3c",
-    "+ Curriculum": "#e07b39",
+    "Standard prep":     "#aaaaaa",
+    "QuAIL":       "#e74c3c",
+    "Curriculum": "#e07b39",
     "Saga++":       "#1abc9c",
     "CP prep":      "#f39c12",
+    "CatBoost Clean": "#27ae60",
+    "CatBoost Dirty": "#8e44ad",
 }
+
+# comparison_methods selection (canonical keys from frogdq.comparison_methods),
+# set once by __main__ from --comparison-methods / config.yaml. None = all
+# methods. Every one of this file's hardcoded competitor lists is filtered
+# through _filter_methods()/_filter_tokens() below, EXCEPT the "Clean"
+# reference itself (config == "curr0_gate0" at data_mode == "clean"), which
+# stays structurally always-on: the noise-robustness analysis in this file is
+# built around measuring degradation *from* clean, so dropping it would break
+# half the plots rather than just narrow the comparison.
+_SELECTED_METHODS: Optional[List[str]] = None
+
+
+def _filter_methods(items):
+    """Filter a list of (config_token, label) tuples by the comparison_methods selection."""
+    if _SELECTED_METHODS is None:
+        return items
+    # These lists are only ever used for AR/NAR competitor comparisons, so
+    # "curr0_gate0" unambiguously means "baseline" here (never "clean").
+    return [
+        (tok, lbl) for tok, lbl in items
+        if resolve_from_config_token(tok, data_mode="ar") in _SELECTED_METHODS
+    ]
+
+
+def _filter_tokens(tokens):
+    """Filter a bare list of config tokens (methods_order lists) the same way."""
+    if _SELECTED_METHODS is None:
+        return tokens
+    return [t for t in tokens if resolve_from_config_token(t, data_mode="ar") in _SELECTED_METHODS]
+
 
 Path("plots").mkdir(exist_ok=True)
 
@@ -88,14 +143,25 @@ def load_seed_data(metric: str = "f1") -> pd.DataFrame:
     perf_key   = f"test_{metric}"
     gate_keys  = ["final_gate_sparsity", "final_gate_std", "gate_change_rate"]
     conv_keys  = ["n_epochs_trained", "best_epoch",
-                  "epochs_to_90pct", "epochs_to_95pct",
+                  "epochs_to_90pct", "epochs_to_95pct", "epochs_to_99pct",
                   "convergence_stability", "cpu_time"]
 
     rows = []
     for name in optuna.get_all_study_names(storage=STORAGE):
         m = _RE.match(name)
-        if not m:
-            continue
+        if m:
+            d = m.groupdict()
+        else:
+            m_cb = _RE_CATBOOST.match(name)
+            if not m_cb:
+                continue
+            gd = m_cb.groupdict()
+            d = {
+                "dataset":    gd["dataset"],
+                "data_mode":  gd["data_mode"],
+                "model_type": "catboost",
+                "config":     "catboost_clean" if gd["data_mode"] == "clean" else "catboost_dirty",
+            }
         study = optuna.load_study(study_name=name, storage=STORAGE)
         try:
             best = study.best_trial
@@ -106,7 +172,6 @@ def load_seed_data(metric: str = "f1") -> pd.DataFrame:
         if not seed_results:
             continue
 
-        d = m.groupdict()
         label = CONFIG_LABELS.get(d["config"], d["config"])
 
         for sr in seed_results:
@@ -143,6 +208,8 @@ def dataset_means(df: pd.DataFrame) -> pd.DataFrame:
             metric_mean=("metric",         "mean"),
             metric_std=("metric",          "std"),
             epochs90_mean=("epochs_to_90pct", "mean"),
+            epochs95_mean=("epochs_to_95pct", "mean"),
+            epochs99_mean=("epochs_to_99pct", "mean"),
             conv_stab_mean=("convergence_stability", "mean"),
             cpu_mean=("cpu_time",          "mean"),
             gate_sparsity=("final_gate_sparsity", "mean"),
@@ -152,6 +219,26 @@ def dataset_means(df: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index()
     )
+
+
+def broadcast_catboost_clean(dm: pd.DataFrame) -> pd.DataFrame:
+    """
+    CatBoost-Clean has no AR/NAR variant (it's trained once, on clean data
+    only), but every comparison function below filters by (config, data_mode)
+    together. Duplicate its single clean-mode row into synthetic AR/NAR rows
+    (same scores) so it can sit alongside "catboost_dirty" and every other
+    method as a fixed reference — exactly like the "clean" baseline already
+    does via plot_noise_robustness's fixed-reference lookup.
+    """
+    clean_rows = dm[dm["config"] == "catboost_clean"]
+    if clean_rows.empty:
+        return dm
+    dupes = []
+    for noise_mode in ["ar", "nar"]:
+        dup = clean_rows.copy()
+        dup["data_mode"] = noise_mode
+        dupes.append(dup)
+    return pd.concat([dm] + dupes, ignore_index=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -174,6 +261,14 @@ def wilcoxon_and_effect(x: np.ndarray, y: np.ndarray):
     # Rank-biserial: r = 1 - 2W / (n*(n+1)/2)
     r  = 1 - (2 * stat) / (n * (n + 1) / 2)
     return float(stat), float(p), float(r)
+
+
+def _fmt_p(p: float) -> str:
+    """Format a p-value to 4 decimals; report '< 0.05' if it rounds to 0.0000."""
+    if np.isnan(p):
+        return "—"
+    s = f"{p:.4f}"
+    return "< 0.05" if s == "0.0000" else s
 
 
 def sign_test(x: np.ndarray, y: np.ndarray):
@@ -211,12 +306,14 @@ def stats_summary(dm: pd.DataFrame, metric_name: str) -> None:
               f"{'W/D/L':>9}  {'p-value':>9}  {'|r|':>6}  {'sig':>4}")
         print(f"  {'-'*20} {'-'*3}  {'-'*8}  {'-'*9}  {'-'*9}  {'-'*9}  {'-'*6}  {'-'*4}")
 
-        for comp_cfg, comp_label in [
+        for comp_cfg, comp_label in _filter_methods([
             ("curr0_gate0", "Baseline"),
             ("curr1_gate0", "+ Curriculum"),
             ("saga",        "Saga++"),
             ("cp",          "CP prep"),
-        ]:
+            ("catboost_clean", "CatBoost Clean"),
+            ("catboost_dirty", "CatBoost Dirty"),
+        ]):
             comp_rows = dm[(dm["config"] == comp_cfg) & (dm["data_mode"] == noise_mode)]
             comp_vals = comp_rows.set_index("dataset")["metric_mean"]
 
@@ -285,12 +382,14 @@ def plot_deltas(dm: pd.DataFrame, metric_name: str) -> None:
     Box + strip plot of Δ (method − Baseline) across datasets,
     separately for AR and NAR, one panel per noise mode.
     """
-    competitors = [
+    competitors = _filter_methods([
         ("curr0_gate1", "+ Gate"),
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
-    ]
+        ("catboost_clean", "CatBoost Clean"),
+        ("catboost_dirty", "CatBoost Dirty"),
+    ])
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=False)
 
@@ -357,13 +456,15 @@ def plot_noise_robustness(dm: pd.DataFrame, metric_name: str) -> None:
         .set_index("dataset")["metric_mean"]
     )
 
-    methods = [
+    methods = _filter_methods([
         ("curr0_gate0", "Baseline"),
         ("curr0_gate1", "+ Gate"),
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
-    ]
+        ("catboost_clean", "CatBoost Clean"),
+        ("catboost_dirty", "CatBoost Dirty"),
+    ])
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
 
@@ -515,39 +616,43 @@ def plot_gate_behaviour(dm: pd.DataFrame) -> None:
 # 6. Training efficiency: epochs-to-90%
 # ─────────────────────────────────────────────────────────────────────────────
 
-def plot_training_efficiency(dm: pd.DataFrame, metric_name: str) -> None:
+def _plot_training_efficiency_for_pct(dm: pd.DataFrame, metric_name: str, pct: int) -> None:
     """
-    Compare training convergence speed (epochs to reach 90% of final
+    Compare training convergence speed (epochs to reach `pct`% of final
     validation metric) and convergence stability across methods.
     """
-    methods = [
+    methods = _filter_methods([
         ("curr0_gate0", "Baseline"),
         ("curr0_gate1", "+ Gate"),
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
-    ]
+        ("catboost_clean", "CatBoost Clean"),
+        ("catboost_dirty", "CatBoost Dirty"),
+    ])
+
+    epochs_col = f"epochs{pct}_mean"
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
 
     for ax, noise_mode in zip(axes, ["ar", "nar"]):
-        all_e90, all_stab, labels_used = [], [], []
+        all_epochs, all_stab, labels_used = [], [], []
         for cfg, lbl in methods:
             sub = dm[(dm["config"] == cfg) & (dm["data_mode"] == noise_mode)]
-            e90  = sub["epochs90_mean"].dropna().values
+            epochs = sub[epochs_col].dropna().values
             stab = sub["conv_stab_mean"].dropna().values
-            if len(e90) < 3:
+            if len(epochs) < 3:
                 continue
-            all_e90.append(e90)
+            all_epochs.append(epochs)
             all_stab.append(stab)
             labels_used.append(lbl)
 
         xi = np.arange(len(labels_used))
         w = 0.35
         bars1 = ax.bar(xi - w / 2,
-                       [np.nanmean(v) for v in all_e90],
-                       width=w, yerr=[np.nanstd(v) for v in all_e90],
-                       capsize=3, label="Epochs to 90%",
+                       [np.nanmean(v) for v in all_epochs],
+                       width=w, yerr=[np.nanstd(v) for v in all_epochs],
+                       capsize=3, label=f"Epochs to {pct}%",
                        color=[COLORS.get(l, "#ccc") for l in labels_used],
                        alpha=0.85, error_kw={"elinewidth": 0.8})
         ax2 = ax.twinx()
@@ -559,7 +664,7 @@ def plot_training_efficiency(dm: pd.DataFrame, metric_name: str) -> None:
                         alpha=0.4, hatch="///", error_kw={"elinewidth": 0.8})
         ax.set_xticks(xi)
         ax.set_xticklabels(labels_used, rotation=20, ha="right", fontsize=9)
-        ax.set_ylabel("Mean epochs to 90% val-metric", fontsize=8, color="#333")
+        ax.set_ylabel(f"Mean epochs to {pct}% val-metric", fontsize=8, color="#333")
         ax2.set_ylabel("Convergence stability (lower = smoother)", fontsize=8, color="#888")
         ax.set_title(f"{noise_mode.upper()} — Training efficiency",
                      fontsize=11, fontweight="bold")
@@ -569,14 +674,24 @@ def plot_training_efficiency(dm: pd.DataFrame, metric_name: str) -> None:
         ax.legend(lines1 + lines2, labs1 + labs2, fontsize=7, loc="upper right")
 
     fig.suptitle(
-        f"Training efficiency comparison  [{metric_name}]",
+        f"Training efficiency comparison — {pct}% threshold  [{metric_name}]",
         fontsize=12, fontweight="bold",
     )
     plt.tight_layout()
-    out = "plots/gate_training_efficiency.png"
+    out = f"plots/gate_training_efficiency_{pct}.png"
     plt.savefig(out, bbox_inches="tight")
     print(f"  Saved: {out}")
     plt.close()
+
+
+def plot_training_efficiency(dm: pd.DataFrame, metric_name: str) -> None:
+    """
+    Generate one training-efficiency plot per convergence threshold
+    (90%, 95%, 99% of final validation metric), each comparing epochs-to-
+    threshold and convergence stability across methods.
+    """
+    for pct in (90, 95, 99):
+        _plot_training_efficiency_for_pct(dm, metric_name, pct)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -589,9 +704,10 @@ def plot_rank_distribution(dm: pd.DataFrame, metric_name: str) -> None:
     Plot mean rank ± std and distribution of ranks as a stacked bar.
     Also print Friedman test p-value.
     """
-    methods_order = [
-        "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp"
-    ]
+    methods_order = _filter_tokens([
+        "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp",
+        "catboost_clean", "catboost_dirty",
+    ])
     method_labels = [CONFIG_LABELS.get(c, c) for c in methods_order]
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
@@ -620,12 +736,12 @@ def plot_rank_distribution(dm: pd.DataFrame, metric_name: str) -> None:
         except Exception:
             p_friedman = float("nan")
 
-        # Mean rank bar
+        # Mean rank bar (bars span [1, mean_rank] — rank can never be < 1)
         colors_used = [COLORS.get(l, "#ccc") for l in avail_labels]
-        ax.bar(avail_labels, mean_ranks, yerr=std_ranks, capsize=4,
+        ax.bar(avail_labels, mean_ranks - 1, bottom=1, yerr=std_ranks, capsize=4,
                color=colors_used, alpha=0.8,
                error_kw={"elinewidth": 0.9, "ecolor": "#333"}, width=0.6)
-        ax.set_ylim(0, len(available) + 0.5)
+        ax.set_ylim(0.5, len(available) + 0.5)
         ax.invert_yaxis()
         ax.axhline(1, color="black", linewidth=0.6, linestyle="--", alpha=0.4)
         for xi, (mr, sl) in enumerate(zip(mean_ranks, std_ranks)):
@@ -636,7 +752,7 @@ def plot_rank_distribution(dm: pd.DataFrame, metric_name: str) -> None:
         ax.set_ylabel("Mean rank  (1 = best)", fontsize=9)
         ax.set_title(
             f"{noise_mode.upper()} — Mean rank across {len(pivot)} datasets\n"
-            f"Friedman p = {p_friedman:.4f}",
+            f"Friedman p = {_fmt_p(p_friedman)}",
             fontsize=10, fontweight="bold",
         )
         ax.grid(axis="y", linewidth=0.3, alpha=0.4)
@@ -669,7 +785,7 @@ def plot_rank_distribution(dm: pd.DataFrame, metric_name: str) -> None:
             _, pf = stats.friedmanchisquare(*[pivot[c].values for c in available])
         except Exception:
             pf = float("nan")
-        print(f"\n  {noise_mode.upper()} (N={len(pivot)}, Friedman p={pf:.4f})")
+        print(f"\n  {noise_mode.upper()} (N={len(pivot)}, Friedman p={_fmt_p(pf)})")
         print(f"  {'Method':<22} {'Mean rank':>10}  {'Std':>7}  {'Best count':>10}")
         print(f"  {'-'*22} {'-'*10}  {'-'*7}  {'-'*10}")
         for c, l in zip(available, avail_labels):
@@ -698,7 +814,10 @@ def nemenyi_posthoc(dm: pd.DataFrame, metric_name: str) -> None:
     (p < 0.05), and saves a p-value heatmap to
     ``plots/gate_nemenyi_{noise_mode}.png``.
     """
-    methods_order = ["curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp"]
+    methods_order = _filter_tokens([
+        "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp",
+        "catboost_clean", "catboost_dirty",
+    ])
 
     print("\n" + "═" * 72)
     print(f"  POST-HOC NEMENYI TEST (after Friedman)  [{metric_name}]")
@@ -785,13 +904,15 @@ def evidence_summary(dm: pd.DataFrame, metric_name: str, latex: bool = False) ->
       - win rate vs Baseline
       - Wilcoxon p-value and effect size
     """
-    methods = [
+    methods = _filter_methods([
         ("curr0_gate0", "Baseline"),
         ("curr0_gate1", "+ Gate"),
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
-    ]
+        ("catboost_clean", "CatBoost Clean"),
+        ("catboost_dirty", "CatBoost Dirty"),
+    ])
 
     print("\n" + "═" * 72)
     print(f"  EVIDENCE SUMMARY  [{metric_name}]")
@@ -849,7 +970,19 @@ if __name__ == "__main__":
                         help="Performance metric to analyse (default: f1).")
     parser.add_argument("--latex", action="store_true",
                         help="Print tables in LaTeX format.")
+    parser.add_argument("--config", default="../config.yaml",
+                        help="Path to config.yaml (default: ../config.yaml, i.e. the project "
+                             "root — this script is meant to be run from analysis/), used to "
+                             "read comparison_methods when --comparison-methods is omitted.")
+    parser.add_argument("--comparison-methods", nargs="+", choices=METHOD_CHOICES, default=None,
+                        help="Restrict every comparison in this script to these methods "
+                             "(overrides config.yaml's comparison_methods). The 'Clean' "
+                             "reference stays on regardless — see module docstring.")
     args = parser.parse_args()
+
+    _SELECTED_METHODS = resolve_comparison_methods(args.comparison_methods, args.config)
+    if _SELECTED_METHODS is not None:
+        print(f"Restricting to comparison_methods: {_SELECTED_METHODS}")
 
     metric_name = {"f1": "F1", "accuracy": "Accuracy", "precision": "Precision",
                    "recall": "Recall", "auc": "AUC-ROC", "loss": "Loss"}[args.metric]
@@ -857,6 +990,7 @@ if __name__ == "__main__":
     print(f"\nDB: {DB_PATH.resolve()}  |  exists: {DB_PATH.exists()}")
     seed_df = load_seed_data(metric=args.metric)
     dm      = dataset_means(seed_df)
+    dm      = broadcast_catboost_clean(dm)
 
     print("\nRunning analyses…")
     stats_summary(dm, metric_name)

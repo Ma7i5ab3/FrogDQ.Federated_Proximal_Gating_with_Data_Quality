@@ -1340,6 +1340,8 @@ def process_all_datasets(
 
             logger.success(f"  Completed {csv_file.name}")
 
+            gc.collect()
+
         except Exception as e:
             logger.error(f"  Error processing {csv_file.name}: {e}")
             # continue

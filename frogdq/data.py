@@ -442,6 +442,171 @@ def load_data(
     return (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata
 
 
+def load_raw_data(
+    dataset_name: str,
+    mode: Literal["clean", "ar", "nar"] = "clean",
+    seed: int = 42,
+    clean_val: bool = False,
+    clean_test: bool = True,
+    data_dir: str = "data",
+    poisoned_dir: str = "data_poisoned",
+    test_dir: str = "data_poisoned",
+    val_size: float = 0.2,
+    test_sample_size: float = 0.8,
+    poison_test_size: float = 0.3,
+) -> Tuple[
+    Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame],
+    Tuple[np.ndarray, np.ndarray, np.ndarray],
+    None,
+    Dict,
+]:
+    """
+    Load a dataset split with NO preprocessing applied.
+
+    Unlike ``load_data``, this skips ``TabularPreprocessor`` entirely: numerical
+    features keep their original values with NaN untouched (no imputation, no
+    scaling), and categorical features keep their original raw values with NaN
+    preserved (no imputation, no one-hot encoding). Intended for models that
+    natively handle missing values and categorical features (e.g. CatBoost).
+
+    File loading, poisoning-mode handling, and the train/val/test split logic
+    mirror ``load_data`` exactly, so the same rows end up in the same splits
+    for a given ``seed``.
+
+    Parameters
+    ----------
+    Same as ``load_data`` (minus ``**preprocessor_kwargs``, which does not
+    apply here since no preprocessor is fitted).
+
+    Returns
+    -------
+    splits : tuple of (X_train, X_val, X_test) pandas DataFrames
+        Raw, unprocessed feature frames.
+    labels : tuple of (y_train, y_val, y_test) numpy arrays
+    preprocessor : None
+        No preprocessor is fitted; kept for API symmetry with ``load_data``.
+    metadata : dict
+        Dictionary containing ``task_type``, ``mode``, ``dataset_name``,
+        ``categorical_features`` (raw column names, cast to string with NaN
+        preserved), ``numerical_features``, and ``n_samples``.
+    """
+    if mode not in ["clean", "ar", "nar"]:
+        raise ValueError(f"Invalid mode: {mode}. Must be 'clean', 'ar', or 'nar'.")
+
+    data_path = Path(data_dir)
+    poisoned_path = Path(poisoned_dir)
+    test_path = Path(test_dir) / "test"
+
+    csv_files = list(data_path.glob(f"*_{dataset_name}.csv"))
+    if not csv_files:
+        raise FileNotFoundError(
+            f"Dataset '{dataset_name}' not found in {data_dir}. "
+            f"Use get_datasets() to see available datasets."
+        )
+    if len(csv_files) > 1:
+        raise ValueError(
+            f"Multiple files found for dataset '{dataset_name}': {[f.name for f in csv_files]}"
+        )
+
+    csv_file = csv_files[0]
+    dataset_filename = csv_file.name
+    na_values = ["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "]
+
+    if mode == "clean":
+        full_df = pd.read_csv(csv_file, na_values=na_values)
+        test_rows = full_df.sample(frac=poison_test_size, random_state=42)
+        df = full_df.drop(test_rows.index).reset_index(drop=True)
+        clean_trainval_df = None
+    else:
+        poisoned_file = poisoned_path / mode / dataset_filename
+        if not poisoned_file.exists():
+            raise FileNotFoundError(
+                f"Poisoned data file not found: {poisoned_file}. "
+                f"Run the poison_data.py script first."
+            )
+        df = pd.read_csv(poisoned_file, na_values=na_values)
+
+        clean_trainval_df = None
+        if clean_val:
+            full_clean_df = pd.read_csv(csv_file, na_values=na_values)
+            test_rows = full_clean_df.sample(frac=poison_test_size, random_state=42)
+            clean_trainval_df = full_clean_df.drop(test_rows.index).reset_index(drop=True)
+
+    test_file = test_path / dataset_filename
+    if not test_file.exists():
+        raise FileNotFoundError(
+            f"Test file not found: {test_file}. "
+            f"Run scripts/poison_data.py first."
+        )
+    df_test_full = pd.read_csv(test_file, na_values=na_values)
+    df_test = df_test_full.sample(frac=test_sample_size, random_state=seed).reset_index(drop=True)
+
+    label_cols = [col for col in df.columns if col.startswith(("cls_", "reg_"))]
+    if not label_cols:
+        raise ValueError(f"No label column found in dataset {dataset_name}")
+    label_col = label_cols[0]
+    task_type = "classification" if label_col.startswith("cls_") else "regression"
+
+    from sklearn.model_selection import train_test_split
+
+    indices = np.arange(len(df))
+    y_full = df[label_col].values
+    stratify_split = y_full if task_type == "classification" else None
+    train_idx, val_idx = train_test_split(
+        indices, test_size=val_size, random_state=seed, stratify=stratify_split
+    )
+
+    df_train = df.iloc[train_idx].reset_index(drop=True)
+    df_val = df.iloc[val_idx].reset_index(drop=True)
+
+    if clean_val and clean_trainval_df is not None:
+        df_val = clean_trainval_df.iloc[val_idx].reset_index(drop=True)
+
+    # Feature type detection mirrors TabularPreprocessor's prefix convention,
+    # but nothing is imputed/scaled/encoded — values are only cast to a
+    # consistent dtype so downstream libraries can recognize the column kind.
+    feature_cols = [c for c in df.columns if c != label_col]
+    numerical_features = [c for c in feature_cols if c.startswith("num_")]
+    categorical_features = [c for c in feature_cols if c.startswith("cat_")]
+    id_features = [c for c in feature_cols if c.startswith("id_")]
+    # Anything without a recognized prefix (other than id_, which is dropped
+    # since it's metadata, not a feature) is treated as categorical, kept raw.
+    other_features = [
+        c for c in feature_cols
+        if c not in numerical_features and c not in categorical_features and c not in id_features
+    ]
+    categorical_features = categorical_features + other_features
+
+    def _to_raw_features(frame: pd.DataFrame) -> pd.DataFrame:
+        X = frame[feature_cols].drop(columns=id_features, errors="ignore").copy()
+        for col in categorical_features:
+            if col in X.columns:
+                # dtype-only cast (object -> string) so the column is a
+                # consistent type; NaN is preserved as NaN, not filled in.
+                X[col] = X[col].astype(str).replace("nan", np.nan)
+        return X
+
+    X_train = _to_raw_features(df_train)
+    X_val = _to_raw_features(df_val)
+    X_test = _to_raw_features(df_test)
+
+    y_train = df_train[label_col].values
+    y_val = df_val[label_col].values
+    y_test = df_test[label_col].values
+
+    metadata = {
+        "mode": mode,
+        "dataset_name": dataset_name,
+        "task_type": task_type,
+        "categorical_features": [c for c in categorical_features if c in X_train.columns],
+        "numerical_features": [c for c in numerical_features if c in X_train.columns],
+        "n_samples": {"train": len(X_train), "val": len(X_val), "test": len(X_test)},
+        "n_features_raw": len(feature_cols),
+    }
+
+    return (X_train, X_val, X_test), (y_train, y_val, y_test), None, metadata
+
+
 def _apply_saga_no_outliers(df: pd.DataFrame, pipeline_info: dict) -> pd.DataFrame:
     """
     Apply a fitted Saga++ pipeline to a DataFrame, skipping outlier-detection
