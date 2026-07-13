@@ -8,6 +8,7 @@ Runs, in order:
   2. gate_analysis.py         --metric {metric} --latex   (includes Nemenyi post-hoc)
   3. elo_ratings.py           --metric {metric}
   4. latex_evidence_table.py  (all metrics x comparison_methods, per dataset)
+  5. elo_baseline_table.py    (metric x comparison_methods Elo table, CCAR/CNAR)
 
 Captures both scripts' output verbatim, re-derives the headline numbers
 (Friedman p-values, best-ranked method, Gate-vs-Baseline win rate and
@@ -163,17 +164,20 @@ def main() -> None:
     if selected_methods is not None:
         print(f"Restricting to comparison_methods: {selected_methods}\n")
 
-    print(f"── Step 1/4: optuna_progress.py --metric {args.metric} ──")
+    print(f"── Step 1/5: optuna_progress.py --metric {args.metric} ──")
     out1 = run_script(["optuna_progress.py", "--metric", args.metric, "--complete-only", *extra_args])
 
-    print(f"\n── Step 2/4: gate_analysis.py --metric {args.metric} --latex ──")
+    print(f"\n── Step 2/5: gate_analysis.py --metric {args.metric} --latex ──")
     out2 = run_script(["gate_analysis.py", "--metric", args.metric, "--latex", *extra_args])
 
-    print(f"\n── Step 3/4: elo_ratings.py --metric {args.metric} --latex ──")
+    print(f"\n── Step 3/5: elo_ratings.py --metric {args.metric} --latex ──")
     out3 = run_script(["elo_ratings.py", "--metric", args.metric])
 
-    print("\n── Step 4/4: latex_evidence_table.py ──")
+    print("\n── Step 4/5: latex_evidence_table.py ──")
     out4 = run_script(["latex_evidence_table.py", "--split-by-metric", "--config", args.config, *extra_args])
+
+    print("\n── Step 5/5: elo_baseline_table.py ──")
+    out5 = run_script(["elo_baseline_table.py", "--config", args.config, *extra_args])
 
 
 if __name__ == "__main__":
