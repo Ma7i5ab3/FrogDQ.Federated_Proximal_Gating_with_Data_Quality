@@ -1,5 +1,5 @@
 """
-Data loading utilities for FrogDQ datasets.
+Data loading utilities for Quail datasets.
 
 This module provides functions to list and load preprocessed datasets with various
 poisoning modes (clean, AR, NAR), as well as pre-computed AutoGluon features.
@@ -11,7 +11,7 @@ from typing import Dict, Literal, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from frogdq.preprocessing import TabularPreprocessor
+from quail.preprocessing import TabularPreprocessor
 
 
 def get_datasets(data_dir: str = "data", poisoned_dir: str = "data_poisoned") -> pd.DataFrame:
@@ -969,133 +969,6 @@ def load_cp_data(
     )
 
 
-def load_baseline_zero_data(
-    dataset_name: str,
-    mode: str,
-    seed: int = 42,
-    baseline_zero_dir: str = "data_baseline_zero",
-    clean_val: bool = True,
-    clean_test: bool = True,
-    data_dir: str = "data",
-    poisoned_dir: str = "data_poisoned",
-    **kwargs,
-) -> Tuple[
-    Tuple[np.ndarray, np.ndarray, np.ndarray],
-    Tuple[np.ndarray, np.ndarray, np.ndarray],
-    "TabularPreprocessor",
-    Dict,
-]:
-    """
-    Load data imputed by Baseline 0 (scripts/baseline_zero.py).
-
-    Baseline 0 fills numerical NaN with 0 and categorical NaN with a random
-    observed value.  The output format is identical to the CP pipeline, so this
-    is a thin wrapper over ``load_data`` that redirects ``poisoned_dir`` to the
-    Baseline-0 output directory.
-
-    Parameters
-    ----------
-    dataset_name : str
-        Name of the dataset (e.g. "iris").
-    mode : str
-        Data quality mode ("ar" or "nar").
-    seed : int, default=42
-        Random seed for the train/val/test split.
-    baseline_zero_dir : str, default="data_baseline_zero"
-        Root directory containing the Baseline-0 CSVs and masks.
-    clean_val : bool, default=True
-        If True, return the clean validation split.
-    clean_test : bool, default=True
-        If True, return the clean test split.
-    **kwargs
-        Additional keyword arguments forwarded to ``load_data``.
-
-    Returns
-    -------
-    Same as ``load_data``.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the Baseline-0 file does not exist; run
-        ``scripts/baseline_zero.py`` first.
-    """
-    return load_data(
-        dataset_name=dataset_name,
-        mode=mode,
-        seed=seed,
-        clean_val=clean_val,
-        clean_test=clean_test,
-        data_dir=data_dir,
-        poisoned_dir=baseline_zero_dir,
-        test_dir=poisoned_dir,
-        **kwargs,
-    )
-
-
-def load_knn_data(
-    dataset_name: str,
-    mode: str,
-    seed: int = 42,
-    knn_dir: str = "data_knn",
-    clean_val: bool = True,
-    clean_test: bool = True,
-    data_dir: str = "data",
-    poisoned_dir: str = "data_poisoned",
-    **kwargs,
-) -> Tuple[
-    Tuple[np.ndarray, np.ndarray, np.ndarray],
-    Tuple[np.ndarray, np.ndarray, np.ndarray],
-    "TabularPreprocessor",
-    Dict,
-]:
-    """
-    Load data imputed by the KNN baseline (scripts/knn.py).
-
-    KNN imputation uses ``sklearn.impute.KNNImputer`` on a joint numerical +
-    ordinal-encoded categorical matrix.  The output format is identical to the
-    CP pipeline, so this is a thin wrapper over ``load_data`` that redirects
-    ``poisoned_dir`` to the KNN output directory.
-
-    Parameters
-    ----------
-    dataset_name : str
-        Name of the dataset (e.g. "iris").
-    mode : str
-        Data quality mode ("ar" or "nar").
-    seed : int, default=42
-        Random seed for the train/val/test split.
-    knn_dir : str, default="data_knn"
-        Root directory containing the KNN-imputed CSVs and masks.
-    clean_val : bool, default=True
-        If True, return the clean validation split.
-    clean_test : bool, default=True
-        If True, return the clean test split.
-    **kwargs
-        Additional keyword arguments forwarded to ``load_data``.
-
-    Returns
-    -------
-    Same as ``load_data``.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the KNN-imputed file does not exist; run ``scripts/knn.py`` first.
-    """
-    return load_data(
-        dataset_name=dataset_name,
-        mode=mode,
-        seed=seed,
-        clean_val=clean_val,
-        clean_test=clean_test,
-        data_dir=data_dir,
-        poisoned_dir=knn_dir,
-        test_dir=poisoned_dir,
-        **kwargs,
-    )
-
-
 def load_autogluon_data(
     dataset_name: str,
     mode: str,
@@ -1201,7 +1074,7 @@ def load_autogluon_data(
         "preparation": "autogluon",
         "clean_val": clean_val,
         "clean_test": clean_test,
-        # Curriculum/gate quality scores are not available for this baseline
+        # Curriculum/quail quality scores are not available for this baseline
         "sample_quality_train": np.ones(len(X_train)) * 100.0,
         "feature_quality": {},
         "n_samples": {"train": len(X_train), "val": len(X_val), "test": len(X_test)},

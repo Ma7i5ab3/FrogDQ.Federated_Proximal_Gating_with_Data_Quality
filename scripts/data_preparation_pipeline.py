@@ -3,7 +3,7 @@
 Data Preparation Pipeline for ML Datasets
 Applies cleaning and repair techniques to AR and NAR poisoned datasets, producing
 cleaned versions that serve as a data-preparation baseline for comparison against
-the quAIL gate-based approach.
+the quAIL quail-based approach.
 
 Input:  data_poisoned/{ar,nar}/  (poisoned CSV + mask produced by poison_data.py)
 Output: data_cleaned/{ar,nar}/   (cleaned CSV + residual mask + metrics)

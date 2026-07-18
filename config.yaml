@@ -1,4 +1,4 @@
-# FrogDQ Hyperparameter Optimization Configuration
+# Quail Hyperparameter Optimization Configuration
 # =================================================
 # This file configures the Optuna-based hyperparameter optimization experiments
 # for testing model performance across different configurations.
@@ -10,7 +10,7 @@
 # Options:
 #   - 'all': Run on all available datasets from data/ directory
 #   - List of dataset names: e.g., ['iris', 'wine', 'adult']
-# To see available datasets, run: python -c "from frogdq.data import get_datasets; print(get_datasets())"
+# To see available datasets, run: python -c "from quail.data import get_datasets; print(get_datasets())"
 
 # datasets: ['iris']
 
@@ -61,9 +61,9 @@ curriculum_settings:
   - false
   - true
 
-# Gate layer settings to test
-# true: Enable learnable input gate layer
-# false: No gating
+# Quail layer settings to test
+# true: Enable learnable input quail layer
+# false: No quail
 gate_settings:
   - false
   - true
@@ -183,29 +183,10 @@ run_saga: true
 # Directory containing Saga++-cleaned data produced by scripts/saga.py.
 saga_data_dir: data_cleaned_saga
 
-# Baseline 0 (Zero/Random Imputation) Benchmark Settings
-# --------------------------------------------------------
-# Whether to include Baseline 0 as a data-preparation benchmark.
-# Numerical NaN → 0; categorical NaN → random observed value.
-# Requires running scripts/baseline_zero.py first.
-run_baseline_zero: false
-
-# Directory containing Baseline-0-imputed data produced by scripts/baseline_zero.py.
-baseline_zero_data_dir: data_baseline_zero
-
-# KNN Imputation Benchmark Settings
-# -----------------------------------
-# Whether to include KNN imputation as a data-preparation benchmark.
-# Requires running scripts/knn.py first.
-run_knn: false
-
-# Directory containing KNN-imputed data produced by scripts/knn.py.
-knn_data_dir: data_knn
-
 # CatBoost Benchmark Settings
 # -----------------------------
 # Whether to include CatBoost as an additional model baseline.
-# Unlike the AutoGluon/CP/Saga/Baseline-0/KNN benchmarks above (which change
+# Unlike the AutoGluon/CP/Saga benchmarks above (which change
 # the data-preparation step but still train the linear/MLP neural nets),
 # CatBoost is itself a different model: it runs once per dataset/data_mode,
 # independent of model_types, and requires no precomputation script.
@@ -223,18 +204,18 @@ run_catboost: false
 # CPU threads for CatBoost (-1 = use all available cores).
 catboost_thread_count: -1
 
-# Gate + Curriculum Experiment Settings
+# Quail + Curriculum Experiment Settings
 # ---------------------------------------
-# Whether to include the combined gate+curriculum experiment.
-# true:  run gate+curriculum (default)
-# false: skip gate+curriculum
+# Whether to include the combined quail+curriculum experiment.
+# true:  run quail+curriculum (default)
+# false: skip quail+curriculum
 run_gate_curriculum: false
 
 # Comparison Methods (Evaluation / Analysis Scripts)
 # -----------------------------------------------------
-# Restricts scripts/evaluate.py, scripts/generate_latex_tables.py, and the
-# analysis/*.py scripts (gate_analysis.py, optuna_progress.py,
-# run_gate_evidence_report.py) to a chosen subset of methods/baselines,
+# Restricts scripts/evaluate.py and the
+# analysis/*.py scripts (quail_analysis.py, optuna_progress.py,
+# run_quail_evidence_report.py) to a chosen subset of methods/baselines,
 # instead of showing every method found in the results. Useful once you've
 # accumulated many optional baselines and only want a couple in a given
 # report — pass --comparison-methods on any of those scripts' CLIs to
@@ -245,21 +226,19 @@ run_gate_curriculum: false
 #   clean            - un-poisoned reference (Linear/MLP trained & tested on clean data)
 #   baseline         - Linear/MLP trained directly on poisoned (AR/NAR) data, no mitigation
 #   curriculum       - + curriculum learning
-#   gate             - + quAIL proximal gate (this paper's method)
-#   gate_curriculum  - + gate + curriculum combined
+#   gate             - + quAIL proximal quail (this paper's method)
+#   gate_curriculum  - + quail + curriculum combined
 #   autogluon        - AutoGluon data-preparation baseline (requires run_autogluon)
 #   saga             - Saga++ data-preparation baseline (requires run_saga)
 #   cp               - Custom pipeline (CP) data-preparation baseline (requires run_cp)
-#   baseline_zero    - Zero/random imputation baseline (requires run_baseline_zero)
-#   knn              - KNN imputation baseline (requires run_knn)
 #   catboost_clean   - CatBoost trained on clean data (requires run_catboost)
 #   catboost_dirty   - CatBoost trained on AR/NAR data (requires run_catboost)
 #
-# Note: gate_analysis.py always keeps its own "Clean" reference regardless of
+# Note: quail_analysis.py always keeps its own "Clean" reference regardless of
 # this setting — its noise-robustness analysis is built around measuring
 # degradation *from* clean, so dropping "clean" there would break it.
 #
-# Example: only compare the quAIL gate against Saga++ and CatBoost:
+# Example: only compare the quAIL quail against Saga++ and CatBoost:
 #   comparison_methods: ['clean', 'baseline', 'gate', 'saga', 'catboost_clean', 'catboost_dirty']
 comparison_methods: ['clean', 'baseline', 'curriculum', 'gate', 'saga', 'cp']
 
@@ -281,13 +260,13 @@ poisoning:
 
     clean_feature_frac: 0.40
 
-    mild_rate: 0.041
+    mild_rate: 0.164
     moderate_frac: 0.35
-    moderate_rate: 0.077
+    moderate_rate: 0.308
     heavy_frac: 0.22
-    heavy_rate: 0.144
+    heavy_rate: 0.576
     severe_frac: 0.10
-    severe_rate: 0.231
+    severe_rate: 0.924
 
   # AR (At Random) poisoning mechanisms.
   # Set to false to disable a specific mechanism.
@@ -357,7 +336,7 @@ hyperparameter_ranges:
   # Curriculum learning hyperparameters
   curriculum_strategy_choices: ['linear', 'exponential', 'step']
 
-  # Gate layer hyperparameters
+  # Quail layer hyperparameters
   gate_init_choices: ['quality'] # ['random', 'ones', 'quality']
   gate_loss_weight: [0.0001, 0.1, 'log']
   gate_anchor_interval: [1, 20]

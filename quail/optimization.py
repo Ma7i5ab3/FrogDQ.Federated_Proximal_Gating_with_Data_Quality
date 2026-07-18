@@ -1,9 +1,9 @@
 """
-Hyperparameter optimization with Optuna for FrogDQ experiments.
+Hyperparameter optimization with Optuna for Quail experiments.
 
 This module provides a comprehensive pipeline for hyperparameter tuning across
 different model architectures (linear, MLP), curriculum learning settings, and
-gate configurations using Optuna with multi-seed evaluation.
+quail configurations using Optuna with multi-seed evaluation.
 """
 
 import time
@@ -19,10 +19,10 @@ from joblib import Parallel, delayed
 from optuna.samplers import TPESampler
 from optuna.study import Study
 
-from frogdq.catboost_model import fit_catboost
-from frogdq.data import get_datasets, load_autogluon_data, load_baseline_zero_data, load_cp_data, load_data, load_knn_data, load_raw_data, load_saga_data
-from frogdq.nn import build_model
-from frogdq.training import fit, set_seed
+from quail.catboost_model import fit_catboost
+from quail.data import get_datasets, load_autogluon_data, load_cp_data, load_data, load_raw_data, load_saga_data
+from quail.nn import build_model
+from quail.training import fit, set_seed
 
 
 def compute_convergence_metrics(history: Dict[str, List], primary_metric: str,
@@ -45,7 +45,7 @@ def compute_convergence_metrics(history: Dict[str, List], primary_metric: str,
         Dictionary containing convergence metrics:
         - best_epoch: Epoch with best validation performance
         - epochs_to_X_pct: Epochs needed to reach X% of final val performance
-        - final_gate_sparsity: Final average gate weight (if gates used)
+        - final_gate_sparsity: Final average quail weight (if quail used)
         - convergence_stability: Std dev of last 10% of epochs
     """
     val_metric_key = f'val_{primary_metric}'
@@ -99,7 +99,7 @@ def compute_convergence_metrics(history: Dict[str, List], primary_metric: str,
         metrics['final_gate_sparsity'] = float(np.mean(final_gate_weights))
         metrics['final_gate_std'] = float(np.std(final_gate_weights))
 
-        # Track gate evolution
+        # Track quail evolution
         all_gates = np.array(history['gate_weights'])
         metrics['gate_change_rate'] = float(np.mean(np.abs(np.diff(all_gates, axis=0))))
 
@@ -126,7 +126,7 @@ def _get_storage_url(output_dir: Path) -> str:
 
 class OptunaExperiment:
     """
-    Optuna-based hyperparameter optimization for FrogDQ experiments.
+    Optuna-based hyperparameter optimization for Quail experiments.
 
     This class manages hyperparameter optimization across different configurations:
     - Model type: linear (no hidden layers) or MLP
@@ -171,7 +171,7 @@ class OptunaExperiment:
             - data_modes: List of data modes ('clean', 'ar', 'nar')
             - model_types: List of model types ('linear', 'mlp')
             - curriculum_settings: List of curriculum on/off (True/False)
-            - gate_settings: List of gate on/off (True/False)
+            - gate_settings: List of quail on/off (True/False)
             - n_trials: Number of Optuna trials per configuration
             - n_seeds: Number of random seeds to evaluate per trial
             - seed_start: Starting seed (incremental from this)
@@ -237,14 +237,6 @@ class OptunaExperiment:
         # Custom pipeline (CP) benchmark settings
         self.run_cp = config.get('run_cp', False)
         self.cp_data_dir = config.get('cp_data_dir', 'data_cleaned_cp')
-
-        # Baseline 0 (zero/random imputation) benchmark settings
-        self.run_baseline_zero = config.get('run_baseline_zero', False)
-        self.baseline_zero_data_dir = config.get('baseline_zero_data_dir', 'data_baseline_zero')
-
-        # KNN imputation benchmark settings
-        self.run_knn = config.get('run_knn', False)
-        self.knn_data_dir = config.get('knn_data_dir', 'data_knn')
 
         # CatBoost benchmark settings.
         # Unlike the other benchmarks above, this is a model baseline (not a
@@ -345,7 +337,7 @@ class OptunaExperiment:
         use_curriculum : bool
             Whether curriculum learning is enabled
         use_gate : bool
-            Whether gate layer is enabled
+            Whether quail layer is enabled
         task : str
             'classification' or 'regression'
 
@@ -414,7 +406,7 @@ class OptunaExperiment:
         -------
         dict
             Dictionary of suggested CatBoost hyperparameters, matching the
-            keyword arguments of ``frogdq.catboost_model.fit_catboost``.
+            keyword arguments of ``quail.catboost_model.fit_catboost``.
         """
         hp = {}
         hp['iterations'] = trial.suggest_int('catboost_iterations', *self.hp_ranges['catboost_iterations'])
@@ -471,7 +463,7 @@ class OptunaExperiment:
         use_curriculum : bool
             Whether to use curriculum learning
         use_gate : bool
-            Whether to use gate layer
+            Whether to use quail layer
         hyperparams : dict
             Dictionary of hyperparameters
         seed : int
@@ -524,32 +516,6 @@ class OptunaExperiment:
                     mode=data_mode,
                     seed=seed,
                     cp_dir=self.cp_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
-            )
-        elif preparation == 'baseline_zero':
-            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
-                load_baseline_zero_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=seed,
-                    baseline_zero_dir=self.baseline_zero_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
-            )
-        elif preparation == 'knn':
-            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
-                load_knn_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=seed,
-                    knn_dir=self.knn_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
                     data_dir=self.data_dir,
@@ -630,7 +596,7 @@ class OptunaExperiment:
             y_test = y_test.astype(np.float64)
 
         # Build model (skipped for CatBoost, which is not a torch nn.Module
-        # trained via frogdq.training.fit — see the 'catboost' branch below).
+        # trained via quail.training.fit — see the 'catboost' branch below).
         if preparation != 'catboost':
             model_kwargs = {
                 'input_dim': X_train.shape[1],
@@ -683,7 +649,7 @@ class OptunaExperiment:
             else:
                 train_kwargs['use_curriculum'] = 'false'
 
-            # Add gate layer parameters
+            # Add quail layer parameters
             if use_gate:
                 # Convert feature quality dict to array aligned with preprocessed features
                 feature_names = preprocessor.get_feature_names_out()
@@ -821,7 +787,7 @@ class OptunaExperiment:
 
     def _load_baseline_params(self, dataset_name: str, data_mode: str, model_type: str) -> Optional[List[Dict[str, Any]]]:
         """
-        Load top-N hyperparameter configurations from baseline run (no curriculum, no gates).
+        Load top-N hyperparameter configurations from baseline run (no curriculum, no quail).
 
         For AR/NAR modes, loads from the corresponding AR/NAR baseline run, not clean.
         This makes sense because AR/NAR baseline is already optimized for degraded data.
@@ -846,7 +812,7 @@ class OptunaExperiment:
         if cache_key in self._clean_params_cache:
             return self._clean_params_cache[cache_key]
 
-        # Load from baseline study (no curriculum, no gates)
+        # Load from baseline study (no curriculum, no quail)
         study_name = f"{dataset_name}_{data_mode}_{model_type}_curr0_gate0"
 
         try:
@@ -900,10 +866,6 @@ class OptunaExperiment:
             return f"{dataset_name}_{data_mode}_{model_type}_saga"
         elif preparation == 'cp':
             return f"{dataset_name}_{data_mode}_{model_type}_cp"
-        elif preparation == 'baseline_zero':
-            return f"{dataset_name}_{data_mode}_{model_type}_baseline_zero"
-        elif preparation == 'knn':
-            return f"{dataset_name}_{data_mode}_{model_type}_knn"
         elif preparation == 'catboost':
             return f"{dataset_name}_{data_mode}_catboost"
         else:
@@ -940,7 +902,7 @@ class OptunaExperiment:
         use_curriculum : bool
             Whether to use curriculum learning
         use_gate : bool
-            Whether to use gate layer
+            Whether to use quail layer
         preparation : str, default='standard'
             Data preparation method ('standard' or 'autogluon').
 
@@ -983,28 +945,6 @@ class OptunaExperiment:
                     data_dir=self.data_dir,
                     poisoned_dir=self.poisoned_dir,
                 )
-            elif preparation == 'baseline_zero':
-                _, (y_train, _, _), _, metadata = load_baseline_zero_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=self.seed_start,
-                    baseline_zero_dir=self.baseline_zero_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
-            elif preparation == 'knn':
-                _, (y_train, _, _), _, metadata = load_knn_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=self.seed_start,
-                    knn_dir=self.knn_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
             elif preparation == 'catboost':
                 _, (y_train, _, _), _, metadata = load_raw_data(
                     dataset_name=dataset_name,
@@ -1037,18 +977,18 @@ class OptunaExperiment:
             raise optuna.TrialPruned()
 
         # Suggest hyperparameters (or reuse from baseline run if applicable)
-        # Only reuse parameters for MLP models with curriculum/gates (not baseline)
+        # Only reuse parameters for MLP models with curriculum/quail (not baseline)
         if self.reuse_params and data_mode in ['ar', 'nar'] and (use_curriculum or use_gate):
             # Try to load baseline parameters from the same data mode
             baseline_params_list = self._load_baseline_params(dataset_name, data_mode, model_type)
 
             if baseline_params_list:
                 # Sample one configuration from top-N baseline runs (shallow copy to
-                # avoid mutating the cached dict when curriculum/gate keys are added below)
+                # avoid mutating the cached dict when curriculum/quail keys are added below)
                 rng = np.random.RandomState(trial.number + self.optuna_sampler_seed)
                 hyperparams = dict(rng.choice(baseline_params_list))
 
-                # Now suggest only the curriculum/gate specific parameters
+                # Now suggest only the curriculum/quail specific parameters
                 if use_curriculum:
                     hyperparams['curriculum_strategy'] = trial.suggest_categorical(
                         'curriculum_strategy', self.hp_ranges['curriculum_strategy_choices']
@@ -1076,7 +1016,7 @@ class OptunaExperiment:
                 trial.set_user_attr('reused_baseline_params', True)
 
                 if self.verbose > 1:
-                    print(f"  Trial {trial.number}: Reusing baseline params, optimizing curriculum/gate only")
+                    print(f"  Trial {trial.number}: Reusing baseline params, optimizing curriculum/quail only")
             else:
                 # Fall back to normal optimization
                 hyperparams = self._suggest_hyperparameters(trial, model_type, use_curriculum, use_gate, task)
@@ -1182,7 +1122,7 @@ class OptunaExperiment:
         use_curriculum : bool
             Whether to use curriculum learning
         use_gate : bool
-            Whether to use gate layer
+            Whether to use quail layer
         preparation : str, default='standard'
             Data preparation method ('standard' or 'autogluon').
             AutoGluon experiments use pre-computed features; no further
@@ -1418,18 +1358,6 @@ class OptunaExperiment:
                             'use_curriculum': False, 'use_gate': False, 'preparation': 'saga',
                         })
 
-                    if self.run_baseline_zero:
-                        experiments.append({
-                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
-                            'use_curriculum': False, 'use_gate': False, 'preparation': 'baseline_zero',
-                        })
-
-                    if self.run_knn:
-                        experiments.append({
-                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
-                            'use_curriculum': False, 'use_gate': False, 'preparation': 'knn',
-                        })
-
                     experiments.append({
                         'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
                         'use_curriculum': True, 'use_gate': False, 'preparation': 'standard',
@@ -1468,13 +1396,13 @@ class OptunaExperiment:
 
         Experiment design:
         1. Baselines:
-           - linear on clean/ar/nar (baseline, no curriculum, no gates)
-           - mlp on clean/ar/nar (baseline, no curriculum, no gates)
+           - linear on clean/ar/nar (baseline, no curriculum, no quail)
+           - mlp on clean/ar/nar (baseline, no curriculum, no quail)
         2. State-of-art:
            - mlp + curriculum on ar/nar
         3. Proposed approach:
-           - mlp + gate on ar/nar
-           - mlp + gate + curriculum on ar/nar
+           - mlp + quail on ar/nar
+           - mlp + quail + curriculum on ar/nar
 
         Returns
         -------
@@ -1490,8 +1418,8 @@ class OptunaExperiment:
         #  4. AR/NAR + CP         (if run_cp)
         #  5. AR/NAR + Saga       (if run_saga)
         #  6. AR/NAR + curriculum
-        #  7. AR/NAR + gate
-        #  8. AR/NAR + gate + curriculum
+        #  7. AR/NAR + quail
+        #  8. AR/NAR + quail + curriculum
         # All configs apply symmetrically to both Linear and MLP.
         experiments = []
         ar_nar_modes = [m for m in self.data_modes if m in ('ar', 'nar')]
@@ -1553,29 +1481,7 @@ class OptunaExperiment:
                             'preparation': 'saga',
                         })
 
-                    # 6. Baseline 0 (zero/random imputation)
-                    if self.run_baseline_zero:
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': False,
-                            'use_gate': False,
-                            'preparation': 'baseline_zero',
-                        })
-
-                    # 7. KNN imputation baseline
-                    if self.run_knn:
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': False,
-                            'use_gate': False,
-                            'preparation': 'knn',
-                        })
-
-                    # 9. Curriculum learning
+                    # 6. Curriculum learning
                     experiments.append({
                         'dataset': dataset,
                         'data_mode': data_mode,
@@ -1585,7 +1491,7 @@ class OptunaExperiment:
                         'preparation': 'standard',
                     })
 
-                    # 10. quAIL gate
+                    # 7. quAIL quail
                     experiments.append({
                         'dataset': dataset,
                         'data_mode': data_mode,
@@ -1595,7 +1501,7 @@ class OptunaExperiment:
                         'preparation': 'standard',
                     })
 
-                    # 11. quAIL gate + curriculum
+                    # 8. quAIL quail + curriculum
                     if self.config.get('run_gate_curriculum', True):
                         experiments.append({
                             'dataset': dataset,
@@ -1606,7 +1512,7 @@ class OptunaExperiment:
                             'preparation': 'standard',
                         })
 
-            # 12. CatBoost baseline: a model baseline (not a data-preparation
+            # 9. CatBoost baseline: a model baseline (not a data-preparation
             # baseline like AutoGluon/CP/Saga above), so it runs once per
             # dataset/data_mode, independent of model_types. Trained on raw
             # data (NaN preserved, categorical features native) — no

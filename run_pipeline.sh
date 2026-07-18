@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_pipeline.sh — Full FrogDQ experiment pipeline
+# run_pipeline.sh — Full Quail experiment pipeline
 #
 # Steps:
 #   1. Select Datasets
@@ -7,10 +7,8 @@
 #   3. Data Preparation Pipeline (CP)
 #   4. Saga++
 #   5. AutoGluon
-#   6. Baseline 0 (zero/random imputation)
-#   7. KNN Imputation
-#   8. Main (Optuna experiments)
-#   9. Evaluation (Friedman test + critical-difference diagrams)
+#   6. Main (Optuna experiments)
+#   7. Evaluation (Friedman test + critical-difference diagrams)
 #
 # Usage:
 #   ./run_pipeline.sh [options]
@@ -21,11 +19,9 @@
 #   --skip-cp            Skip step 3 (data preparation pipeline)
 #   --skip-saga          Skip step 4 (Saga++)
 #   --skip-autogluon     Skip step 5 (AutoGluon)
-#   --skip-baseline-zero Skip step 6 (Baseline 0)
-#   --skip-knn           Skip step 7 (KNN imputation)
-#   --skip-main          Skip step 8 (main experiments)
-#   --skip-evaluate      Skip step 9 (evaluation)
-#   --start-from N       Start from step N (1–9), skipping earlier steps
+#   --skip-main          Skip step 6 (main experiments)
+#   --skip-evaluate      Skip step 7 (evaluation)
+#   --start-from N       Start from step N (1–7), skipping earlier steps
 #   --eval-output-dir D  Output directory for evaluation plots (default: evaluation)
 #   -y, --yes            Auto-confirm the main experiment prompt
 #   -h, --help           Show this help message
@@ -73,8 +69,6 @@ SKIP_POISON=false
 SKIP_CP=false
 SKIP_SAGA=false
 SKIP_AUTOGLUON=false
-SKIP_BASELINE_ZERO=false
-SKIP_KNN=false
 SKIP_MAIN=false
 SKIP_EVALUATE=false
 AUTO_YES=false
@@ -88,13 +82,11 @@ while [[ $# -gt 0 ]]; do
         --skip-cp)            SKIP_CP=true            ;;
         --skip-saga)          SKIP_SAGA=true          ;;
         --skip-autogluon)     SKIP_AUTOGLUON=true     ;;
-        --skip-baseline-zero) SKIP_BASELINE_ZERO=true ;;
-        --skip-knn)           SKIP_KNN=true           ;;
         --skip-main)          SKIP_MAIN=true          ;;
         --skip-evaluate)      SKIP_EVALUATE=true      ;;
         --start-from)
             START_FROM="$2"; shift
-            [[ "$START_FROM" =~ ^[1-9]$ ]] || die "--start-from requires a number between 1 and 9"
+            [[ "$START_FROM" =~ ^[1-7]$ ]] || die "--start-from requires a number between 1 and 7"
             ;;
         --eval-output-dir)
             EVAL_OUTPUT_DIR="$2"; shift
@@ -115,16 +107,14 @@ done
 (( START_FROM > 3 )) && SKIP_CP=true
 (( START_FROM > 4 )) && SKIP_SAGA=true
 (( START_FROM > 5 )) && SKIP_AUTOGLUON=true
-(( START_FROM > 6 )) && SKIP_BASELINE_ZERO=true
-(( START_FROM > 7 )) && SKIP_KNN=true
-(( START_FROM > 8 )) && SKIP_MAIN=true
+(( START_FROM > 6 )) && SKIP_MAIN=true
 
 # ── preflight ─────────────────────────────────────────────────────────────────
 [[ -x "$PYTHON" ]]  || die "Python not found at: $PYTHON"
 [[ -f "$CONFIG" ]]  || die "config.yaml not found at: $CONFIG"
 cd "$SCRIPT_DIR"
 
-echo -e "${BOLD}FrogDQ Experiment Pipeline${RESET}"
+echo -e "${BOLD}Quail Experiment Pipeline${RESET}"
 echo -e "Working directory : ${SCRIPT_DIR}"
 echo -e "Python            : ${PYTHON}"
 echo -e "Config            : ${CONFIG}"
@@ -190,34 +180,10 @@ else
     step_ok 5
 fi
 
-# ── step 6 — baseline 0 (zero/random imputation) ─────────────────────────────
-step_header 6 "Baseline 0 (Zero/Random Imputation)"
-if $SKIP_BASELINE_ZERO; then
-    step_skip 6
-else
-    "$PYTHON" scripts/baseline_zero.py \
-        --input_dir  data_poisoned \
-        --output_dir data_baseline_zero \
-        --config     "$CONFIG"
-    step_ok 6
-fi
-
-# ── step 7 — knn imputation ───────────────────────────────────────────────────
-step_header 7 "KNN Imputation"
-if $SKIP_KNN; then
-    step_skip 7
-else
-    "$PYTHON" scripts/knn.py \
-        --input_dir  data_poisoned \
-        --output_dir data_knn \
-        --config     "$CONFIG"
-    step_ok 7
-fi
-
-# ── step 8 — main (optuna experiments) ───────────────────────────────────────
-step_header 8 "Main (Optuna Experiments)"
+# ── step 6 — main (optuna experiments) ───────────────────────────────────────
+step_header 6 "Main (Optuna Experiments)"
 if $SKIP_MAIN; then
-    step_skip 8
+    step_skip 6
 else
     # Read benchmark flags from config.yaml so this step stays in sync
     _cfg_flag() {
@@ -227,8 +193,6 @@ else
     [ "$(_cfg_flag run_cp)"            = "true" ] && MAIN_ARGS+=(--run-cp)
     [ "$(_cfg_flag run_saga)"          = "true" ] && MAIN_ARGS+=(--run-saga)
     [ "$(_cfg_flag run_autogluon)"     = "true" ] && MAIN_ARGS+=(--run-autogluon)
-    [ "$(_cfg_flag run_baseline_zero)" = "true" ] && MAIN_ARGS+=(--run-baseline-zero)
-    [ "$(_cfg_flag run_knn)"           = "true" ] && MAIN_ARGS+=(--run-knn)
 
     # Patch stdin so the "Proceed?" prompt is auto-answered when -y is passed
     if $AUTO_YES; then
@@ -236,18 +200,18 @@ else
     else
         "$PYTHON" main.py "${MAIN_ARGS[@]}"
     fi
-    step_ok 8
+    step_ok 6
 fi
 
-# ── step 9 — evaluation (friedman test + cd diagrams) ────────────────────────
-step_header 9 "Evaluation (Friedman Test + Critical-Difference Diagrams)"
+# ── step 7 — evaluation (friedman test + cd diagrams) ────────────────────────
+step_header 7 "Evaluation (Friedman Test + Critical-Difference Diagrams)"
 if $SKIP_EVALUATE; then
-    step_skip 9
+    step_skip 7
 else
     "$PYTHON" scripts/evaluate.py \
         --config     "$CONFIG" \
         --output-dir "$EVAL_OUTPUT_DIR"
-    step_ok 9
+    step_ok 7
 fi
 
 echo ""

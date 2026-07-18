@@ -134,19 +134,19 @@ def fit(
     curriculum_strategy : str, default="exponential"
         Sampling strategy: "linear", "exponential", "step".
     use_gate : str, default="false"
-        Enable input gate layer (learnable feature weighting).
+        Enable input quail layer (learnable feature weighting).
     gate_init : str, default="random"
-        Gate initialization: "random", "ones", "quality" (uses feature_quality).
+        Quail initialization: "random", "ones", "quality" (uses feature_quality).
     feature_quality : np.ndarray, optional
-        Feature quality scores (length = input_dim). Used for gate init and loss weighting.
+        Feature quality scores (length = input_dim). Used for quail init and loss weighting.
     gate_loss_weight : float or str, default=0.01
-        Weight for gate proximal regularization loss.
+        Weight for quail proximal regularization loss.
     gate_anchor_interval : int or str, default=5
-        Update gate anchor every N epochs.
+        Update quail anchor every N epochs.
     gate_quality_weighting : str, default="linear"
         How feature_quality weights anchor loss: "linear", "quadratic", "exp", "inv_exp".
     gate_loss_scheduler : str, default="none"
-        Schedule gate loss weight: "none", "decay", "increase", "cosine".
+        Schedule quail loss weight: "none", "decay", "increase", "cosine".
     device : str, default="auto"
         Device: "auto", "cpu", "cuda", "mps".
     random_seed : int or str, default=42
@@ -167,7 +167,7 @@ def fit(
 
     Examples
     --------
-    >>> from frogdq.nn import build_model
+    >>> from quail.nn import build_model
     >>> model = build_model(input_dim=10, output_dim=2, hidden_neurons=128)
     >>> model, history = fit(
     ...     model, X_train, y_train, X_val, y_val,
@@ -181,7 +181,7 @@ def fit(
     ...     use_curriculum="true", sample_quality=sample_quality
     ... )
 
-    >>> # With gate layer
+    >>> # With quail layer
     >>> feature_quality = np.array([0.9, 0.7, 0.8, ...])  # Quality per feature
     >>> model, history = fit(
     ...     model, X_train, y_train, X_val, y_val,
@@ -227,7 +227,7 @@ def fit(
     if verbose > 0:
         print(f"Using device: {device}")
 
-    # Wrap model with gate layer if requested
+    # Wrap model with quail layer if requested
     original_model = model
     if use_gate:
         input_dim = X_train.shape[1]
@@ -238,7 +238,7 @@ def fit(
             feature_quality=feature_quality,
         )
         if verbose > 0:
-            print(f"Added gate layer with '{gate_init}' initialization")
+            print(f"Added quail layer with '{gate_init}' initialization")
 
     # Move model to device
     model = model.to(device)
@@ -278,7 +278,7 @@ def fit(
         model=model,
         learning_rate=learning_rate,
         weight_decay=weight_decay,
-        use_gate=use_gate,  # FIX 1.4: gate gets its own param group with weight_decay=0
+        use_gate=use_gate,  # FIX 1.4: quail gets its own param group with weight_decay=0
     )
 
     # Setup learning rate scheduler
@@ -291,7 +291,7 @@ def fit(
         factor=lr_scheduler_factor,
     )
 
-    # Setup gate loss scheduler
+    # Setup quail loss scheduler
     gate_loss_scheduler_fn = _get_gate_loss_scheduler(
         scheduler_name=gate_loss_scheduler_str,
         initial_weight=gate_loss_weight_init,
@@ -328,7 +328,7 @@ def fit(
             history[f"{split}_mae"] = []
             history[f"{split}_r2"] = []
 
-    # Add gate history if using gates
+    # Add quail history if using quail
     if use_gate:
         history["gate_weights"] = []
         history["gate_loss_weight"] = []
@@ -338,12 +338,12 @@ def fit(
     best_val_metric = float("-inf")  # Higher is better for both F1 and R2
     gate_quality_weights = None
 
-    # Prepare gate quality weights and fixed anchor if using gate
+    # Prepare quail quality weights and fixed anchor if using quail
     # FIX 1.2: gate_anchor is set once before training and never updated.
-    # When quality is available it equals the quality vector so gates are
+    # When quality is available it equals the quality vector so quail are
     # pulled toward their reliability values throughout the entire run.
-    # When quality is absent we anchor to the initial gate values so the
-    # gate at least stays near its starting point.
+    # When quality is absent we anchor to the initial quail values so the
+    # quail at least stays near its starting point.
     gate_anchor = None
     if use_gate:
         if feature_quality is not None:
@@ -360,7 +360,7 @@ def fit(
     primary_metric = "f1" if task == "classification" else "r2"
 
     for epoch in range(epochs):
-        # Update gate loss weight
+        # Update quail loss weight
         current_gate_loss_weight = gate_loss_scheduler_fn(epoch) if use_gate else 0.0
         # FIX 1.2: anchor is fixed — no per-epoch reset here
 
@@ -430,7 +430,7 @@ def fit(
             for metric_name, metric_value in test_metrics.items():
                 history[f"test_{metric_name}"].append(metric_value)
 
-        # Record gate weights
+        # Record quail weights
         if use_gate:
             gate_weights = model.gate.data.cpu().numpy()  # FIX 1.1: Parameter vector, not diagonal of matrix
             history["gate_weights"].append(gate_weights.copy())
@@ -449,7 +449,7 @@ def fit(
                 msg += f" - test_loss: {test_loss:.4f} - test_{primary_metric}: {test_metrics[primary_metric]:.4f}"
             msg += f" - lr: {current_lr:.6f}"
             if use_gate:
-                msg += f" - gate_loss_wt: {current_gate_loss_weight:.6f}"
+                msg += f" - quail_loss_wt: {current_gate_loss_weight:.6f}"
             print(msg)
 
         # Save best model (higher is better for both F1 and R2)
@@ -474,7 +474,7 @@ def fit(
 
 
 class GatedModel(nn.Module):
-    """Wrapper that adds a learnable gate layer to the input."""
+    """Wrapper that adds a learnable quail layer to the input."""
 
     def __init__(
         self,
@@ -668,7 +668,7 @@ def _compute_gate_quality_weights(
     weighting_strategy: str,
 ) -> np.ndarray:
     """
-    Compute weights for gate anchor loss based on feature quality.
+    Compute weights for quail anchor loss based on feature quality.
 
     High quality features get less anchor loss (more freedom to adapt).
     Formula: weight = f(1 - feature_quality)
@@ -690,7 +690,7 @@ def _compute_gate_quality_weights(
         # Inverse exponential: 1 - exp(-2 * inv_quality)
         weights = 1 - np.exp(-2 * inv_quality)
     else:
-        raise ValueError(f"Unknown gate quality weighting strategy: {weighting_strategy}")
+        raise ValueError(f"Unknown quail quality weighting strategy: {weighting_strategy}")
 
     return weights
 
@@ -700,7 +700,7 @@ def _get_gate_loss_scheduler(
     initial_weight: float,
     epochs: int,
 ) -> callable:
-    """Get gate loss weight scheduler function."""
+    """Get quail loss weight scheduler function."""
     if scheduler_name == "none":
         return lambda epoch: initial_weight
     elif scheduler_name == "decay":
@@ -713,7 +713,7 @@ def _get_gate_loss_scheduler(
         # Cosine decay
         return lambda epoch: initial_weight * (1 + np.cos(np.pi * epoch / epochs)) / 2
     else:
-        raise ValueError(f"Unknown gate loss scheduler: {scheduler_name}")
+        raise ValueError(f"Unknown quail loss scheduler: {scheduler_name}")
 
 
 def _get_loss_function(
@@ -754,7 +754,7 @@ def _get_optimizer(
     use_gate: bool = False,
 ) -> torch.optim.Optimizer:
     """Get optimizer."""
-    # FIX 1.4: gate has its own dedicated regularizer (L_gate) so it must NOT also
+    # FIX 1.4: quail has its own dedicated regularizer (L_quail) so it must NOT also
     # be penalized by weight decay or L1, which would fight the quality prior.
     if use_gate and isinstance(model, GatedModel):
         gate_params = [model.gate]
@@ -864,7 +864,7 @@ def _train_epoch(
             loss = criterion(outputs, batch_y)
 
         # Add L1 regularization if enabled
-        # FIX 1.4: exclude gate — it has its own dedicated regularizer (L_gate)
+        # FIX 1.4: exclude quail — it has its own dedicated regularizer (L_quail)
         if l1_lambda > 0:
             if use_gate and isinstance(model, GatedModel):
                 l1_norm = sum(p.abs().sum() for n, p in model.named_parameters() if n != "gate")
@@ -872,7 +872,7 @@ def _train_epoch(
                 l1_norm = sum(p.abs().sum() for p in model.parameters())
             loss = loss + l1_lambda * l1_norm
 
-        # Add gate proximal loss if enabled
+        # Add quail proximal loss if enabled
         if use_gate and gate_anchor is not None and gate_loss_weight > 0:
             # FIX 1.1: model.gate is now a D-dim Parameter vector, not a D×D Linear
             # FIX 1.2: gate_anchor is a fixed quality target set before training begins

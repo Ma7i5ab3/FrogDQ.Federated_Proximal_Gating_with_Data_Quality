@@ -32,7 +32,7 @@ from elo_ratings import (
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from frogdq.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_config_token
+from quail.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_config_token
 
 HERE = Path(__file__).resolve().parent
 REPORTS_DIR = HERE / "reports"

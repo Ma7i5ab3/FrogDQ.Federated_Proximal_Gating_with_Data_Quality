@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-gate_analysis.py — Statistical evidence for the Proximal Gating approach.
+quail_analysis.py — Statistical evidence for the Proximal Gating approach.
 
 Loads seed-level data from the Optuna database and produces:
-  1. Statistical comparison: Gate vs Baseline (Wilcoxon signed-rank, effect size)
+  1. Statistical comparison: Quail vs Baseline (Wilcoxon signed-rank, effect size)
   2. Per-dataset delta table (printable LaTeX)
-  3. Box/strip plots of Δ F1 (Gate − Baseline) and gate vs all competitors
+  3. Box/strip plots of Δ F1 (Quail − Baseline) and quail vs all competitors
   4. Noise robustness: relative degradation from clean baseline per method
-  5. Gate behaviour analysis: sparsity, change rate, gate_std per dataset
+  5. Quail behaviour analysis: sparsity, change rate, gate_std per dataset
   6. Training efficiency: epochs-to-90% across methods
   7. Critical Difference (rank-based) plot for all five methods
   8. Post-hoc Nemenyi test following the Friedman test (pairwise significance)
 
 Usage
 -----
-    python gate_analysis.py
-    python gate_analysis.py --metric accuracy
-    python gate_analysis.py --metric auc --latex
-    python gate_analysis.py --comparison-methods baseline gate saga catboost_dirty
+    python quail_analysis.py
+    python quail_analysis.py --metric accuracy
+    python quail_analysis.py --metric auc --latex
+    python quail_analysis.py --comparison-methods baseline gate saga catboost_dirty
 
 Every competitor list in this file can be restricted to a chosen subset of
 methods via --comparison-methods (or the comparison_methods key in
-config.yaml) — see frogdq/comparison_methods.py for the full list of keys.
+config.yaml) — see quail/comparison_methods.py for the full list of keys.
 The "Clean" reference stays on regardless of this setting, since the
 noise-robustness analysis here is built around measuring degradation *from*
 clean.
@@ -45,7 +45,7 @@ import scikit_posthocs as sp
 from scipy import stats
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from frogdq.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_config_token
+from quail.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_config_token
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 warnings.filterwarnings("ignore")
@@ -62,11 +62,11 @@ STORAGE = f"sqlite:///{DB_PATH.resolve()}"
 
 _RE = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-    r"_(?P<config>curr[01]_gate[01]|ag|saga|cp|baseline_zero|knn)$"
+    r"_(?P<config>curr[01]_gate[01]|ag|saga|cp)$"
 )
 
 # CatBoost is a standalone model baseline: study names are
-# {dataset}_{data_mode}_catboost (no model_type/curr/gate suffix), so it
+# {dataset}_{data_mode}_catboost (no model_type/curr/quail suffix), so it
 # needs its own pattern. Its "config" is synthesized as catboost_clean /
 # catboost_dirty in load_seed_data() below.
 _RE_CATBOOST = re.compile(
@@ -77,7 +77,7 @@ CONFIG_LABELS = {
     "curr0_gate0": "Standard prep",
     "curr1_gate0": "Curriculum",
     "curr0_gate1": "QuAIL",
-    "curr1_gate1": "+ Gate + Curr",
+    "curr1_gate1": "+ Quail + Curr",
     "saga":        "Saga++",
     "cp":          "CP prep",
     "ag":          "AutoGluon",
@@ -95,7 +95,7 @@ COLORS = {
     "CatBoost Dirty": "#8e44ad",
 }
 
-# comparison_methods selection (canonical keys from frogdq.comparison_methods),
+# comparison_methods selection (canonical keys from quail.comparison_methods),
 # set once by __main__ from --comparison-methods / config.yaml. None = all
 # methods. Every one of this file's hardcoded competitor lists is filtered
 # through _filter_methods()/_filter_tokens() below, EXCEPT the "Clean"
@@ -137,8 +137,8 @@ def load_seed_data(metric: str = "f1") -> pd.DataFrame:
     Load per-seed results from the best trial of every matched study.
 
     Returns one row per (study × seed). Columns include the chosen
-    performance metric, training-convergence fields, and gate-behaviour
-    fields (NaN for non-gate configs).
+    performance metric, training-convergence fields, and quail-behaviour
+    fields (NaN for non-quail configs).
     """
     perf_key   = f"test_{metric}"
     gate_keys  = ["final_gate_sparsity", "final_gate_std", "gate_change_rate"]
@@ -282,20 +282,20 @@ def sign_test(x: np.ndarray, y: np.ndarray):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. Statistical comparison: Gate vs all others
+# 1. Statistical comparison: Quail vs all others
 # ─────────────────────────────────────────────────────────────────────────────
 
 def stats_summary(dm: pd.DataFrame, metric_name: str) -> None:
     """
-    Print a statistical summary table: Gate vs every other method,
+    Print a statistical summary table: Quail vs every other method,
     separately for AR and NAR noise modes.
     """
     print("\n" + "═" * 72)
-    print(f"  STATISTICAL COMPARISON — Gate vs competitors  [{metric_name}]")
+    print(f"  STATISTICAL COMPARISON — Quail vs competitors  [{metric_name}]")
     print("═" * 72)
 
     gate_config = "curr0_gate0"   # Baseline
-    test_config = "curr0_gate1"   # + Gate
+    test_config = "curr0_gate1"   # + Quail
 
     for noise_mode in ["ar", "nar"]:
         gate_rows = dm[(dm["config"] == test_config) & (dm["data_mode"] == noise_mode)]
@@ -383,7 +383,7 @@ def plot_deltas(dm: pd.DataFrame, metric_name: str) -> None:
     separately for AR and NAR, one panel per noise mode.
     """
     competitors = _filter_methods([
-        ("curr0_gate1", "+ Gate"),
+        ("curr0_gate1", "+ Quail"),
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
@@ -448,7 +448,7 @@ def plot_noise_robustness(dm: pd.DataFrame, metric_name: str) -> None:
     vs its own clean-baseline reference:
         degradation = (clean_baseline − noisy_method) / clean_baseline
 
-    Positive = method improved vs clean (gate can recover degradation);
+    Positive = method improved vs clean (quail can recover degradation);
     negative = method is *worse* than clean.
     """
     clean = (
@@ -458,7 +458,7 @@ def plot_noise_robustness(dm: pd.DataFrame, metric_name: str) -> None:
 
     methods = _filter_methods([
         ("curr0_gate0", "Baseline"),
-        ("curr0_gate1", "+ Gate"),
+        ("curr0_gate1", "+ Quail"),
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
@@ -520,15 +520,15 @@ def plot_noise_robustness(dm: pd.DataFrame, metric_name: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. Gate behaviour analysis
+# 5. Quail behaviour analysis
 # ─────────────────────────────────────────────────────────────────────────────
 
 def plot_gate_behaviour(dm: pd.DataFrame) -> None:
     """
-    Three scatter/bar panels for gate-specific metrics (only + Gate rows):
+    Three scatter/bar panels for quail-specific metrics (only + Quail rows):
       - final_gate_sparsity per dataset (sorted)
       - gate_change_rate per dataset
-      - Scatter: sparsity vs Δ F1 (Gate − Baseline)
+      - Scatter: sparsity vs Δ F1 (Quail − Baseline)
     """
     gate_ar  = dm[(dm["config"] == "curr0_gate1") & (dm["data_mode"] == "ar")].copy()
     gate_nar = dm[(dm["config"] == "curr0_gate1") & (dm["data_mode"] == "nar")].copy()
@@ -623,7 +623,7 @@ def _plot_training_efficiency_for_pct(dm: pd.DataFrame, metric_name: str, pct: i
     """
     methods = _filter_methods([
         ("curr0_gate0", "Baseline"),
-        ("curr0_gate1", "+ Gate"),
+        ("curr0_gate1", "+ Quail"),
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
@@ -807,7 +807,7 @@ def nemenyi_posthoc(dm: pd.DataFrame, metric_name: str) -> None:
     The Friedman test (already reported by :func:`plot_rank_distribution`)
     only tells us *some* method differs from the others — it does not say
     which pairs. For each noise mode this function restricts to datasets
-    where all five methods are present, re-runs Friedman as a gate, and (only
+    where all five methods are present, re-runs Friedman as a quail, and (only
     if significant at alpha=0.05) runs the pairwise Nemenyi test on ranks.
 
     Prints the full pairwise p-value matrix, lists significant pairs
@@ -906,7 +906,7 @@ def evidence_summary(dm: pd.DataFrame, metric_name: str, latex: bool = False) ->
     """
     methods = _filter_methods([
         ("curr0_gate0", "Baseline"),
-        ("curr0_gate1", "+ Gate"),
+        ("curr0_gate1", "+ Quail"),
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),

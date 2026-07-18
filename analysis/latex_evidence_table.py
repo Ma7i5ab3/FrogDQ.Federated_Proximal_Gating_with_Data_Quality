@@ -21,7 +21,7 @@ One table is produced per noise mode (AR, NAR); pass --split-by-metric to
 instead produce one (much narrower) table per (noise mode, metric). "clean"
 and "catboost_clean" have no AR/NAR variant of their own, so their per-seed
 scores are broadcast into both noise-mode match pools, exactly like
-gate_analysis.py/elo_ratings.py already do for catboost_clean.
+quail_analysis.py/elo_ratings.py already do for catboost_clean.
 
 In every table, the "clean" column (noise-free reference) is always bolded
 and shaded light grey (\\cellcolor{gray!15}); the best mean per (dataset,
@@ -62,7 +62,7 @@ import optuna
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from frogdq.comparison_methods import METHOD_CHOICES, resolve_comparison_methods
+from quail.comparison_methods import METHOD_CHOICES, resolve_comparison_methods
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from elo_ratings import broadcast_catboost_clean, build_matches, load_seed_data
@@ -79,7 +79,7 @@ METRIC_LABELS = {
     "recall": "Recall", "auc": "AUC-ROC",
 }
 
-# canonical comparison_methods key (frogdq.comparison_methods.METHOD_CHOICES)
+# canonical comparison_methods key (quail.comparison_methods.METHOD_CHOICES)
 # -> study-name "config" token used in the Optuna DB. "clean" has no config
 # token of its own (it's curr0_gate0 at data_mode == "clean"); it is given a
 # synthetic token here so it can sit as its own column alongside "baseline"
@@ -94,8 +94,6 @@ CANONICAL_TO_TOKEN: Dict[str, str] = {
     "autogluon":       "ag",
     "saga":            "saga",
     "cp":              "cp",
-    "baseline_zero":   "baseline_zero",
-    "knn":             "knn",
     "catboost_clean":  "catboost_clean",
     "catboost_dirty":  "catboost_dirty",
 }
@@ -105,12 +103,10 @@ CANONICAL_LABELS: Dict[str, str] = {
     "baseline":        "Baseline",
     "curriculum":      "Curriculum",
     "gate":            "QuAIL",
-    "gate_curriculum": "+ Gate + Curr",
+    "gate_curriculum": "+ Quail + Curr",
     "autogluon":       "AutoGluon",
     "saga":            "Saga++",
     "cp":              "CP prep",
-    "baseline_zero":   "Baseline (zero)",
-    "knn":             "KNN",
     "catboost_clean":  "CatBoost Clean",
     "catboost_dirty":  "CatBoost Dirty",
 }

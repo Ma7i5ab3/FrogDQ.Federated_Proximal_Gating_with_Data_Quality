@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AutoGluon data preparation pipeline for FrogDQ benchmarks.
+AutoGluon data preparation pipeline for Quail benchmarks.
 
 Fits AutoGluon Tabular on poisoned datasets (AR/NAR) tuned for Logistic Regression
 (linear) or MLP models, extracts the transformed features, and saves them as
@@ -13,7 +13,7 @@ saved in each NPZ file, so the caller can choose at load time via the
 having to re-run this script.
 
 One NPZ file is produced per (dataset, mode, model_type, seed), using the same
-split logic as ``frogdq/data.load_data()``:  train+val from ``data_poisoned/``
+split logic as ``quail/data.load_data()``:  train+val from ``data_poisoned/``
 and test from ``data_poisoned/test/`` (always the clean held-out split).
 
 Usage:
@@ -69,7 +69,7 @@ except ImportError:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Data loading (mirrors frogdq/data.py split logic for consistency)
+# Data loading (mirrors quail/data.py split logic for consistency)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _load_raw_splits(
@@ -433,7 +433,7 @@ def _discover_datasets(poisoned_dir: str, modes: List[str]) -> List[str]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Pre-compute AutoGluon features for FrogDQ Optuna benchmarks",
+        description="Pre-compute AutoGluon features for Quail Optuna benchmarks",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -527,7 +527,7 @@ def main() -> None:
     if datasets == "all":
         # Lazy import to avoid circular dependency when running standalone
         sys.path.insert(0, str(Path(__file__).parent.parent))
-        from frogdq.data import get_datasets
+        from quail.data import get_datasets
         datasets = get_datasets(args.data_dir)["dataset_name"].tolist()
 
     output_dir = Path(args.output_dir)

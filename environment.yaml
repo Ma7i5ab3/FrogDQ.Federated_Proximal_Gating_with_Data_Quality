@@ -1,4 +1,4 @@
-name: frogdq
+name: quail
 channels:
   - defaults
   - conda-forge

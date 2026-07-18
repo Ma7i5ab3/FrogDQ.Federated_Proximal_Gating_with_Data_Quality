@@ -5,10 +5,10 @@ module intentionally does NOT run any imputation, one-hot encoding, or
 scaling: numerical columns keep their NaN values (CatBoost bins missing
 values as their own split candidate) and categorical columns are passed as
 native strings (CatBoost treats each category as its own value). This is a
-deliberate contrast with the linear/MLP pipeline in ``frogdq.training``,
-which relies on ``frogdq.preprocessing.TabularPreprocessor``.
+deliberate contrast with the linear/MLP pipeline in ``quail.training``,
+which relies on ``quail.preprocessing.TabularPreprocessor``.
 
-Use ``frogdq.data.load_raw_data`` to obtain the unprocessed splits this
+Use ``quail.data.load_raw_data`` to obtain the unprocessed splits this
 module expects.
 """
 
@@ -19,7 +19,7 @@ import pandas as pd
 from catboost import CatBoostClassifier, CatBoostRegressor, Pool
 from sklearn.metrics import log_loss, mean_squared_error
 
-from frogdq.training import _compute_metrics
+from quail.training import _compute_metrics
 
 # CatBoost's Pool cannot accept a float NaN for categorical columns (only
 # int/string values are allowed there); missing categories are given this
@@ -66,11 +66,11 @@ def fit_catboost(
     Parameters
     ----------
     X_train, X_val, X_test : pd.DataFrame
-        Raw feature frames (as returned by ``frogdq.data.load_raw_data``).
+        Raw feature frames (as returned by ``quail.data.load_raw_data``).
         ``X_test`` may be None.
     y_train, y_val, y_test : np.ndarray
         Label arrays (already label-encoded to 0..n-1 for classification by
-        the caller, matching the rest of the FrogDQ pipeline).
+        the caller, matching the rest of the Quail pipeline).
     cat_features : list of str
         Names of the categorical columns in ``X_train`` (passed to CatBoost's
         ``Pool`` so it can apply its native categorical handling).
@@ -92,7 +92,7 @@ def fit_catboost(
         The fitted model (best iteration restored via ``use_best_model``).
     history : dict
         Single-entry-per-key metrics dict shaped like the histories produced
-        by ``frogdq.training.fit`` (train/val/test loss + task metrics), so
+        by ``quail.training.fit`` (train/val/test loss + task metrics), so
         it flows through the same downstream aggregation/reporting code used
         for the linear/MLP baselines.
     """

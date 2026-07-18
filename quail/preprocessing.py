@@ -403,7 +403,7 @@ class TabularPreprocessor:
             [
                 # keep_empty_features=True retains all-NaN columns (e.g. num_TBG in sick)
                 # as zeros after scaling, preserving the feature count expected by
-                # get_feature_names_out() and the gate's feature_quality array.
+                # get_feature_names_out() and the quail's feature_quality array.
                 ("imputer", SimpleImputer(strategy=self.numerical_impute_strategy, keep_empty_features=True)),
                 ("scaler", StandardScaler()),
             ]
@@ -585,7 +585,7 @@ class TabularPreprocessor:
         # dropped by SimpleImputer (e.g. all-NaN features like 'num_TBG' in the
         # sick dataset) are not included. Without this, get_feature_names_out()
         # would report N names while transform() returns N-1 columns, causing a
-        # tensor size mismatch in the gate loss computation.
+        # tensor size mismatch in the quail loss computation.
         raw_names = self.preprocessor_.get_feature_names_out()
         # Strip the transformer-name prefix added by ColumnTransformer (e.g. 'num__' / 'cat__')
         self.feature_names_out_ = [name.split("__", 1)[1] for name in raw_names]

@@ -2,7 +2,7 @@
 """
 elo_ratings.py — Bradley-Terry / Elo rating evaluation across methods.
 
-Complements the rank-based Friedman/Nemenyi analysis in gate_analysis.py with
+Complements the rank-based Friedman/Nemenyi analysis in quail_analysis.py with
 a pairwise-comparison rating. Every pair of methods that shares a (dataset,
 seed) under a given noise mode is one "match": whichever has the higher
 metric on that seed wins (a difference within --tie-eps counts as a draw,
@@ -52,7 +52,7 @@ from scipy.optimize import minimize
 from scipy.special import expit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from frogdq.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_config_token
+from quail.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_config_token
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 warnings.filterwarnings("ignore")
@@ -69,7 +69,7 @@ STORAGE = f"sqlite:///{DB_PATH.resolve()}"
 
 _RE = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-    r"_(?P<config>curr[01]_gate[01]|ag|saga|cp|baseline_zero|knn)$"
+    r"_(?P<config>curr[01]_gate[01]|ag|saga|cp)$"
 )
 _RE_CATBOOST = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_catboost$"
@@ -79,7 +79,7 @@ CONFIG_LABELS = {
     "curr0_gate0": "Standard prep",
     "curr1_gate0": "Curriculum",
     "curr0_gate1": "QuAIL",
-    "curr1_gate1": "+ Gate + Curr",
+    "curr1_gate1": "+ Quail + Curr",
     "saga":        "Saga++",
     "cp":          "CP prep",
     "ag":          "AutoGluon",
@@ -114,7 +114,7 @@ Path("plots").mkdir(exist_ok=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Data loading (same per-seed shape as gate_analysis.py's load_seed_data)
+# Data loading (same per-seed shape as quail_analysis.py's load_seed_data)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_seed_data(metric: str = "f1", field: Optional[str] = None) -> pd.DataFrame:
@@ -178,7 +178,7 @@ def load_seed_data(metric: str = "f1", field: Optional[str] = None) -> pd.DataFr
 
 def broadcast_catboost_clean(seed_df: pd.DataFrame) -> pd.DataFrame:
     """CatBoost-Clean has no AR/NAR variant; duplicate its per-seed rows into
-    synthetic "ar"/"nar" rows, exactly like gate_analysis.py does at the
+    synthetic "ar"/"nar" rows, exactly like quail_analysis.py does at the
     dataset-mean level, so it can sit in the same per-noise-mode rating pool
     as every other method (each seed keeps its own clean-run metric)."""
     clean_rows = seed_df[seed_df["config"] == "catboost_clean"]
@@ -487,7 +487,7 @@ if __name__ == "__main__":
                               "config.yaml's comparison_methods).")
     parser.add_argument("--tie-eps", type=float, default=1e-4,
                          help="Metric difference below which a dataset counts as a draw "
-                              "(default: 1e-4, matching gate_analysis.py's sign_test).")
+                              "(default: 1e-4, matching quail_analysis.py's sign_test).")
     parser.add_argument("--reg", type=float, default=0.5,
                          help="Ridge regularisation strength on Bradley-Terry strengths "
                               "(default: 0.5; guards against undefeated/always-losing methods).")

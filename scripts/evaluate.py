@@ -29,7 +29,7 @@ import pandas as pd
 from scipy.stats import friedmanchisquare
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from frogdq.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_label
+from quail.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_label
 
 try:
     import scikit_posthocs as sp
@@ -85,7 +85,7 @@ def build_results(combined_results, selected_methods=None):
     Parameters
     ----------
     selected_methods : list of str, optional
-        Canonical method keys (see frogdq.comparison_methods.METHOD_CHOICES)
+        Canonical method keys (see quail.comparison_methods.METHOD_CHOICES)
         to restrict to. None (default) includes every method found.
     """
     results = {}
@@ -249,7 +249,7 @@ def run_evaluation(results_csv: Path, output_dir: Path, selected_methods=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Evaluate FrogDQ experiment results: Friedman test + CD diagrams",
+        description="Evaluate Quail experiment results: Friedman test + CD diagrams",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )

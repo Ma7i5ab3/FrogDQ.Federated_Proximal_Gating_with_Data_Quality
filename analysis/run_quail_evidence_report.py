@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """
-run_gate_evidence_report.py — Reproduce the full Gate-vs-Baseline evidence
+run_quail_evidence_report.py — Reproduce the full Quail-vs-Baseline evidence
 report end to end.
 
 Runs, in order:
   1. optuna_progress.py       --metric {metric}
-  2. gate_analysis.py         --metric {metric} --latex   (includes Nemenyi post-hoc)
+  2. quail_analysis.py        --metric {metric} --latex   (includes Nemenyi post-hoc)
   3. elo_ratings.py           --metric {metric}
   4. latex_evidence_table.py  (all metrics x comparison_methods, per dataset)
   5. elo_baseline_table.py    (metric x comparison_methods Elo table, CCAR/CNAR)
 
 Captures both scripts' output verbatim, re-derives the headline numbers
-(Friedman p-values, best-ranked method, Gate-vs-Baseline win rate and
+(Friedman p-values, best-ranked method, Quail-vs-Baseline win rate and
 Wilcoxon test) directly from the data, and writes everything to a single
 Markdown report under analysis/reports/. All plots referenced in the report
 are written to analysis/plots/ by the two scripts above.
 
 Usage
 -----
-    python run_gate_evidence_report.py
-    python run_gate_evidence_report.py --metric accuracy
-    python run_gate_evidence_report.py --comparison-methods baseline gate saga catboost_dirty
+    python run_quail_evidence_report.py
+    python run_quail_evidence_report.py --metric accuracy
+    python run_quail_evidence_report.py --comparison-methods baseline gate saga catboost_dirty
 """
 
 import argparse
@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from frogdq.comparison_methods import METHOD_CHOICES, resolve_comparison_methods
+from quail.comparison_methods import METHOD_CHOICES, resolve_comparison_methods
 
 HERE = Path(__file__).resolve().parent
 REPORTS_DIR = HERE / "reports"
@@ -73,9 +73,9 @@ def run_script(args_list: list) -> str:
 
 
 def key_findings(metric: str, selected_methods=None) -> str:
-    """Re-derive the headline numbers using gate_analysis's own functions."""
+    """Re-derive the headline numbers using quail_analysis's own functions."""
     sys.path.insert(0, str(HERE))
-    import gate_analysis as ga
+    import quail_analysis as ga
 
     seed_df = ga.load_seed_data(metric=metric)
     dm = ga.dataset_means(seed_df)
@@ -120,7 +120,7 @@ def key_findings(metric: str, selected_methods=None) -> str:
         lines.append(
             f"- **{noise_mode.upper()}** (N={len(pivot_full)} datasets, {len(available)} methods): "
             f"Friedman p={p_friedman:.4f} — best mean rank is **{best_label}** "
-            f"({mean_ranks[best_method]:.2f}). Gate vs Baseline win/draw/loss = "
+            f"({mean_ranks[best_method]:.2f}). Quail vs Baseline win/draw/loss = "
             f"{w}/{d}/{l}, Wilcoxon p={p_w:.4f}, effect size |r|={abs(r_w):.3f}."
         )
 
@@ -143,7 +143,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--comparison-methods", nargs="+", choices=METHOD_CHOICES, default=None,
-        help="Restrict the whole report (optuna_progress.py, gate_analysis.py, and "
+        help="Restrict the whole report (optuna_progress.py, quail_analysis.py, and "
              "the key-findings summary below) to these methods (overrides "
              "config.yaml's comparison_methods).",
     )
@@ -152,7 +152,7 @@ def main() -> None:
     selected_methods = resolve_comparison_methods(args.comparison_methods, args.config)
     extra_args = ["--comparison-methods", *selected_methods] if selected_methods else []
 
-    # Both optuna_progress.py and gate_analysis.py resolve DB_PATH and
+    # Both optuna_progress.py and quail_analysis.py resolve DB_PATH and
     # "plots/" relative to the current working directory, so anchor it here
     # regardless of where this script was invoked from.
     os.chdir(HERE)
@@ -160,15 +160,15 @@ def main() -> None:
     REPORTS_DIR.mkdir(exist_ok=True)
     (HERE / "plots").mkdir(exist_ok=True)
 
-    print(f"Reproducing Gate-vs-Baseline evidence report  [{metric_name}]\n")
+    print(f"Reproducing Quail-vs-Baseline evidence report  [{metric_name}]\n")
     if selected_methods is not None:
         print(f"Restricting to comparison_methods: {selected_methods}\n")
 
     print(f"── Step 1/5: optuna_progress.py --metric {args.metric} ──")
     out1 = run_script(["optuna_progress.py", "--metric", args.metric, "--complete-only", *extra_args])
 
-    print(f"\n── Step 2/5: gate_analysis.py --metric {args.metric} --latex ──")
-    out2 = run_script(["gate_analysis.py", "--metric", args.metric, "--latex", *extra_args])
+    print(f"\n── Step 2/5: quail_analysis.py --metric {args.metric} --latex ──")
+    out2 = run_script(["quail_analysis.py", "--metric", args.metric, "--latex", *extra_args])
 
     print(f"\n── Step 3/5: elo_ratings.py --metric {args.metric} --latex ──")
     out3 = run_script(["elo_ratings.py", "--metric", args.metric])

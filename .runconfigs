@@ -1,3 +1,3 @@
-image_name: archetti/frogdq:0
-container_name: {user}_frogdq_GPU{args.gpu}_{date}
-docker_args: -p 8989:8888 -m 48G -v ~/frog-dq/.local:/.local -v ~/frog-dq/.cache:/.cache -v ~/frog-dq/.config:/.config -v ~/storage_megaverse/frogdq/results:/exp/results -v ~/storage_megaverse/frogdq/data:/exp/data -v ~/storage_megaverse/frogdq/data_poisoned:/exp/data_poisoned
+image_name: archetti/quail:0
+container_name: {user}_quail_GPU{args.gpu}_{date}
+docker_args: -p 8989:8888 -m 48G -v ~/quail/.local:/.local -v ~/quail/.cache:/.cache -v ~/quail/.config:/.config -v ~/storage_megaverse/quail/results:/exp/results -v ~/storage_megaverse/quail/data:/exp/data -v ~/storage_megaverse/quail/data_poisoned:/exp/data_poisoned

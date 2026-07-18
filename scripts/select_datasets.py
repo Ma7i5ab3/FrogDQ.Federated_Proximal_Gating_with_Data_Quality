@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Dataset subset selection for FrogDQ experiments.
+Dataset subset selection for Quail experiments.
 
 Three configurable, sequential filtering steps:
 
@@ -34,8 +34,8 @@ from loguru import logger
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from frogdq.data import get_datasets
-from frogdq.preprocessing import TabularPreprocessor
+from quail.data import get_datasets
+from quail.preprocessing import TabularPreprocessor
 from scripts.poison_data import DataPoisoner
 
 logger.remove()
@@ -325,7 +325,7 @@ def step3_pilot_filter(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Select a meaningful dataset subset for FrogDQ experiments.",
+        description="Select a meaningful dataset subset for Quail experiments.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main entry point for running FrogDQ hyperparameter optimization experiments.
+Main entry point for running Quail hyperparameter optimization experiments.
 
 This script provides a command-line interface for running Optuna-based
 hyperparameter optimization across different model configurations, data
@@ -36,14 +36,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from frogdq.data import get_datasets
-from frogdq.optimization import OptunaExperiment, load_config
+from quail.data import get_datasets
+from quail.optimization import OptunaExperiment, load_config
 
 
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description='Run FrogDQ hyperparameter optimization experiments',
+        description='Run Quail hyperparameter optimization experiments',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
@@ -140,7 +140,7 @@ def parse_args():
     parser.add_argument(
         '--reuse-params',
         action='store_true',
-        help='For MLP with curriculum/gates on AR/NAR, reuse baseline (no curr/gate) hyperparameters from same data mode. Reduces trials for curriculum-only (3 params) and combined (8 params).'
+        help='For MLP with curriculum/quail on AR/NAR, reuse baseline (no curr/quail) hyperparameters from same data mode. Reduces trials for curriculum-only (3 params) and combined (8 params).'
     )
 
     parser.add_argument(
@@ -197,38 +197,6 @@ def parse_args():
         '--saga-data-dir',
         type=str,
         help='Directory containing Saga++-cleaned data (default: data_cleaned_saga)'
-    )
-
-    parser.add_argument(
-        '--run-baseline-zero',
-        action='store_true',
-        help=(
-            'Include Baseline 0 (zero/random imputation) as a data-preparation benchmark. '
-            'Runs experiments on AR/NAR modes using Baseline-0-imputed data. '
-            'Requires running scripts/baseline_zero.py first.'
-        )
-    )
-
-    parser.add_argument(
-        '--baseline-zero-data-dir',
-        type=str,
-        help='Directory containing Baseline-0-imputed data (default: data_baseline_zero)'
-    )
-
-    parser.add_argument(
-        '--run-knn',
-        action='store_true',
-        help=(
-            'Include KNN imputation as a data-preparation benchmark. '
-            'Runs experiments on AR/NAR modes using KNN-imputed data. '
-            'Requires running scripts/knn.py first.'
-        )
-    )
-
-    parser.add_argument(
-        '--knn-data-dir',
-        type=str,
-        help='Directory containing KNN-imputed data (default: data_knn)'
     )
 
     parser.add_argument(
@@ -374,14 +342,6 @@ def main():
         config['run_saga'] = True
     if args.saga_data_dir:
         config['saga_data_dir'] = args.saga_data_dir
-    if args.run_baseline_zero:
-        config['run_baseline_zero'] = True
-    if args.baseline_zero_data_dir:
-        config['baseline_zero_data_dir'] = args.baseline_zero_data_dir
-    if args.run_knn:
-        config['run_knn'] = True
-    if args.knn_data_dir:
-        config['knn_data_dir'] = args.knn_data_dir
     if args.run_catboost:
         config['run_catboost'] = True
 
@@ -408,7 +368,7 @@ def main():
     print(f"Data modes: {config['data_modes']}")
     print(f"Model types: {config['model_types']}")
     print(f"Curriculum settings: {config['curriculum_settings']} (applied to all model types on AR/NAR)")
-    print(f"Gate settings: {config['gate_settings']} (applied to all model types on AR/NAR)")
+    print(f"Quail settings: {config['gate_settings']} (applied to all model types on AR/NAR)")
     print(f"Trials per config: {config['n_trials']}")
     print(f"Seeds per trial: {config['n_seeds']}")
     print(f"Parallel jobs (seeds): {config['n_jobs_seeds']}")
@@ -431,14 +391,6 @@ def main():
     if config.get('run_saga'):
         print(f"  - Cleaned data dir: {config.get('saga_data_dir', 'data_cleaned_saga')}")
         print(f"  - To pre-compute: python scripts/saga.py")
-    print(f"Baseline 0 (zero/random) benchmark: {config.get('run_baseline_zero', False)}")
-    if config.get('run_baseline_zero'):
-        print(f"  - Imputed data dir: {config.get('baseline_zero_data_dir', 'data_baseline_zero')}")
-        print(f"  - To pre-compute: python scripts/baseline_zero.py")
-    print(f"KNN imputation benchmark: {config.get('run_knn', False)}")
-    if config.get('run_knn'):
-        print(f"  - Imputed data dir: {config.get('knn_data_dir', 'data_knn')}")
-        print(f"  - To pre-compute: python scripts/knn.py")
     print(f"CatBoost benchmark: {config.get('run_catboost', False)}")
     if config.get('run_catboost'):
         print(f"  - Model baseline (independent of model_types), no precomputation needed")
@@ -451,18 +403,14 @@ def main():
     has_clean = 'clean' in config['data_modes']
     n_models = len(config['model_types'])
 
-    # Per model per AR/NAR mode: poisoned + curriculum + gate + gate+curriculum = 4 standard
-    # + autogluon (opt) + cp (opt) + saga (opt) + baseline_zero (opt) + knn (opt)
+    # Per model per AR/NAR mode: poisoned + curriculum + quail + quail+curriculum = 4 standard
+    # + autogluon (opt) + cp (opt) + saga (opt)
     per_model_ar_nar = 4
     if config.get('run_autogluon'):
         per_model_ar_nar += 1
     if config.get('run_cp'):
         per_model_ar_nar += 1
     if config.get('run_saga'):
-        per_model_ar_nar += 1
-    if config.get('run_baseline_zero'):
-        per_model_ar_nar += 1
-    if config.get('run_knn'):
         per_model_ar_nar += 1
 
     clean_configs = n_datasets * n_models * int(has_clean)
@@ -480,17 +428,13 @@ def main():
     print(f"\nConfiguration breakdown (per model: Linear + MLP):")
     print(f"  Clean baseline: {clean_configs} configs")
     print(f"  Per AR/NAR mode per model:")
-    print(f"    - Poisoned baseline, curriculum, gate, gate+curriculum: 4 standard configs")
+    print(f"    - Poisoned baseline, curriculum, quail, quail+curriculum: 4 standard configs")
     if config.get('run_autogluon'):
         print(f"    - AutoGluon baseline: 1 config")
     if config.get('run_cp'):
         print(f"    - Custom pipeline (CP) baseline: 1 config")
     if config.get('run_saga'):
         print(f"    - Saga baseline: 1 config")
-    if config.get('run_baseline_zero'):
-        print(f"    - Baseline 0 (zero/random imputation): 1 config")
-    if config.get('run_knn'):
-        print(f"    - KNN imputation baseline: 1 config")
     print(f"  AR/NAR configs total: {ar_nar_configs}")
     if config.get('run_catboost'):
         print(f"  CatBoost configs (independent of model_types): "

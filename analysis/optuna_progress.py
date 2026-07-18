@@ -16,9 +16,9 @@ CLI arguments
 --convergence
     Also produce HPO convergence plots (best-so-far curves, convergence AUC,
     best-trial position).  Requires loading all trials, so it is slower.
---comparison-methods {clean,baseline,curriculum,gate,gate_curriculum,autogluon,saga,cp,baseline_zero,knn,catboost_clean,catboost_dirty}
+--comparison-methods {clean,baseline,curriculum,gate,gate_curriculum,autogluon,saga,cp,catboost_clean,catboost_dirty}
     Restrict every plot/table to these methods (overrides config.yaml's
-    comparison_methods; see frogdq/comparison_methods.py).
+    comparison_methods; see quail/comparison_methods.py).
 --config PATH
     Path to config.yaml (default: ../config.yaml), used to read
     comparison_methods when --comparison-methods is omitted.
@@ -40,7 +40,7 @@ python optuna_progress.py --metric precision --complete-only --model-type linear
 # Test F1 + HPO convergence analysis
 python optuna_progress.py --convergence
 
-# Only compare gate vs saga vs catboost
+# Only compare quail vs saga vs catboost
 python optuna_progress.py --comparison-methods clean baseline gate saga catboost_dirty
 """
 
@@ -58,7 +58,7 @@ import math
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from frogdq.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_config_token
+from quail.comparison_methods import METHOD_CHOICES, resolve_comparison_methods, resolve_from_config_token
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 warnings.filterwarnings("ignore")
@@ -74,12 +74,10 @@ CONFIG_LABELS = {
     "curr0_gate0":  "Standard prep",
     "curr1_gate0":  "Curriculum",
     "curr0_gate1":  "QuAIL",
-    "curr1_gate1":  "+ Gate + Curr",
+    "curr1_gate1":  "+ Quail + Curr",
     "ag":           "AutoGluon prep",
     "saga":         "Saga++ prep",
     "cp":           "CP prep",
-    "baseline_zero": "Zero imputation",
-    "knn":          "KNN imputation",
     "catboost_clean": "CatBoost Clean",
     "catboost_dirty":  "CatBoost Dirty",
 }
@@ -91,12 +89,10 @@ BAR_ORDER = [
     "AutoGluon prep",
     "Saga++ prep",
     "CP prep",
-    "Zero imputation",
-    "KNN imputation",
     "CatBoost Clean",
     "CatBoost Dirty",
     "QuAIL",
-    "+ Gate + Curr",
+    "+ Quail + Curr",
 ]
 
 BAR_COLORS = {
@@ -106,12 +102,10 @@ BAR_COLORS = {
     "AutoGluon prep":   "#9b59b6",
     "Saga++ prep":      "#1abc9c",
     "CP prep":          "#f39c12",
-    "Zero imputation":  "#778ca3",
-    "KNN imputation":   "#00acc1",
     "CatBoost Clean":   "#27ae60",
     "CatBoost Dirty":   "#8e44ad",
     "QuAIL":           "#e74c3c",
-    "+ Gate + Curr":    "#2ecc71",
+    "+ Quail + Curr":    "#2ecc71",
 }
 
 NCOLS = 5
@@ -133,8 +127,6 @@ _TIME_KEYS = ["cpu_time", "train_time", "elapsed", "time"]
 
 # Root directories for external preprocessing perf_metrics CSVs
 _PREPROC_DIRS = {
-    "baseline_zero": Path("..") / "data_baseline_zero",
-    "knn":           Path("..") / "data_knn",
     "saga":          Path("..") / "data_cleaned_saga",
     "cp":            Path("..") / "data_cleaned_cp",
     "ag":            Path("..") / "data_autogluon",
@@ -144,7 +136,7 @@ _PREPROC_DIRS = {
 def _load_external_preproc_times() -> dict:
     """
     Load cpu_time_s from preprocessing perf_metrics CSVs written by the
-    standalone scripts (saga.py, knn.py, autogluon.py, baseline_zero.py,
+    standalone scripts (saga.py, autogluon.py,
     data_preparation_pipeline.py).
 
     Returns
@@ -156,7 +148,7 @@ def _load_external_preproc_times() -> dict:
     """
     lookup: dict = {}
 
-    # baseline_zero / knn / saga / cp: metrics/{dataset}_{mode}_perf_metrics.csv
+    # saga / cp: metrics/{dataset}_{mode}_perf_metrics.csv
     for config, base_dir in _PREPROC_DIRS.items():
         if config == "ag":
             continue
@@ -213,11 +205,11 @@ def _load_external_preproc_times() -> dict:
 
 _RE_STANDARD = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-    r"_(?P<config>curr[01]_gate[01]|ag|saga|cp|baseline_zero|knn)$"
+    r"_(?P<config>curr[01]_gate[01]|ag|saga|cp)$"
 )
 
 # CatBoost is a standalone model baseline: study names are
-# {dataset}_{data_mode}_catboost (no model_type/curr/gate suffix). Its
+# {dataset}_{data_mode}_catboost (no model_type/curr/quail suffix). Its
 # "model_type" is kept as a synthetic "catboost" value here and later
 # broadcast into every real model_type by broadcast_catboost() so it shows
 # up as two extra competitor bars ("catboost_clean"/"catboost_dirty") in
@@ -320,8 +312,7 @@ def load_studies(split: str = "test", metric: str = "f1") -> pd.DataFrame:
     * **data_mode**  : ``clean`` | ``ar`` | ``nar``
     * **model_type** : ``linear`` | ``mlp``
     * **config**     : ``curr0_gate0`` | ``curr1_gate0`` | ``curr0_gate1`` |
-                       ``curr1_gate1`` | ``ag`` | ``saga`` | ``cp`` |
-                       ``baseline_zero`` | ``knn``
+                       ``curr1_gate1`` | ``ag`` | ``saga`` | ``cp``
 
     Metrics are read from ``best_trial.user_attrs["seed_results"]``, a list
     of per-seed dicts whose keys follow ``{split}_{metric}`` (e.g.
@@ -417,7 +408,7 @@ def load_studies(split: str = "test", metric: str = "f1") -> pd.DataFrame:
         else:
             train_cpu_mean = float("nan")
 
-        # ── External preprocessing time (heavy script run separately; 0 for gate/curriculum/baseline)
+        # ── External preprocessing time (heavy script run separately; 0 for quail/curriculum/baseline)
         ext_preproc = external_preproc.get(
             (d["dataset"], d["data_mode"], d["config"], d["model_type"]), 0.0
         )
