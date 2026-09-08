@@ -47,6 +47,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import FancyBboxPatch
 import numpy as np
 import pandas as pd
 
@@ -54,7 +55,7 @@ HERE = Path(__file__).resolve().parent
 RESULTS_OLD = HERE.parent / "results_old"
 PLOTS_DIR = HERE / "plots"
 
-PCTS = [10, 20, 30]
+PCTS = [10, 20, 30, 40]
 NOISE_MODES = ["ar", "nar"]
 NOISE_MODE_LABELS = {"ar": "CCAR (AR)", "nar": "CNAR (NAR)"}
 
@@ -218,8 +219,9 @@ def main():
 
     cats_to_plot = [c for c in CATEGORY_ORDER if not (drop_clean and c == "clean")]
     n_cats = len(cats_to_plot)
-    bar_width = 0.9 / n_cats
-    x_base = np.arange(len(PCTS)).astype(float) * 1.15
+    bar_width = 0.96 / n_cats
+    x_base = np.arange(len(PCTS)).astype(float) * 1.22
+    group_half_width = (n_cats * bar_width) / 2 + 0.04
     non_clean = [c for c in cats_to_plot if c != "clean"]
 
     # height_grid[noise_mode][cat] -> list of values, one per pct (NaN if missing)
@@ -241,12 +243,51 @@ def main():
     data_min, data_max = min(all_vals), max(all_vals)
     span = data_max - data_min
     y_lo = max(0.0, data_min - span * 0.05)
-    y_hi = min(1.0, data_max + span * 0.22) if spec["bounded"] else data_max + span * 0.22
+    y_hi = min(1.0, data_max + span * 0.32) if spec["bounded"] else data_max + span * 0.32
 
-    fig, axes = plt.subplots(1, 2, figsize=(15, 7), sharey=True)
+    PANEL_BG = "white"
+    BAR_RADIUS_PX = 4.0  # visual corner radius, in pixels — matches across
+                          # every panel/metric regardless of data scale
 
-    for ax, noise_mode in zip(axes, NOISE_MODES):
+    fig = plt.figure(figsize=(12, 13.5), dpi=200, facecolor="white")
+    gs = fig.add_gridspec(2, 1, height_ratios=[1, 1], hspace=0.10, top=0.89, bottom=0.12)
+    ax_ar = fig.add_subplot(gs[0])
+    ax_nar = fig.add_subplot(gs[1], sharex=ax_ar, sharey=ax_ar)
+    bar_axes = {"ar": ax_ar, "nar": ax_nar}
+
+    x_lo = x_base[0] - group_half_width - 0.15
+    x_hi = x_base[-1] + group_half_width + 0.15
+
+    # ---- upper/lower bar panels: CCAR (AR) then CNAR (NAR) ----
+    for noise_mode in NOISE_MODES:
+        ax = bar_axes[noise_mode]
         grid = height_grid[noise_mode]
+        ax.set_facecolor(PANEL_BG)
+        ax.set_xlim(x_lo, x_hi)
+        ax.set_ylim(y_lo, y_hi)
+
+        # convert a fixed on-screen pixel radius into (asymmetric) data units
+        # so every bar gets the same *visual* rounding, however distorted
+        # the x vs. y data scale is (score metrics span ~0-1, cost metrics
+        # span ~0-200)
+        bbox = ax.get_position()
+        ax_w_px = bbox.width * fig.get_figwidth() * fig.dpi
+        ax_h_px = bbox.height * fig.get_figheight() * fig.dpi
+        data_per_px_x = (x_hi - x_lo) / ax_w_px
+        data_per_px_y = (y_hi - y_lo) / ax_h_px
+        corner_rx = BAR_RADIUS_PX * data_per_px_x
+        corner_aspect = data_per_px_y / data_per_px_x
+
+        def _rounded_bar(xpos, h, width, color, edgecolor, linewidth, zorder):
+            # box starts at y=0 (the true baseline): the bottom two rounded
+            # corners land far below the visible y_lo and get clipped by the
+            # axes, leaving a flat/square baseline with only the top rounded
+            ax.add_patch(FancyBboxPatch(
+                (xpos - width / 2, 0.0), width, h,
+                boxstyle=f"round,pad=0,rounding_size={corner_rx}",
+                mutation_aspect=corner_aspect,
+                linewidth=linewidth, edgecolor=edgecolor, facecolor=color,
+                zorder=zorder, clip_on=True))
 
         for j, pct in enumerate(PCTS):
             clean_h = grid["clean"][j] if not drop_clean else None
@@ -265,7 +306,7 @@ def main():
             # dashed reference line at the Clean level, spanning the group
             if not drop_clean and pd.notna(clean_h):
                 ax.plot([x_base[j] - 0.42, x_base[j] + 0.42], [clean_h, clean_h],
-                        linestyle=(0, (4, 2)), linewidth=1.1, color=CLEAN_LINE_COLOR,
+                        linestyle=(0, (4, 2)), linewidth=1.2, color=CLEAN_LINE_COLOR,
                         zorder=1)
 
             for i, cat in enumerate(cats_to_plot):
@@ -276,59 +317,62 @@ def main():
                 xpos = x_base[j] + offset
                 is_best = (cat == best_cat)
 
-                ax.bar(xpos, h, width=bar_width * 0.92,
-                       color=CATEGORY_COLORS[cat],
-                       edgecolor=BEST_COLOR if is_best else "none",
-                       linewidth=2.2 if is_best else 0,
-                       zorder=2)
+                _rounded_bar(xpos, h, bar_width * 0.96,
+                             color=CATEGORY_COLORS[cat],
+                             edgecolor=BEST_COLOR if is_best else "none",
+                             linewidth=2.4 if is_best else 0,
+                             zorder=3 if cat == "quail" else 2)
 
                 label_color = BEST_COLOR if is_best else INK_PRIMARY
-                ax.text(xpos, h + span * 0.025, f"{h:.{dec}f}", rotation=90,
-                        ha="center", va="bottom", fontsize=7.5,
+                ax.text(xpos, h + span * 0.03, f"{h:.{dec}f}", rotation=90,
+                        ha="center", va="bottom", fontsize=7.2,
                         fontweight="bold" if is_best else "normal",
                         color=label_color, zorder=4)
 
                 if drop_clean and worst_val:
                     pct_of_worst = h / worst_val * 100.0
-                    ax.text(xpos, h + span * 0.115, f"({pct_of_worst:.0f}%)", rotation=90,
-                            ha="center", va="bottom", fontsize=6.5,
+                    ax.text(xpos, h + span * 0.175, f"({pct_of_worst:.0f}%)", rotation=90,
+                            ha="center", va="bottom", fontsize=6.3,
                             color=label_color if is_best else INK_MUTED, zorder=4)
                 elif not drop_clean and cat != "clean" and pd.notna(clean_h):
                     delta = h - clean_h
-                    ax.text(xpos, h + span * 0.115, f"({delta:+.{dec}f})", rotation=90,
-                            ha="center", va="bottom", fontsize=6.5,
+                    ax.text(xpos, h + span * 0.175, f"({delta:+.{dec}f})", rotation=90,
+                            ha="center", va="bottom", fontsize=6.3,
                             color=label_color if is_best else INK_MUTED, zorder=4)
 
+        noise_short = NOISE_MODE_LABELS[noise_mode].split(" ")[0]
         ax.set_xticks(x_base)
-        ax.set_xticklabels([f"{p}%" for p in PCTS])
-        ax.set_xlabel("Poisoning percentage")
-        ax.set_title(NOISE_MODE_LABELS[noise_mode], fontsize=11, fontweight="bold")
+        ax.set_xticklabels([f"{p}%" for p in PCTS], fontsize=10)
+        ax.set_xlabel(f"Poisoning percentage ({noise_short})", fontsize=10.5)
+        ax.set_xlim(x_lo, x_hi)
         ax.set_ylim(y_lo, y_hi)
-        ax.grid(axis="y", linewidth=0.3, alpha=0.5)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-
-    axes[0].set_ylabel(f"Mean {spec['label']}")
+        ax.set_ylabel(f"Mean {spec['label']}", fontsize=10)
+        ax.grid(axis="y", linewidth=0.4, alpha=0.4, zorder=0)
+        ax.set_axisbelow(True)
+        for side in ("top", "right", "left"):
+            ax.spines[side].set_visible(False)
+        ax.tick_params(axis="y", length=0)
+        ax.tick_params(axis="x", length=0)
 
     handles = [plt.Rectangle((0, 0), 1, 1, color=CATEGORY_COLORS[c]) for c in cats_to_plot]
     labels = [CATEGORY_LABELS[c] for c in cats_to_plot]
     if not drop_clean:
-        handles.append(plt.Line2D([0], [0], linestyle=(0, (4, 2)), color=CLEAN_LINE_COLOR, linewidth=1.1))
+        handles.append(plt.Line2D([0], [0], linestyle=(0, (4, 2)), color=CLEAN_LINE_COLOR, linewidth=1.2))
         labels.append("Clean reference")
     best_legend = "Fastest method" if drop_clean else ("Fastest non-clean method" if lower_better else "Best non-clean method")
-    handles.append(plt.Rectangle((0, 0), 1, 1, facecolor="none", edgecolor=BEST_COLOR, linewidth=2.2))
+    handles.append(plt.Rectangle((0, 0), 1, 1, facecolor="none", edgecolor=BEST_COLOR, linewidth=2.4))
     labels.append(best_legend)
     fig.legend(handles, labels, loc="upper center", ncol=4,
-               bbox_to_anchor=(0.5, 1.06), frameon=False, fontsize=9)
+               bbox_to_anchor=(0.5, 0.055), frameon=False, fontsize=9.5,
+               handletextpad=0.6, columnspacing=1.5)
 
     if drop_clean:
-        subtitle = "value shown above each bar; (%) is that bar's share of the slowest method's time"
+        subtitle = "value above each bar; (%) = that bar's share of the slowest method's time"
     else:
-        subtitle = "value shown above each bar; (Δ) is the gap to Clean at that severity"
-    fig.suptitle(f"Main baselines vs. poisoning severity (mean {spec['label']})\n{subtitle}",
-                 fontsize=11.5, fontweight="bold", y=1.17)
+        subtitle = "value above each bar; (Δ) = gap to Clean at that severity"
+    fig.suptitle(f"Main baselines vs. poisoning severity — mean {spec['label']}\n{subtitle}",
+                 fontsize=14, fontweight="bold", y=0.985)
 
-    plt.tight_layout()
     PLOTS_DIR.mkdir(exist_ok=True)
     out = PLOTS_DIR / f"poisoning_pct_comparison_{metric}.png"
     plt.savefig(out, bbox_inches="tight")
