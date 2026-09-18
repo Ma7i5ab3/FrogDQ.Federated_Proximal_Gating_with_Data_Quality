@@ -19,7 +19,13 @@ from joblib import Parallel, delayed
 from optuna.samplers import TPESampler
 from optuna.study import Study
 
-from quail.data import get_datasets, load_cp_data, load_data, load_saga_data
+from quail.data import (
+    get_datasets,
+    load_cp_data,
+    load_data,
+    load_learn2clean_data,
+    load_saga_data,
+)
 from quail.nn import build_model
 from quail.training import fit, set_seed
 
@@ -226,6 +232,12 @@ class OptunaExperiment:
         self.run_cp = config.get('run_cp', False)
         self.cp_data_dir = config.get('cp_data_dir', 'data_cleaned_cp')
 
+        # Learn2Clean benchmark settings
+        self.run_learn2clean = config.get('run_learn2clean', False)
+        self.learn2clean_data_dir = config.get(
+            'learn2clean_data_dir', 'data_cleaned_learn2clean'
+        )
+
         # Base data directories (relative to CWD or absolute)
         self.data_dir = config.get('data_dir', 'data')
         self.poisoned_dir = config.get('poisoned_dir', 'data_poisoned')
@@ -425,6 +437,19 @@ class OptunaExperiment:
                     mode=data_mode,
                     seed=seed,
                     cp_dir=self.cp_data_dir,
+                    clean_val=self.clean_val,
+                    clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
+                )
+            )
+        elif preparation == 'learn2clean':
+            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
+                load_learn2clean_data(
+                    dataset_name=dataset_name,
+                    mode=data_mode,
+                    seed=seed,
+                    learn2clean_dir=self.learn2clean_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
                     data_dir=self.data_dir,
@@ -739,6 +764,8 @@ class OptunaExperiment:
             return f"{dataset_name}_{data_mode}_{model_type}_saga"
         elif preparation == 'cp':
             return f"{dataset_name}_{data_mode}_{model_type}_cp"
+        elif preparation == 'learn2clean':
+            return f"{dataset_name}_{data_mode}_{model_type}_learn2clean"
         else:
             return f"{dataset_name}_{data_mode}_{model_type}_curr{int(use_curriculum)}_gate{int(use_gate)}"
 
@@ -801,6 +828,17 @@ class OptunaExperiment:
                     mode=data_mode,
                     seed=self.seed_start,
                     cp_dir=self.cp_data_dir,
+                    clean_val=self.clean_val,
+                    clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
+                )
+            elif preparation == 'learn2clean':
+                _, (y_train, _, _), _, metadata = load_learn2clean_data(
+                    dataset_name=dataset_name,
+                    mode=data_mode,
+                    seed=self.seed_start,
+                    learn2clean_dir=self.learn2clean_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
                     data_dir=self.data_dir,
@@ -1198,6 +1236,13 @@ class OptunaExperiment:
                             'use_curriculum': False, 'use_gate': False, 'preparation': 'saga',
                         })
 
+                    if self.run_learn2clean:
+                        experiments.append({
+                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
+                            'use_curriculum': False, 'use_gate': False,
+                            'preparation': 'learn2clean',
+                        })
+
                     experiments.append({
                         'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
                         'use_curriculum': True, 'use_gate': False, 'preparation': 'standard',
@@ -1239,11 +1284,12 @@ class OptunaExperiment:
         # Generate experiment list matching the benchmark per model:
         #  1. Clean baseline
         #  2. AR/NAR poisoned baseline
-        #  3. AR/NAR + CP         (if run_cp)
-        #  4. AR/NAR + Saga       (if run_saga)
-        #  5. AR/NAR + curriculum
-        #  6. AR/NAR + quail
-        #  7. AR/NAR + quail + curriculum
+        #  3. AR/NAR + CP           (if run_cp)
+        #  4. AR/NAR + Saga         (if run_saga)
+        #  5. AR/NAR + Learn2Clean  (if run_learn2clean)
+        #  6. AR/NAR + curriculum
+        #  7. AR/NAR + quail
+        #  8. AR/NAR + quail + curriculum
         # All configs apply symmetrically to both Linear and MLP.
         experiments = []
         ar_nar_modes = [m for m in self.data_modes if m in ('ar', 'nar')]
@@ -1294,7 +1340,18 @@ class OptunaExperiment:
                             'preparation': 'saga',
                         })
 
-                    # 5. Curriculum learning
+                    # 5. Learn2Clean data-preparation baseline
+                    if self.run_learn2clean:
+                        experiments.append({
+                            'dataset': dataset,
+                            'data_mode': data_mode,
+                            'model_type': model_type,
+                            'use_curriculum': False,
+                            'use_gate': False,
+                            'preparation': 'learn2clean',
+                        })
+
+                    # 6. Curriculum learning
                     experiments.append({
                         'dataset': dataset,
                         'data_mode': data_mode,

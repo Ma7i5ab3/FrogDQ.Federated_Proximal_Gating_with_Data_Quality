@@ -77,6 +77,7 @@ CONFIG_LABELS = {
     "curr1_gate1":  "+ Quail + Curr",
     "saga":         "Saga++ prep",
     "cp":           "CP prep",
+    "learn2clean":  "Learn2Clean",
 }
 
 BAR_ORDER = [
@@ -95,6 +96,7 @@ BAR_COLORS = {
     "Curriculum":     "#e07b39",
     "Saga++ prep":      "#1abc9c",
     "CP prep":          "#f39c12",
+    "Learn2Clean":      "#e87ba4",
     "QuAIL":           "#e74c3c",
     "+ Quail + Curr":    "#2ecc71",
 }
@@ -120,13 +122,14 @@ _TIME_KEYS = ["cpu_time", "train_time", "elapsed", "time"]
 _PREPROC_DIRS = {
     "saga":          Path("..") / "data_cleaned_saga",
     "cp":            Path("..") / "data_cleaned_cp",
+    "learn2clean":   Path("..") / "data_cleaned_learn2clean",
 }
 
 
 def _load_external_preproc_times() -> dict:
     """
     Load cpu_time_s from preprocessing perf_metrics CSVs written by the
-    standalone scripts (saga.py, data_preparation_pipeline.py).
+    standalone scripts (saga.py, data_preparation_pipeline.py, learn2clean.py).
 
     Returns
     -------
@@ -174,7 +177,7 @@ def _load_external_preproc_times() -> dict:
 
 _RE_STANDARD = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-    r"_(?P<config>curr[01]_gate[01]|saga|cp)$"
+    r"_(?P<config>curr[01]_gate[01]|saga|cp|learn2clean)$"
 )
 
 

@@ -164,6 +164,92 @@ run_saga: true
 # Directory containing Saga++-cleaned data produced by scripts/saga.py.
 saga_data_dir: data_cleaned_saga
 
+# Learn2Clean Benchmark Settings
+# -------------------------------
+# Learn2Clean (Berti-Equille, WWW '19) selects the data-preparation pipeline by
+# reinforcement learning: Q-learning explores the state-action graph of the 18
+# preparation/cleaning methods, then the greedy traversal from every starting
+# state is executed and the pipeline maximizing the goal model's quality metric
+# is kept. Produced by scripts/learn2clean.py.
+#
+# Unlike CP and Saga++, Learn2Clean is NOT shape-preserving: outlier detection,
+# deduplication and consistency checking remove rows, feature selection removes
+# columns. The cleaned CSV, its residual mask and the surviving row/column labels
+# stored in <dataset>_pipeline.pkl are all aligned to the reduced frame.
+#
+# Whether to include Learn2Clean as a data-preparation benchmark in the main
+# experiments. Requires running scripts/learn2clean.py first.
+# false: skip Learn2Clean benchmark
+# true:  include Learn2Clean benchmark experiments
+run_learn2clean: true
+
+# Directory containing Learn2Clean-cleaned data produced by scripts/learn2clean.py.
+# Structure: data_cleaned_learn2clean/{mode}/{dataset_filename}.csv  (train+val),
+#            data_cleaned_learn2clean/test/{mode}/{dataset_filename}.csv (hold-out,
+#            projected onto the surviving columns and rescaled the same way).
+learn2clean_data_dir: data_cleaned_learn2clean
+
+learn2clean:
+
+  # Goal state: the ML model whose quality metric the Q-learner optimizes.
+  # Classification (metric: accuracy) : 'LDA', 'CART', 'NB', 'MNB'
+  # Regression     (metric: MSE)      : 'LASSO', 'OLS'
+  # Clustering     (metric: silhouette): 'KMEANS', 'HCA'
+  # All datasets selected above are classification (cls_* target). LDA is the
+  # closest proxy to the linear/MLP models trained downstream: it reacts to
+  # scaling and to the shape of the distributions, so the normalization and
+  # outlier actions are scored for what they are actually worth later on.
+  # CART is scale-invariant and would make the normalization actions look inert;
+  # it is also by far the most expensive goal (nested CV, see cart_num_trials
+  # in scripts/learn2clean.py).
+  goal: LDA
+
+  # Cross-validation folds used to score a candidate pipeline. Automatically
+  # reduced when a class has fewer members than this. Upstream default: 10.
+  k_folds: 10
+
+  # Q-learning parameters (Section 3 of the paper). Upstream defaults.
+  #   gamma   - discount factor: 0 = immediate rewards only, ->1 = far-sighted
+  #   beta    - learning rate of the Q update
+  #   epsilon - epsilon-greedy exploration probability
+  n_episodes: 1000
+  gamma: 0.8
+  beta: 1.0
+  epsilon: 0.05
+
+  # Random seed for the Q-learning exploration (upstream uses 1999).
+  seed: 1999
+
+  # Parallel workers for the 19 greedy traversals, which are independent
+  # (each one works on its own deep copy). -1 = all cores.
+  n_jobs: 16
+
+  # Thresholds of the preparation methods. Upstream stores a single `threshold`
+  # on the Q-learner but never forwards it (its own TODO: "handle an array of
+  # thresholds"), so each method silently falls back to its default; these are
+  # exactly those defaults, now actually applied.
+  #   fs_threshold - feature selection: MR max missing ratio, LC max |correlation|
+  #   od_threshold - outlier detection: fraction of a row's variables that must be
+  #                  outlying for the row to go (-1 = any single outlying value).
+  #                  LOF reads it as k = int(od_threshold * 100) rows to remove.
+  #   dd_threshold - deduplication: minimum similarity for AD
+  fs_threshold: 0.3
+  od_threshold: 0.3
+  dd_threshold: 0.6
+
+  # Patterns induced per column by the PC consistency check. Only the most
+  # frequent value shapes are kept, so rare shapes — typically the injected typos
+  # and out-of-vocabulary categories — end up outside the induced patterns.
+  max_patterns: 4
+
+  # Goal models consume `select_dtypes(['number'])` upstream, so a fully
+  # categorical dataset yields no features and no strategy can be scored at all
+  # (4 of the selected datasets are categorical-only: kr_vs_kp, tic_tac_toe, car,
+  # dna). When true, categorical columns are ordinal-encoded for scoring only —
+  # the written CSV keeps the original labels. Mirrors _encode_for_model in
+  # scripts/saga.py. Set to false for strict upstream behaviour.
+  encode_categoricals: true
+
 # Quail + Curriculum Experiment Settings
 # ---------------------------------------
 # Whether to include the combined quail+curriculum experiment.
@@ -190,6 +276,7 @@ run_gate_curriculum: false
 #   gate_curriculum  - + quail + curriculum combined
 #   saga             - Saga++ data-preparation baseline (requires run_saga)
 #   cp               - Custom pipeline (CP) data-preparation baseline (requires run_cp)
+#   learn2clean      - Learn2Clean data-preparation baseline (requires run_learn2clean)
 #
 # Note: quail_analysis.py always keeps its own "Clean" reference regardless of
 # this setting — its noise-robustness analysis is built around measuring
@@ -197,7 +284,7 @@ run_gate_curriculum: false
 #
 # Example: only compare the quAIL quail against Saga++:
 #   comparison_methods: ['clean', 'baseline', 'gate', 'saga']
-comparison_methods: ['clean', 'baseline', 'curriculum', 'gate', 'saga', 'cp']
+comparison_methods: ['clean', 'baseline', 'curriculum', 'gate', 'saga', 'cp', 'learn2clean']
 
 # Data Poisoning Settings
 # -----------------------
@@ -206,9 +293,9 @@ comparison_methods: ['clean', 'baseline', 'curriculum', 'gate', 'saga', 'cp']
 # CLI flags (--mild-rate, --no-ar-numerical, etc.) override these when passed.
 poisoning:
 
-  # Noise distribution tiers.
-  # Each tier defines the fraction of columns assigned to that severity and
-  # the per-column corruption rate (0–1).
+  # Noise distribution tiers: the fraction of columns assigned to each
+  # severity. These shares are preset-independent (the per-tier corruption
+  # rates live under `presets` below).
   # mild_frac is computed automatically as 1 - moderate_frac - heavy_frac - severe_frac.
   noise:
     # Fraction of feature columns kept completely unpoisoned (0.0–1.0).
@@ -217,13 +304,30 @@ poisoning:
 
     clean_feature_frac: 0.40
 
-    mild_rate: 0.164
     moderate_frac: 0.35
-    moderate_rate: 0.308
     heavy_frac: 0.22
-    heavy_rate: 0.576
     severe_frac: 0.10
-    severe_rate: 0.924
+
+  # Poisoning presets iterated by run_pipeline.sh (see POISONING.md).
+  # Each key under `rates` is the target total corruption as a percentage of
+  # ALL feature cells, mapped to the per-tier per-column corruption rates that
+  # hit it. Column shares come from `noise` above and are identical for every
+  # preset, so they are not repeated here. Results land in results/<preset>pct/.
+  presets:
+
+    # Which presets the pipeline runs, and in what order.
+    # Override for a single run with: ./run_pipeline.sh --presets "10,30"
+    run: [10, 20, 30, 40]
+
+    # Preset used when scripts/poison_data.py runs standalone (outside the
+    # pipeline, which always passes its rates explicitly per preset).
+    default: 40
+
+    rates:
+      10: { mild: 0.1286, moderate: 0.1635, heavy: 0.1984, severe: 0.2333 }
+      20: { mild: 0.2573, moderate: 0.3271, heavy: 0.3969, severe: 0.4667 }
+      30: { mild: 0.3859, moderate: 0.4906, heavy: 0.5953, severe: 0.7000 }
+      40: { mild: 0.5145, moderate: 0.6541, heavy: 0.7937, severe: 0.9333 }
 
   # AR (At Random) poisoning mechanisms.
   # Set to false to disable a specific mechanism.
@@ -231,6 +335,15 @@ poisoning:
     enable_numerical_noise: true    # Additive Gaussian noise on numerical features
     enable_categorical_flips: true  # Random label flips for categorical features
     enable_missing: true            # MCAR: Missing Completely At Random
+
+    # Each poisonable column's tier rate is a corruption budget split exactly
+    # 50/50 between noise/flip and MCAR missingness (disjoint rows, no
+    # overlap), so AR's total is deterministic by construction. This cap
+    # (fraction of ALL feature cells, incl. clean-reserved) is a safety net
+    # only — left unset here means it defaults to that same deterministic
+    # total (see compute_ar_expected_rate), i.e. a no-op unless tier settings
+    # are overridden inconsistently (e.g. mismatched CLI flags).
+    # max_corruption: 0.40
 
   # NAR (Not At Random) poisoning mechanisms.
   # Set to false to disable a specific mechanism.
@@ -241,15 +354,15 @@ poisoning:
     enable_correlated_noise: true # Correlated noise propagation across features
     enable_rare_missing: true     # Rare categories more likely to be missing
 
-    # Total cell corruption rate (floor/cap), applied over the poisonable
-    # (non-clean-reserved) columns after all NAR mechanisms run.
-    # Left unset here on purpose: poison_data.py then computes both bounds
-    # dynamically from the AR noise-tier settings above (mild/moderate/heavy/
-    # severe fracs and rates), so NAR's total corrupted-cell share always
-    # matches AR's — no matter how those tier settings change.
+    # Total cell corruption rate (floor/cap), as a fraction of ALL feature
+    # cells (incl. clean-reserved columns), applied after all NAR mechanisms
+    # run. Left unset here on purpose: poison_data.py then computes both
+    # bounds dynamically from the AR noise-tier settings above (mild/moderate/
+    # heavy/severe fracs and rates), so NAR's total corrupted-cell share
+    # always matches AR's — no matter how those tier settings change.
     # Uncomment to pin explicit bounds instead of tracking AR:
-    # min_corruption: 0.25
-    # max_corruption: 0.50
+    # min_corruption: 0.35
+    # max_corruption: 0.40
 
 # Output Settings
 # ---------------

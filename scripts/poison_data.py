@@ -14,7 +14,6 @@ import numpy as np
 import pandas as pd
 import yaml
 from loguru import logger
-from scipy import stats
 
 logger.remove()
 logger.add(
@@ -24,17 +23,22 @@ logger.add(
 )
 
 
-def compute_ar_expected_rate(noise_percentages: Dict[str, tuple]) -> float:
+def compute_ar_expected_rate(noise_percentages: Dict[str, tuple], clean_feature_frac: float = 0.0) -> float:
     """
-    Expected fraction of a poisonable column's cells corrupted by AR poisoning.
+    Expected fraction of ALL feature cells (including clean-reserved columns)
+    corrupted by AR poisoning.
 
-    Each column is hit by a value-level mechanism (Gaussian noise / categorical
-    flip) at its tier rate, plus MCAR missingness at an additional 0.75x that
-    rate -> effective rate = tier_rate * 1.75. Used as the default NAR
-    corruption budget so NAR's total lands on AR's total.
+    Each poisonable column is hit at exactly its tier rate: half the budget
+    goes to the value-level mechanism (Gaussian noise / categorical flip),
+    half to MCAR missingness, drawn from disjoint rows so there is never any
+    overlap -> per-column corruption always equals the tier rate exactly.
+    The weighted tier average is then scaled by the poisonable column share
+    (1 - clean_feature_frac). Used as the default AR/NAR corruption budget
+    cap, so NAR's total lands on AR's total by default.
     """
     weighted_rate = sum((frac or 0.0) * rate for frac, rate in noise_percentages.values())
-    return weighted_rate * 1.75
+    poisonable_share = 1.0 - clean_feature_frac
+    return weighted_rate * poisonable_share
 
 
 class DataPoisoner:
@@ -53,31 +57,34 @@ class DataPoisoner:
         noise_percentages=None,
         nar_min_corruption: float = None,
         nar_max_corruption: float = None,
+        ar_max_corruption: float = None,
         clean_feature_frac: float = 0.0,
     ):
         self.seed = seed
         np.random.seed(seed)
-        self.poison_log = {}
         self.clean_feature_frac = max(0.0, min(1.0, clean_feature_frac))
 
         if noise_percentages is None:
-            # Tier rates calibrated to produce ~12 % noise + ~9 % MCAR ≈ 21 % AR total.
+            # Tier rates calibrated to produce ~21.7 % AR total over poisonable
+            # columns (split 50/50 between noise and MCAR, no overlap).
             # Column fractions: 56.25 % mild / 25 % moderate / 12.5 % heavy / 6.25 % severe.
             self.noise_percentages = {
-                "mild": (0.5625, 0.06),
-                "moderate": (0.25, 0.12),
-                "heavy": (0.125, 0.24),
-                "severe": (0.0625, 0.48),
+                "mild": (0.5625, 0.105),
+                "moderate": (0.25, 0.21),
+                "heavy": (0.125, 0.42),
+                "severe": (0.0625, 0.84),
             }
         else:
             self.noise_percentages = noise_percentages
 
-        # NAR's corruption budget defaults to AR's expected total (over the same
-        # poisonable-column base) when not explicitly overridden, so the two
-        # modes corrupt the same share of cells by construction.
-        ar_rate = compute_ar_expected_rate(self.noise_percentages)
+        # AR/NAR corruption budgets default to AR's expected total (over ALL
+        # feature cells, including clean-reserved ones) when not explicitly
+        # overridden, so both modes corrupt the same share of cells by
+        # construction and neither can silently exceed it.
+        ar_rate = compute_ar_expected_rate(self.noise_percentages, self.clean_feature_frac)
         self.nar_min_corruption = nar_min_corruption if nar_min_corruption is not None else ar_rate
         self.nar_max_corruption = nar_max_corruption if nar_max_corruption is not None else ar_rate
+        self.ar_max_corruption = ar_max_corruption if ar_max_corruption is not None else ar_rate
 
     def identify_column_types(self, df: pd.DataFrame) -> Dict[str, list]:
         """Identify column types based on prefix naming convention."""
@@ -205,10 +212,20 @@ class DataPoisoner:
         """
         AR MODE (At Random): Random poisoning mechanisms applied uniformly
 
-        Mechanisms:
+        Each poisonable column's tier rate is a fixed corruption *budget*: the
+        rows selected for that column are split exactly 50/50, without overlap,
+        between a value-level mechanism and MCAR missingness. This guarantees
+        per-column corruption always equals the tier rate exactly, with no
+        "extra" cells and no saturation at high rates.
+
+        Mechanisms (each column's budget split 50/50 between the two it has enabled):
         1. Additive Gaussian noise for numerical features (SNR-based)
         2. Random label flips for categorical features
-        3. MCAR (Missing Completely At Random)
+        3. MCAR (Missing Completely At Random) — the other half of the budget
+
+        A final corruption-budget cap (`ar_max_corruption`) clears cells at
+        random if, in edge cases (e.g. inconsistent CLI overrides), the total
+        would otherwise exceed the configured maximum.
 
         Note: Target columns (cls_*, reg_*) are NEVER poisoned to preserve labels.
 
@@ -260,8 +277,9 @@ class DataPoisoner:
             f"{len([c for c in column_noise_dist.values() if c == severe_rate])} cols @ {severe_rate*100:.0f}%"
         )
 
-        # 1. Numerical features: Additive Gaussian noise
-        if enable_numerical_noise:
+        # 1. Numerical features: Gaussian noise + MCAR, splitting each column's
+        #    budget 50/50 between the two (disjoint rows, no overlap).
+        if enable_numerical_noise or enable_missing:
             for col in col_types["numerical"]:
                 if df[col].isna().all() or col not in column_noise_dist:
                     continue
@@ -274,25 +292,38 @@ class DataPoisoner:
                 if df_poison[col].dtype in ["int64", "int32", "int16", "int8"]:
                     df_poison[col] = df_poison[col].astype("float64")
 
-                std_signal = values.std()
-                if std_signal == 0:
-                    std_signal = abs(values.mean()) * 0.1 if values.mean() != 0 else 1.0
-
-                k = np.random.uniform(1.2, 1.5)
-                noise_std = k * std_signal
-                delta = np.random.choice([-1.0, 1.0]) * k * std_signal
-
-                n_poison = int(len(df) * poison_rate)
-                if n_poison == 0:
+                n_total = int(len(df) * poison_rate)
+                if n_total == 0:
                     continue
-                poison_idx = np.random.choice(df.index, size=n_poison, replace=False)
+                poison_idx = np.random.choice(df.index, size=n_total, replace=False)
 
-                noise = np.random.normal(delta, noise_std, size=n_poison)
-                df_poison.loc[poison_idx, col] = df_poison.loc[poison_idx, col] + noise
-                poison_mask.loc[poison_idx, col] = True
+                if enable_numerical_noise and enable_missing:
+                    n_noise = n_total // 2
+                elif enable_numerical_noise:
+                    n_noise = n_total
+                else:
+                    n_noise = 0
+                noise_idx, missing_idx = poison_idx[:n_noise], poison_idx[n_noise:]
 
-        # 2. Categorical features: Random label flips
-        if enable_categorical_flips:
+                if enable_numerical_noise and len(noise_idx) > 0:
+                    std_signal = values.std()
+                    if std_signal == 0:
+                        std_signal = abs(values.mean()) * 0.1 if values.mean() != 0 else 1.0
+
+                    k = np.random.uniform(1.2, 1.5)
+                    noise_std = k * std_signal
+                    delta = np.random.choice([-1.0, 1.0]) * k * std_signal
+
+                    noise = np.random.normal(delta, noise_std, size=len(noise_idx))
+                    df_poison.loc[noise_idx, col] = df_poison.loc[noise_idx, col] + noise
+                    poison_mask.loc[noise_idx, col] = True
+
+                if enable_missing and len(missing_idx) > 0:
+                    df_poison.loc[missing_idx, col] = np.nan
+                    poison_mask.loc[missing_idx, col] = True
+
+        # 2. Categorical features: random label flips + MCAR, same 50/50 split.
+        if enable_categorical_flips or enable_missing:
             for col in col_types["categorical"]:
                 if df[col].isna().all() or col not in column_noise_dist:
                     continue
@@ -302,49 +333,43 @@ class DataPoisoner:
                 if len(unique_vals) <= 1:
                     continue
 
-                n_poison = int(len(df) * poison_rate)
-                if n_poison == 0:
+                n_total = int(len(df) * poison_rate)
+                if n_total == 0:
                     continue
-                poison_idx = np.random.choice(df.index, size=n_poison, replace=False)
+                poison_idx = np.random.choice(df.index, size=n_total, replace=False)
 
-                for idx in poison_idx:
-                    if pd.notna(df.loc[idx, col]):
-                        current_val = df.loc[idx, col]
-                        other_vals = [v for v in unique_vals if v != current_val]
-                        if other_vals:
-                            df_poison.loc[idx, col] = np.random.choice(other_vals)
-                            poison_mask.loc[idx, col] = True
-
-        # 3. MCAR: Random missing values — sampled from rows not yet corrupted
-        if enable_missing:
-            for col in all_data_cols:
-                if col not in column_noise_dist:
-                    continue
-
-                poison_rate = column_noise_dist[col]
-
-                # Convert integer columns to float before introducing NaN
-                if df_poison[col].dtype in ["int64", "int32", "int16", "int8"]:
-                    df_poison[col] = df_poison[col].astype("float64")
-
-                n_missing = int(len(df) * poison_rate * 0.75)
-                if n_missing == 0:
-                    continue
-
-                # Prefer rows not yet corrupted to avoid noise-missingness overlap
-                clean_idx = df.index[~poison_mask[col]].to_numpy()
-                if len(clean_idx) >= n_missing:
-                    missing_idx = np.random.choice(clean_idx, size=n_missing, replace=False)
+                if enable_categorical_flips and enable_missing:
+                    n_flip = n_total // 2
+                elif enable_categorical_flips:
+                    n_flip = n_total
                 else:
-                    missing_idx = clean_idx.copy()
-                    remaining = n_missing - len(clean_idx)
-                    if remaining > 0:
-                        overlap_pool = df.index[poison_mask[col]].to_numpy()
-                        extra = np.random.choice(overlap_pool, size=min(remaining, len(overlap_pool)), replace=False)
-                        missing_idx = np.concatenate([missing_idx, extra])
+                    n_flip = 0
+                flip_idx, missing_idx = poison_idx[:n_flip], poison_idx[n_flip:]
 
-                df_poison.loc[missing_idx, col] = np.nan
-                poison_mask.loc[missing_idx, col] = True
+                if enable_categorical_flips:
+                    for idx in flip_idx:
+                        if pd.notna(df.loc[idx, col]):
+                            current_val = df.loc[idx, col]
+                            other_vals = [v for v in unique_vals if v != current_val]
+                            if other_vals:
+                                df_poison.loc[idx, col] = np.random.choice(other_vals)
+                                poison_mask.loc[idx, col] = True
+
+                if enable_missing and len(missing_idx) > 0:
+                    if df_poison[col].dtype in ["int64", "int32", "int16", "int8"]:
+                        df_poison[col] = df_poison[col].astype("float64")
+                    df_poison.loc[missing_idx, col] = np.nan
+                    poison_mask.loc[missing_idx, col] = True
+
+        # Corruption budget cap: clear random cells if the total (over ALL
+        # feature cells) exceeds ar_max_corruption. By construction this is a
+        # no-op unless tier settings were overridden inconsistently.
+        poison_mask = self._apply_corruption_budget(
+            poison_mask, col_types,
+            max_rate=self.ar_max_corruption,
+            poisonable_cols=set(column_noise_dist.keys()),
+            label="AR",
+        )
 
         logger.success(f"AR poisoning complete: {poison_mask.sum().sum()} values poisoned")
         return df_poison, poison_mask
@@ -362,12 +387,22 @@ class DataPoisoner:
         """
         NAR MODE (Not At Random): Advanced non-random poisoning mechanisms
 
+        As in AR, each poisonable column's tier rate is a fixed corruption
+        budget split exactly 50/50 (disjoint rows, no overlap) between a
+        paired "noise" and "missing" mechanism — but here the *selection* of
+        which rows go to which half is itself value-dependent, not uniform.
+
         Mechanisms:
-        1. NNAR (Noise Not At Random) - noise magnitude depends on values
-        2. MNAR (Missing Not At Random) - missingness depends on values
-        3. Systematic categorical flips - confusion patterns
-        4. Correlated noise across features - chain poisoning
-        5. Rare value missingness - rare categories more likely missing
+        1. Numerical: NNAR (heteroscedastic noise magnitude) + MNAR
+           (missingness weighted by distance from the median) share the budget.
+        2. Categorical: systematic confusion-pattern flips + rare-value
+           missingness (frequency-inverse weighting) share the budget.
+        3. Correlated noise across features - chain poisoning (on top of the
+           per-column budgets above; capped by the corruption budget below).
+
+        A final corruption-budget clamp keeps the total (over ALL feature
+        cells) within [nar_min_corruption, nar_max_corruption], which both
+        default to matching AR's own budget.
 
         Note: Target columns (cls_*, reg_*) are NEVER poisoned to preserve labels.
 
@@ -425,8 +460,11 @@ class DataPoisoner:
             f"{len([c for c in column_noise_dist.values() if c == severe_rate])} cols @ {severe_rate*100:.0f}%"
         )
 
-        # 1. Numerical features: NNAR (Noise Not At Random)
-        if enable_nnar:
+        # 1. Numerical features: NNAR (heteroscedastic noise) + MNAR (missingness
+        #    weighted by distance from the median), splitting each column's
+        #    budget 50/50. MNAR's candidates are exactly the rows NNAR didn't
+        #    take, so the two never overlap on the same cell.
+        if enable_nnar or enable_mnar:
             for col in col_types["numerical"]:
                 if df[col].isna().all() or col not in column_noise_dist:
                     continue
@@ -439,68 +477,63 @@ class DataPoisoner:
                 if df_poison[col].dtype in ["int64", "int32", "int16", "int8"]:
                     df_poison[col] = df_poison[col].astype("float64")
 
-                min_val, max_val = values.min(), values.max()
-                if min_val == max_val:
+                n_total = int(len(df) * poison_rate)
+                if n_total == 0:
                     continue
+                shuffled_idx = np.random.permutation(df.index.to_numpy())
 
-                n_poison = int(len(df) * poison_rate)
-                if n_poison == 0:
-                    continue
-                poison_idx = np.random.choice(df.index, size=n_poison, replace=False)
+                if enable_nnar and enable_mnar:
+                    n_noise = n_total // 2
+                elif enable_nnar:
+                    n_noise = n_total
+                else:
+                    n_noise = 0
+                n_missing = n_total - n_noise if enable_mnar else 0
 
-                std_signal = values.std()
-                if std_signal == 0:
-                    std_signal = abs(values.mean()) * 0.1 if values.mean() != 0 else 1.0
-                k = np.random.uniform(1.2, 1.5)
-                base_noise_std = k * std_signal
-                delta = np.random.choice([-1.0, 1.0]) * k * std_signal
+                noise_idx = shuffled_idx[:n_noise]
+                remaining_pool = shuffled_idx[n_noise:]
 
-                candidate_vals = df_poison.loc[poison_idx, col]
-                valid_mask = candidate_vals.notna()
-                valid_idx = poison_idx[valid_mask.values]
-                if len(valid_idx) == 0:
-                    continue
-                vals = df_poison.loc[valid_idx, col].values
-                normalized_vals = (vals - min_val) / (max_val - min_val)
-                noise_stds = base_noise_std * (1 + 3 * normalized_vals)
-                noise = np.random.normal(delta, noise_stds)
-                df_poison.loc[valid_idx, col] = vals + noise
-                poison_mask.loc[valid_idx, col] = True
+                if enable_nnar and len(noise_idx) > 0:
+                    min_val, max_val = values.min(), values.max()
+                    if min_val != max_val:
+                        std_signal = values.std()
+                        if std_signal == 0:
+                            std_signal = abs(values.mean()) * 0.1 if values.mean() != 0 else 1.0
+                        k = np.random.uniform(1.2, 1.5)
+                        base_noise_std = k * std_signal
+                        delta = np.random.choice([-1.0, 1.0]) * k * std_signal
 
-        # 2. Numerical features: MNAR (Missing Not At Random)
-        if enable_mnar:
-            for col in col_types["numerical"]:
-                if df[col].isna().all() or col not in column_noise_dist:
-                    continue
+                        candidate_vals = df_poison.loc[noise_idx, col]
+                        valid_mask = candidate_vals.notna()
+                        valid_idx = noise_idx[valid_mask.values]
+                        if len(valid_idx) > 0:
+                            vals = df_poison.loc[valid_idx, col].values
+                            normalized_vals = (vals - min_val) / (max_val - min_val)
+                            noise_stds = base_noise_std * (1 + 3 * normalized_vals)
+                            noise = np.random.normal(delta, noise_stds)
+                            df_poison.loc[valid_idx, col] = vals + noise
+                            poison_mask.loc[valid_idx, col] = True
 
-                poison_rate = column_noise_dist[col]
-                values = df[col].dropna()
-                if len(values) == 0:
-                    continue
+                if enable_mnar and n_missing > 0 and len(remaining_pool) > 0:
+                    q25, q75 = values.quantile(0.25), values.quantile(0.75)
+                    iqr = q75 - q25
+                    if iqr > 0:
+                        median = values.median()
+                        candidate_vals = df_poison.loc[remaining_pool, col]
+                        valid_mask = candidate_vals.notna()
+                        valid_pool = remaining_pool[valid_mask.values]
+                        if len(valid_pool) > 0:
+                            weights = (df_poison.loc[valid_pool, col] - median).abs().to_numpy() + 1e-9
+                            probs = weights / weights.sum()
+                            n_pick = min(n_missing, len(valid_pool))
+                            missing_idx = np.random.choice(valid_pool, size=n_pick, replace=False, p=probs)
+                            df_poison.loc[missing_idx, col] = np.nan
+                            poison_mask.loc[missing_idx, col] = True
 
-                if df_poison[col].dtype in ["int64", "int32", "int16", "int8"]:
-                    df_poison[col] = df_poison[col].astype("float64")
-
-                q25, q75 = values.quantile(0.25), values.quantile(0.75)
-                iqr = q75 - q25
-
-                if iqr == 0:
-                    continue
-
-                median = values.median()
-
-                valid = df_poison[col].notna()
-                col_vals = df_poison.loc[valid, col]
-                prob = ((col_vals - median).abs() / (2 * iqr) * poison_rate).clip(upper=0.5)
-                already_corrupted = poison_mask.loc[col_vals.index, col]
-                prob = prob.where(~already_corrupted, other=0.0)
-                missing_mask = np.random.random(valid.sum()) < prob.values
-                missing_idx = col_vals.index[missing_mask]
-                df_poison.loc[missing_idx, col] = np.nan
-                poison_mask.loc[missing_idx, col] = True
-
-        # 3. Categorical features: Systematic flips with patterns
-        if enable_systematic_flips:
+        # 2. Categorical features: systematic confusion-pattern flips + rare-value
+        #    missingness (frequency-inverse weighting), splitting each column's
+        #    budget 50/50 with disjoint rows.
+        if enable_systematic_flips or enable_rare_missing:
             for col in col_types["categorical"]:
                 if df[col].isna().all() or col not in column_noise_dist:
                     continue
@@ -510,29 +543,61 @@ class DataPoisoner:
                 if len(unique_vals) <= 1:
                     continue
 
-                confusion_pairs = {}
-                vals_list = list(unique_vals)
-                for i, val in enumerate(vals_list):
-                    partner_idx = (i + 1) % len(vals_list)
-                    confusion_pairs[val] = vals_list[partner_idx]
-
-                n_poison = int(len(df) * poison_rate)
-                if n_poison == 0:
+                n_total = int(len(df) * poison_rate)
+                if n_total == 0:
                     continue
-                poison_idx = np.random.choice(df.index, size=n_poison, replace=False)
+                shuffled_idx = np.random.permutation(df.index.to_numpy())
 
-                for idx in poison_idx:
-                    if pd.notna(df.loc[idx, col]):
-                        current_val = df.loc[idx, col]
-                        if np.random.random() < 0.7 and current_val in confusion_pairs:
-                            df_poison.loc[idx, col] = confusion_pairs[current_val]
-                        else:
-                            other_vals = [v for v in unique_vals if v != current_val]
-                            if other_vals:
-                                df_poison.loc[idx, col] = np.random.choice(other_vals)
-                        poison_mask.loc[idx, col] = True
+                if enable_systematic_flips and enable_rare_missing:
+                    n_flip = n_total // 2
+                elif enable_systematic_flips:
+                    n_flip = n_total
+                else:
+                    n_flip = 0
+                n_missing = n_total - n_flip if enable_rare_missing else 0
 
-        # 4. Correlated noise across numerical features
+                flip_idx = shuffled_idx[:n_flip]
+                remaining_pool = shuffled_idx[n_flip:]
+
+                if enable_systematic_flips and len(flip_idx) > 0:
+                    confusion_pairs = {}
+                    vals_list = list(unique_vals)
+                    for i, val in enumerate(vals_list):
+                        partner_idx = (i + 1) % len(vals_list)
+                        confusion_pairs[val] = vals_list[partner_idx]
+
+                    for idx in flip_idx:
+                        if pd.notna(df.loc[idx, col]):
+                            current_val = df.loc[idx, col]
+                            if np.random.random() < 0.7 and current_val in confusion_pairs:
+                                df_poison.loc[idx, col] = confusion_pairs[current_val]
+                            else:
+                                other_vals = [v for v in unique_vals if v != current_val]
+                                if other_vals:
+                                    df_poison.loc[idx, col] = np.random.choice(other_vals)
+                            poison_mask.loc[idx, col] = True
+
+                if enable_rare_missing and n_missing > 0 and len(remaining_pool) > 0:
+                    if df_poison[col].dtype in ["int64", "int32", "int16", "int8"]:
+                        df_poison[col] = df_poison[col].astype("float64")
+
+                    value_counts = df[col].value_counts()
+                    total = len(df[col].dropna())
+                    if total > 0:
+                        candidate_vals = df_poison.loc[remaining_pool, col]
+                        valid_mask = candidate_vals.notna()
+                        valid_pool = remaining_pool[valid_mask.values]
+                        if len(valid_pool) > 0:
+                            freq_series = value_counts / total
+                            frequencies = df_poison.loc[valid_pool, col].map(freq_series).fillna(0)
+                            weights = (1 - frequencies).to_numpy() + 1e-9
+                            probs = weights / weights.sum()
+                            n_pick = min(n_missing, len(valid_pool))
+                            missing_idx = np.random.choice(valid_pool, size=n_pick, replace=False, p=probs)
+                            df_poison.loc[missing_idx, col] = np.nan
+                            poison_mask.loc[missing_idx, col] = True
+
+        # 3. Correlated noise across numerical features
         # Restrict to poisonable columns only — clean-reserved columns must not
         # receive any corruption, including as propagation targets.
         num_cols = [c for c in col_types["numerical"] if c in column_noise_dist]
@@ -570,42 +635,15 @@ class DataPoisoner:
                     df_poison.loc[selected, other_col] += noise
                     poison_mask.loc[selected, other_col] = True
 
-        # 5. Value-dependent missingness for categorical
-        for col in col_types["categorical"]:
-            if df[col].isna().all() or col not in column_noise_dist:
-                continue
-
-            poison_rate = column_noise_dist[col]
-
-            if df_poison[col].dtype in ["int64", "int32", "int16", "int8"]:
-                df_poison[col] = df_poison[col].astype("float64")
-
-            value_counts = df[col].value_counts()
-            total = len(df[col].dropna())
-
-            if total == 0:
-                continue
-
-            valid = df_poison[col].notna()
-            col_vals = df_poison.loc[valid, col]
-            freq_series = value_counts / total
-            frequencies = col_vals.map(freq_series).fillna(0)
-            prob = poison_rate * (1 - frequencies)
-            already_corrupted = poison_mask.loc[col_vals.index, col]
-            prob = prob.where(~already_corrupted, other=0.0)
-            missing_mask = np.random.random(valid.sum()) < prob.values
-            missing_idx = col_vals.index[missing_mask]
-            df_poison.loc[missing_idx, col] = np.nan
-            poison_mask.loc[missing_idx, col] = True
-
-        # Enforce corruption budget: clamp total cell corruption to [min, max].
-        # Only poisonable columns (those in column_noise_dist) count toward the
-        # budget — clean-reserved columns are never touched by this step.
+        # Enforce corruption budget: clamp total cell corruption (over ALL
+        # feature cells) to [min, max]. Only poisonable columns (those in
+        # column_noise_dist) are ever modified by this step.
         poison_mask = self._apply_corruption_budget(
             poison_mask, col_types,
             min_rate=self.nar_min_corruption,
             max_rate=self.nar_max_corruption,
             poisonable_cols=set(column_noise_dist.keys()),
+            label="NAR",
         )
 
         logger.success(f"NAR poisoning complete: {poison_mask.sum().sum()} values poisoned")
@@ -637,24 +675,33 @@ class DataPoisoner:
         self,
         poison_mask: pd.DataFrame,
         col_types: Dict[str, list],
-        min_rate: float,
         max_rate: float,
+        min_rate: float = None,
         poisonable_cols: set = None,
+        label: str = "",
     ) -> pd.DataFrame:
         """
-        Clamp total cell corruption to [min_rate, max_rate].
+        Clamp total cell corruption to [min_rate, max_rate], expressed as a
+        fraction of ALL feature cells (numerical + categorical), including
+        clean-reserved columns — the same base used for the "Total percentage
+        of cells poisoned" figures in POISONING.md.
 
         If above max_rate: randomly clear True entries until the rate hits max_rate.
         If below min_rate: randomly set False entries to True until rate hits min_rate.
+        min_rate=None skips the floor entirely (ceiling-only clamp).
 
-        Only poisonable feature columns are considered; label columns and
-        clean-reserved columns (absent from poisonable_cols) are never touched.
+        Only poisonable feature columns are ever modified; label columns and
+        clean-reserved columns (absent from poisonable_cols) are never touched,
+        even though they count toward the total_cells denominator.
 
         Args:
             poisonable_cols: Set of column names eligible for corruption.
                              When None, all numerical + categorical columns are used.
         """
         all_feature_cols = col_types["numerical"] + col_types["categorical"]
+        if not all_feature_cols:
+            return poison_mask
+
         if poisonable_cols is not None:
             feature_cols = [c for c in all_feature_cols if c in poisonable_cols]
         else:
@@ -663,33 +710,35 @@ class DataPoisoner:
         if not feature_cols:
             return poison_mask
 
-        mask_vals = poison_mask[feature_cols].values.copy()  # (N, F) bool array
-        total_cells = mask_vals.size
+        total_cells = len(poison_mask) * len(all_feature_cols)  # ALL feature cells
+        mask_vals = poison_mask[feature_cols].values.copy()  # (N, poisonable_F) bool array
         n_corrupt = int(mask_vals.sum())
         rate = n_corrupt / total_cells
+        tag = f"{label} budget" if label else "Budget"
 
         if rate > max_rate:
             target = int(total_cells * max_rate)
             n_clear = n_corrupt - target
-            true_idx = np.flatnonzero(mask_vals)
-            clear_idx = np.random.choice(true_idx, size=n_clear, replace=False)
-            mask_vals.flat[clear_idx] = False
-            logger.info(
-                f"  NAR budget cap:   {rate*100:.1f}% → {max_rate*100:.0f}%  "
-                f"(cleared {n_clear:,} cells)"
-            )
+            if n_clear > 0:
+                true_idx = np.flatnonzero(mask_vals)
+                clear_idx = np.random.choice(true_idx, size=n_clear, replace=False)
+                mask_vals.flat[clear_idx] = False
+                logger.info(
+                    f"  {tag} cap:   {rate*100:.1f}% → {max_rate*100:.1f}%  "
+                    f"(cleared {n_clear:,} cells)"
+                )
 
-        elif rate < min_rate:
+        elif min_rate is not None and rate < min_rate:
             target = int(total_cells * min_rate)
             n_add = target - n_corrupt
             false_idx = np.flatnonzero(~mask_vals)
-            if len(false_idx) >= n_add:
+            if len(false_idx) >= n_add and n_add > 0:
                 add_idx = np.random.choice(false_idx, size=n_add, replace=False)
                 mask_vals.flat[add_idx] = True
-            logger.info(
-                f"  NAR budget floor: {rate*100:.1f}% → {min_rate*100:.0f}%  "
-                f"(added {n_add:,} cells)"
-            )
+                logger.info(
+                    f"  {tag} floor: {rate*100:.1f}% → {min_rate*100:.1f}%  "
+                    f"(added {n_add:,} cells)"
+                )
 
         poison_mask = poison_mask.copy()
         poison_mask[feature_cols] = mask_vals
@@ -730,6 +779,7 @@ def process_all_datasets(
     test_size: float = 0.3,
     nar_min_corruption: float = None,
     nar_max_corruption: float = None,
+    ar_max_corruption: float = None,
     clean_feature_frac: float = 0.0,
 ):
     """
@@ -743,11 +793,15 @@ def process_all_datasets(
         ar_mechanisms: Dict of enabled AR mechanisms
         nar_mechanisms: Dict of enabled NAR mechanisms
         test_size: Fraction of data to hold out as clean test set
-        nar_min_corruption: Minimum total cell corruption for NAR (floor). None
-                            defaults to AR's expected corruption rate (see
-                            compute_ar_expected_rate).
-        nar_max_corruption: Maximum total cell corruption for NAR (cap). None
-                            defaults to AR's expected corruption rate.
+        nar_min_corruption: Minimum total cell corruption for NAR (floor), as a
+                            fraction of ALL feature cells. None defaults to AR's
+                            expected corruption rate (see compute_ar_expected_rate).
+        nar_max_corruption: Maximum total cell corruption for NAR (cap), same
+                            base. None defaults to AR's expected corruption rate.
+        ar_max_corruption: Maximum total cell corruption for AR (cap), same
+                           base. None defaults to AR's own expected corruption
+                           rate — a no-op safety net unless tier settings were
+                           overridden inconsistently.
         clean_feature_frac: Fraction of feature columns kept completely unpoisoned (0–1)
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -761,6 +815,7 @@ def process_all_datasets(
         noise_percentages=noise_percentages,
         nar_min_corruption=nar_min_corruption,
         nar_max_corruption=nar_max_corruption,
+        ar_max_corruption=ar_max_corruption,
         clean_feature_frac=clean_feature_frac,
     )
 
@@ -923,29 +978,30 @@ if __name__ == "__main__":
 
     noise_group = parser.add_argument_group(
         "Noise Distribution",
-        "Per-tier corruption rates and column fractions. "
-        "Defaults are read from config.yaml poisoning.noise when not set here. "
+        "Per-tier corruption rates and column fractions. Rates default to the "
+        "preset named by config.yaml poisoning.presets.default; column fractions "
+        "come from config.yaml poisoning.noise. "
         "mild_frac is computed as 1 - moderate_frac - heavy_frac - severe_frac.",
     )
     noise_group.add_argument(
         "--mild-rate", type=float, default=None,
-        help="Corruption rate for mildly noisy columns (config default: 0.06)",
+        help="Corruption rate for mildly noisy columns",
     )
     noise_group.add_argument(
         "--moderate-frac", type=float, default=None,
-        help="Fraction of columns assigned to moderate noise (config default: 0.30)",
+        help="Fraction of columns assigned to moderate noise (config default: 0.35)",
     )
     noise_group.add_argument(
         "--moderate-rate", type=float, default=None,
-        help="Corruption rate for moderately noisy columns (config default: 0.12)",
+        help="Corruption rate for moderately noisy columns",
     )
     noise_group.add_argument(
         "--heavy-frac", type=float, default=None,
-        help="Fraction of columns assigned to heavy noise (config default: 0.20)",
+        help="Fraction of columns assigned to heavy noise (config default: 0.22)",
     )
     noise_group.add_argument(
         "--heavy-rate", type=float, default=None,
-        help="Corruption rate for heavily noisy columns (config default: 0.24)",
+        help="Corruption rate for heavily noisy columns",
     )
     noise_group.add_argument(
         "--severe-frac", type=float, default=None,
@@ -953,7 +1009,7 @@ if __name__ == "__main__":
     )
     noise_group.add_argument(
         "--severe-rate", type=float, default=None,
-        help="Corruption rate for severely noisy columns (config default: 0.48)",
+        help="Corruption rate for severely noisy columns",
     )
 
     ar_group = parser.add_argument_group(
@@ -972,6 +1028,12 @@ if __name__ == "__main__":
     ar_group.add_argument(
         "--no-ar-missing", action="store_true",
         help="Disable MCAR (Missing Completely At Random)",
+    )
+    ar_group.add_argument(
+        "--ar-max-corruption", type=float, default=None,
+        help="Maximum total cell corruption for AR, 0-1, as a fraction of ALL "
+             "feature cells (default: computed from the AR noise settings — a "
+             "no-op safety net unless tier settings are overridden inconsistently)",
     )
 
     nar_group = parser.add_argument_group(
@@ -1001,15 +1063,15 @@ if __name__ == "__main__":
     )
     nar_group.add_argument(
         "--nar-min-corruption", type=float, default=None,
-        help="Minimum total cell corruption for NAR, 0-1 "
-             "(default: computed from the AR noise settings, so NAR's total "
-             "corruption matches AR's)",
+        help="Minimum total cell corruption for NAR, 0-1, as a fraction of ALL "
+             "feature cells (default: computed from the AR noise settings, so "
+             "NAR's total corruption matches AR's)",
     )
     nar_group.add_argument(
         "--nar-max-corruption", type=float, default=None,
-        help="Maximum total cell corruption for NAR, 0-1 "
-             "(default: computed from the AR noise settings, so NAR's total "
-             "corruption matches AR's)",
+        help="Maximum total cell corruption for NAR, 0-1, as a fraction of ALL "
+             "feature cells (default: computed from the AR noise settings, so "
+             "NAR's total corruption matches AR's)",
     )
 
     noise_group.add_argument(
@@ -1033,6 +1095,7 @@ if __name__ == "__main__":
     _noise_cfg   = _poison_cfg.get("noise", {})
     _ar_cfg      = _poison_cfg.get("ar", {})
     _nar_cfg     = _poison_cfg.get("nar", {})
+    _presets_cfg = _poison_cfg.get("presets", {})
 
     # Helper: CLI value wins if given, else config, else built-in default
     def _resolve(cli_val, cfg_section, cfg_key, builtin):
@@ -1047,13 +1110,32 @@ if __name__ == "__main__":
     datasets = [args.dataset] if args.dataset else (_config.get("datasets") or None)
 
     # ── Noise distribution ─────────────────────────────────────────────────────
-    mild_rate     = _resolve(args.mild_rate,     _noise_cfg, "mild_rate",     0.06)
-    moderate_frac = _resolve(args.moderate_frac, _noise_cfg, "moderate_frac", 0.30)
-    moderate_rate = _resolve(args.moderate_rate, _noise_cfg, "moderate_rate", 0.12)
-    heavy_frac    = _resolve(args.heavy_frac,    _noise_cfg, "heavy_frac",    0.20)
-    heavy_rate    = _resolve(args.heavy_rate,    _noise_cfg, "heavy_rate",    0.24)
+    # Tier rates come from the preset named by poisoning.presets.default, so they
+    # live in exactly one place (run_pipeline.sh passes them explicitly per
+    # preset). Column shares are preset-independent and read from poisoning.noise.
+    _preset_rates = {str(k): v for k, v in (_presets_cfg.get("rates") or {}).items()}
+    _default_preset = str(_presets_cfg.get("default", ""))
+    _tier = _preset_rates.get(_default_preset) or {}
+
+    def _resolve_rate(cli_val, tier_name):
+        if cli_val is not None:
+            return cli_val
+        if tier_name in _tier:
+            return _tier[tier_name]
+        raise SystemExit(
+            f"No corruption rate for the '{tier_name}' tier: pass --{tier_name}-rate, or set "
+            f"poisoning.presets.default in {args.config} to a preset defined under "
+            f"poisoning.presets.rates (defined: {', '.join(sorted(_preset_rates, key=float)) or 'none'})"
+        )
+
+    mild_rate     = _resolve_rate(args.mild_rate,     "mild")
+    moderate_rate = _resolve_rate(args.moderate_rate, "moderate")
+    heavy_rate    = _resolve_rate(args.heavy_rate,    "heavy")
+    severe_rate   = _resolve_rate(args.severe_rate,   "severe")
+
+    moderate_frac = _resolve(args.moderate_frac, _noise_cfg, "moderate_frac", 0.35)
+    heavy_frac    = _resolve(args.heavy_frac,    _noise_cfg, "heavy_frac",    0.22)
     severe_frac   = _resolve(args.severe_frac,   _noise_cfg, "severe_frac",   0.10)
-    severe_rate   = _resolve(args.severe_rate,   _noise_cfg, "severe_rate",   0.48)
 
     mild_frac = 1.0 - moderate_frac - heavy_frac - severe_frac
 
@@ -1072,9 +1154,11 @@ if __name__ == "__main__":
         "enable_missing":           _ar_cfg.get("enable_missing",           True) and not args.no_ar_missing,
     }
 
-    # ── NAR mechanisms ─────────────────────────────────────────────────────────
     # None (unset here, unset in config.yaml) means "compute it from the AR
     # noise settings above" — see DataPoisoner.__init__ / compute_ar_expected_rate.
+    ar_max_corruption = _resolve(args.ar_max_corruption, _ar_cfg, "max_corruption", None)
+
+    # ── NAR mechanisms ─────────────────────────────────────────────────────────
     nar_min_corruption = _resolve(args.nar_min_corruption, _nar_cfg, "min_corruption", None)
     nar_max_corruption = _resolve(args.nar_max_corruption, _nar_cfg, "max_corruption", None)
 
@@ -1099,5 +1183,6 @@ if __name__ == "__main__":
         test_size=test_size,
         nar_min_corruption=nar_min_corruption,
         nar_max_corruption=nar_max_corruption,
+        ar_max_corruption=ar_max_corruption,
         clean_feature_frac=clean_feature_frac,
     )

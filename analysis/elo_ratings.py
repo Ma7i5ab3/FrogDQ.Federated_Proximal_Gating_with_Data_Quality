@@ -69,7 +69,7 @@ STORAGE = f"sqlite:///{DB_PATH.resolve()}"
 
 _RE = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-    r"_(?P<config>curr[01]_gate[01]|saga|cp)$"
+    r"_(?P<config>curr[01]_gate[01]|saga|cp|learn2clean)$"
 )
 
 CONFIG_LABELS = {
@@ -79,6 +79,7 @@ CONFIG_LABELS = {
     "curr1_gate1": "+ Quail + Curr",
     "saga":        "Saga++",
     "cp":          "CP prep",
+    "learn2clean": "Learn2Clean",
 }
 
 COLORS = {
@@ -87,6 +88,7 @@ COLORS = {
     "Curriculum":     "#e07b39",
     "Saga++":         "#1abc9c",
     "CP prep":        "#f39c12",
+    "Learn2Clean":    "#e87ba4",
 }
 
 ELO_BASE  = 1500.0
@@ -479,7 +481,7 @@ if __name__ == "__main__":
     seed_df = load_seed_data(metric=args.metric)
 
     methods_order = _filter_tokens([
-        "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp",
+        "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp", "learn2clean",
     ])
 
     compute_and_report(

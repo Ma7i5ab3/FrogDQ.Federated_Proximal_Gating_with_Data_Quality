@@ -35,6 +35,7 @@ METHOD_CHOICES: List[str] = [
     "gate_curriculum",
     "saga",
     "cp",
+    "learn2clean",
 ]
 
 # study-name "config" token (quail_analysis.py / optuna_progress.py /
@@ -48,6 +49,7 @@ _CONFIG_TOKEN_TO_METHOD: Dict[str, str] = {
     "curr1_gate1": "gate_curriculum",
     "saga": "saga",
     "cp": "cp",
+    "learn2clean": "learn2clean",
 }
 
 # evaluate.py's method_label() string -> canonical key.
@@ -59,6 +61,7 @@ _LABEL_TO_METHOD: Dict[str, str] = {
     "gate+curriculum": "gate_curriculum",
     "saga": "saga",
     "cp": "cp",
+    "learn2clean": "learn2clean",
 }
 
 

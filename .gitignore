@@ -2,6 +2,7 @@ data/*
 data_poisoned/*
 data_preprocessed/*
 data_cleaned_saga/*
+data_cleaned_learn2clean/*
 results/*
 results_old/*
 analysis/plots/*

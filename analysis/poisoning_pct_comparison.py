@@ -63,12 +63,23 @@ NOISE_MODE_LABELS = {"ar": "CCAR (AR)", "nar": "CNAR (NAR)"}
 # scripts/validate_palette.js reports ALL CHECKS PASS on this 6-slot set,
 # worst adjacent CVD ΔE 24.2). Order is the CVD-safety mechanism, not
 # cosmetic — keep it as-is if you add/remove a category.
-CATEGORY_ORDER = ["clean", "baseline", "saga++", "cp", "curriculum", "quail"]
+# Order is the CVD-safety mechanism, not cosmetic: the colors are pinned per
+# category below, and the order decides which pairs end up adjacent. This is the
+# reference categorical theme's own hue order (blue, orange, aqua, yellow,
+# magenta, violet, red — its slot 6 green is skipped, it would collide with the
+# BEST_COLOR status green). scripts/validate_palette.js reports ALL CHECKS PASS
+# on this 7-slot set: worst adjacent CVD ΔE 9.1, worst adjacent normal-vision
+# ΔE 19.6. Re-run the validator if you add or remove a category — the previous
+# 6-slot order had saga++ next to cp and missed the normal-vision floor (13.7).
+# Aqua, yellow and magenta sit below 3:1 contrast on the light surface, so the
+# relief rule applies: the per-bar value labels below are what satisfies it.
+CATEGORY_ORDER = ["clean", "cp", "baseline", "saga++", "learn2clean", "curriculum", "quail"]
 CATEGORY_LABELS = {
     "clean": "Clean",
     "baseline": "Standard",
     "saga++": "Saga++",
     "cp": "CP",
+    "learn2clean": "Learn2Clean",
     "curriculum": "Curriculum",
     "quail": "QuAIL",
 }
@@ -77,6 +88,7 @@ CATEGORY_COLORS = {
     "baseline": "#1baf7a",
     "saga++": "#eda100",
     "cp": "#eb6834",
+    "learn2clean": "#e87ba4",
     "curriculum": "#4a3aa7",
     "quail": "#e34948",
 }
@@ -104,8 +116,9 @@ METRIC_SPECS = {
 # External one-off preprocessing cost for Saga++/CP (see module docstring):
 # {(dataset, data_mode, category): {"cpu_time_s": ..., "wall_time_s": ...}}
 _EXTERNAL_PREPROC_DIRS = {
-    "saga++": HERE.parent / "data_cleaned_saga",
-    "cp":     HERE.parent / "data_cleaned_cp",
+    "saga++":      HERE.parent / "data_cleaned_saga",
+    "cp":          HERE.parent / "data_cleaned_cp",
+    "learn2clean": HERE.parent / "data_cleaned_learn2clean",
 }
 
 
@@ -153,6 +166,8 @@ def _categorize(row) -> str | None:
         return "saga++"
     if row["preparation"] == "cp":
         return "cp"
+    if row["preparation"] == "learn2clean":
+        return "learn2clean"
     if row["preparation"] == "standard" and row["use_curriculum"] and not row["use_gate"]:
         return "curriculum"
     if row["preparation"] == "standard" and row["use_gate"] and not row["use_curriculum"]:

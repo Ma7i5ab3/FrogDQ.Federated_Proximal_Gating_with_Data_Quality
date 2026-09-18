@@ -93,6 +93,7 @@ CANONICAL_TO_TOKEN: Dict[str, str] = {
     "gate_curriculum": "curr1_gate1",
     "saga":            "saga",
     "cp":              "cp",
+    "learn2clean":     "learn2clean",
 }
 
 CANONICAL_LABELS: Dict[str, str] = {
@@ -103,6 +104,7 @@ CANONICAL_LABELS: Dict[str, str] = {
     "gate_curriculum": "+ Quail + Curr",
     "saga":            "Saga++",
     "cp":              "CP prep",
+    "learn2clean":     "Learn2Clean",
 }
 
 # The noise-free "clean" reference is an upper-bound sanity check, not a

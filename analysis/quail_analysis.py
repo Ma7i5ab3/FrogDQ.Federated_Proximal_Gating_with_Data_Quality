@@ -62,7 +62,7 @@ STORAGE = f"sqlite:///{DB_PATH.resolve()}"
 
 _RE = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-    r"_(?P<config>curr[01]_gate[01]|saga|cp)$"
+    r"_(?P<config>curr[01]_gate[01]|saga|cp|learn2clean)$"
 )
 
 CONFIG_LABELS = {
@@ -72,6 +72,7 @@ CONFIG_LABELS = {
     "curr1_gate1": "+ Quail + Curr",
     "saga":        "Saga++",
     "cp":          "CP prep",
+    "learn2clean": "Learn2Clean",
 }
 
 COLORS = {
@@ -80,6 +81,7 @@ COLORS = {
     "Curriculum": "#e07b39",
     "Saga++":       "#1abc9c",
     "CP prep":      "#f39c12",
+    "Learn2Clean":  "#e87ba4",
 }
 
 # comparison_methods selection (canonical keys from quail.comparison_methods),
@@ -268,6 +270,7 @@ def stats_summary(dm: pd.DataFrame, metric_name: str) -> None:
             ("curr1_gate0", "+ Curriculum"),
             ("saga",        "Saga++"),
             ("cp",          "CP prep"),
+            ("learn2clean", "Learn2Clean"),
         ]):
             comp_rows = dm[(dm["config"] == comp_cfg) & (dm["data_mode"] == noise_mode)]
             comp_vals = comp_rows.set_index("dataset")["metric_mean"]
@@ -342,6 +345,7 @@ def plot_deltas(dm: pd.DataFrame, metric_name: str) -> None:
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
+        ("learn2clean", "Learn2Clean"),
     ])
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=False)
@@ -415,6 +419,7 @@ def plot_noise_robustness(dm: pd.DataFrame, metric_name: str) -> None:
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
+        ("learn2clean", "Learn2Clean"),
     ])
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
@@ -578,6 +583,7 @@ def _plot_training_efficiency_for_pct(dm: pd.DataFrame, metric_name: str, pct: i
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
+        ("learn2clean", "Learn2Clean"),
     ])
 
     epochs_col = f"epochs{pct}_mean"
@@ -654,7 +660,7 @@ def plot_rank_distribution(dm: pd.DataFrame, metric_name: str) -> None:
     Also print Friedman test p-value.
     """
     methods_order = _filter_tokens([
-        "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp",
+        "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp", "learn2clean",
     ])
     method_labels = [CONFIG_LABELS.get(c, c) for c in methods_order]
 
@@ -763,7 +769,7 @@ def nemenyi_posthoc(dm: pd.DataFrame, metric_name: str) -> None:
     ``plots/gate_nemenyi_{noise_mode}.png``.
     """
     methods_order = _filter_tokens([
-        "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp",
+        "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp", "learn2clean",
     ])
 
     print("\n" + "═" * 72)
@@ -857,6 +863,7 @@ def evidence_summary(dm: pd.DataFrame, metric_name: str, latex: bool = False) ->
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
+        ("learn2clean", "Learn2Clean"),
     ])
 
     print("\n" + "═" * 72)

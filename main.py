@@ -183,6 +183,26 @@ def parse_args():
         help='Directory containing Saga++-cleaned data (default: data_cleaned_saga)'
     )
 
+    parser.add_argument(
+        '--run-learn2clean',
+        action='store_true',
+        help=(
+            'Include Learn2Clean as a data-preparation benchmark. '
+            'Runs experiments on AR/NAR modes using Learn2Clean-cleaned data '
+            '(Q-learning over the preparation pipeline). '
+            'Requires running scripts/learn2clean.py first.'
+        )
+    )
+
+    parser.add_argument(
+        '--learn2clean-data-dir',
+        type=str,
+        help=(
+            'Directory containing Learn2Clean-cleaned data '
+            '(default: data_cleaned_learn2clean)'
+        )
+    )
+
     return parser.parse_args()
 
 
@@ -310,6 +330,10 @@ def main():
         config['run_saga'] = True
     if args.saga_data_dir:
         config['saga_data_dir'] = args.saga_data_dir
+    if args.run_learn2clean:
+        config['run_learn2clean'] = True
+    if args.learn2clean_data_dir:
+        config['learn2clean_data_dir'] = args.learn2clean_data_dir
 
     # Validate configuration
     if not config.get('datasets'):
@@ -353,6 +377,11 @@ def main():
     if config.get('run_saga'):
         print(f"  - Cleaned data dir: {config.get('saga_data_dir', 'data_cleaned_saga')}")
         print(f"  - To pre-compute: python scripts/saga.py")
+    print(f"Learn2Clean benchmark: {config.get('run_learn2clean', False)}")
+    if config.get('run_learn2clean'):
+        print(f"  - Cleaned data dir: {config.get('learn2clean_data_dir', 'data_cleaned_learn2clean')}")
+        print(f"  - To pre-compute: python scripts/learn2clean.py")
+        print(f"  - Note: rows/columns may be dropped, so this baseline trains on a reduced frame")
     # Calculate total configurations per model × n_models × n_datasets,
     # adjusted for which optional benchmarks are enabled.
     n_datasets = len(config['datasets'])
@@ -361,11 +390,13 @@ def main():
     n_models = len(config['model_types'])
 
     # Per model per AR/NAR mode: poisoned + curriculum + quail + quail+curriculum = 4 standard
-    # + cp (opt) + saga (opt)
+    # + cp (opt) + saga (opt) + learn2clean (opt)
     per_model_ar_nar = 4
     if config.get('run_cp'):
         per_model_ar_nar += 1
     if config.get('run_saga'):
+        per_model_ar_nar += 1
+    if config.get('run_learn2clean'):
         per_model_ar_nar += 1
 
     clean_configs = n_datasets * n_models * int(has_clean)
@@ -383,6 +414,8 @@ def main():
         print(f"    - Custom pipeline (CP) baseline: 1 config")
     if config.get('run_saga'):
         print(f"    - Saga baseline: 1 config")
+    if config.get('run_learn2clean'):
+        print(f"    - Learn2Clean baseline: 1 config")
     print(f"  AR/NAR configs total: {ar_nar_configs}")
     print(f"  Total configurations: {total_configs}")
     print(f"  Total trials: {total_trials}")

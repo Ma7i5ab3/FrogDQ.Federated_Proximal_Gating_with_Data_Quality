@@ -802,3 +802,282 @@ def load_cp_data(
         test_dir=poisoned_dir,
         **kwargs,
     )
+
+
+def load_learn2clean_data(
+    dataset_name: str,
+    mode: str,
+    seed: int = 42,
+    learn2clean_dir: str = "data_cleaned_learn2clean",
+    clean_val: bool = True,
+    clean_test: bool = True,
+    data_dir: str = "data",
+    poisoned_dir: str = "data_poisoned",
+    val_size: float = 0.2,
+    test_sample_size: float = 0.8,
+    poison_test_size: float = 0.3,
+    **preprocessor_kwargs,
+) -> Tuple[
+    Tuple[np.ndarray, np.ndarray, np.ndarray],
+    Tuple[np.ndarray, np.ndarray, np.ndarray],
+    TabularPreprocessor,
+    Dict,
+]:
+    """
+    Load Learn2Clean-cleaned data for a dataset split.
+
+    Unlike the CP and Saga++ baselines, Learn2Clean is not shape-preserving: its
+    outlier-detection, deduplication and consistency-checking actions drop rows,
+    and its feature-selection actions drop columns. Three things follow, and this
+    loader exists to handle them:
+
+    * The train+val frame read from ``learn2clean_dir/{mode}/`` is a *subset* of
+      the poisoned partition. ``scripts/learn2clean.py`` records which rows and
+      columns survived in ``<dataset>_pipeline.pkl``, so ``clean_val`` can index
+      the clean partition with those same row positions instead of relying on the
+      two frames having equal length.
+    * The hold-out cannot come from ``data_poisoned/test/`` unchanged — it would
+      carry columns the model was never fitted on, on a different scale. It is
+      read from ``learn2clean_dir/test/{mode}/`` instead, where the cleaning
+      script already projected and rescaled it.
+    * Because rows were dropped, the residual mask is aligned to the reduced
+      frame; the quality metadata below is computed on that same frame.
+
+    Parameters
+    ----------
+    dataset_name : str
+        Name of the dataset (e.g. "iris").
+    mode : str
+        Poisoning mode ("ar" or "nar").
+    seed : int, default=42
+        Random seed for the train/val split and the test subsample.
+    learn2clean_dir : str, default="data_cleaned_learn2clean"
+        Root directory written by ``scripts/learn2clean.py``.
+    clean_val : bool, default=True
+        If True, replace the validation split with the corresponding clean rows.
+    clean_test : bool, default=True
+        Kept for API compatibility; the test set is always the prepared clean
+        hold-out, so this flag has no effect.
+    data_dir : str, default="data"
+        Directory containing the original clean CSV files (used for clean_val).
+    poisoned_dir : str, default="data_poisoned"
+        Root directory holding the untouched ``test/`` split, used as a fallback
+        when the prepared hold-out is missing.
+    val_size : float, default=0.2
+        Fraction of the train+val partition to use as validation.
+    test_sample_size : float, default=0.8
+        Fraction of the hold-out to sample as the final test set.
+    poison_test_size : float, default=0.3
+        Fraction held out as test when running ``poison_data.py`` (used to
+        exclude those rows from the clean train+val pool when clean_val=True).
+
+    Returns
+    -------
+    Same structure as ``load_data``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the Learn2Clean-cleaned file does not exist; run
+        ``scripts/learn2clean.py`` first.
+    """
+    import pickle
+
+    from sklearn.model_selection import train_test_split
+
+    data_path = Path(data_dir)
+    l2c_mode_path = Path(learn2clean_dir) / mode
+
+    # Locate dataset file by matching name suffix
+    csv_files = list(data_path.glob(f"*_{dataset_name}.csv"))
+    if not csv_files:
+        raise FileNotFoundError(
+            f"Dataset '{dataset_name}' not found in {data_dir}. "
+            f"Use get_datasets() to see available datasets."
+        )
+    if len(csv_files) > 1:
+        raise ValueError(
+            f"Multiple files found for dataset '{dataset_name}': {[f.name for f in csv_files]}"
+        )
+    csv_file = csv_files[0]
+    dataset_filename = csv_file.name
+
+    # ---- Load Learn2Clean-cleaned train+val partition ----
+    l2c_csv = l2c_mode_path / dataset_filename
+    l2c_mask_file = l2c_mode_path / f"{csv_file.stem}_mask.csv"
+    pipeline_pkl = l2c_mode_path / f"{csv_file.stem}_pipeline.pkl"
+
+    if not l2c_csv.exists():
+        raise FileNotFoundError(
+            f"Learn2Clean-cleaned data not found: {l2c_csv}. "
+            "Run 'python scripts/learn2clean.py' first."
+        )
+
+    df = pd.read_csv(l2c_csv, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "])
+    if l2c_mask_file.exists():
+        mask_df = pd.read_csv(l2c_mask_file).astype(bool)
+    else:
+        mask_df = pd.DataFrame(False, index=df.index, columns=df.columns, dtype=bool)
+
+    pipeline_info: Optional[dict] = None
+    if pipeline_pkl.exists():
+        with open(pipeline_pkl, "rb") as f:
+            pipeline_info = pickle.load(f)
+
+    # ---- Detect label column ----
+    label_cols = [col for col in df.columns if col.startswith(("cls_", "reg_"))]
+    if not label_cols:
+        raise ValueError(f"No label column found in dataset {dataset_name}")
+    label_col = label_cols[0]
+    task_type = "classification" if label_col.startswith("cls_") else "regression"
+
+    # ---- Load the prepared hold-out ----
+    # scripts/learn2clean.py writes it under test/{mode}/ with the surviving
+    # columns and the same rescaling; fall back to the raw clean hold-out
+    # projected onto those columns if the prepared copy is missing.
+    prepared_test = Path(learn2clean_dir) / "test" / mode / dataset_filename
+    raw_test = Path(poisoned_dir) / "test" / dataset_filename
+    if prepared_test.exists():
+        test_file = prepared_test
+    elif raw_test.exists():
+        test_file = raw_test
+    else:
+        raise FileNotFoundError(
+            f"Test file not found: {prepared_test} (nor {raw_test}). "
+            "Run scripts/learn2clean.py (and scripts/poison_data.py) first."
+        )
+
+    df_test_full = pd.read_csv(
+        test_file, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "]
+    )
+    df_test = df_test_full.sample(frac=test_sample_size, random_state=seed).reset_index(drop=True)
+
+    # Keep the hold-out on exactly the feature set the model is fitted on.
+    feature_cols = [c for c in df.columns if c != label_col]
+    missing_in_test = [c for c in feature_cols if c not in df_test.columns]
+    if missing_in_test:
+        raise ValueError(
+            f"Prepared hold-out {test_file} is missing columns kept in training: "
+            f"{missing_in_test}. Re-run scripts/learn2clean.py for '{dataset_name}'."
+        )
+    df_test = df_test[feature_cols + ([label_col] if label_col in df_test.columns else [])]
+
+    # ---- Split train+val ----
+    indices = np.arange(len(df))
+    y_full = df[label_col].values
+    stratify_split = y_full if task_type == "classification" else None
+    if stratify_split is not None:
+        counts = pd.Series(y_full).value_counts()
+        if counts.min() < 2:
+            stratify_split = None  # a singleton class cannot be stratified
+    train_idx, val_idx = train_test_split(
+        indices, test_size=val_size, random_state=seed, stratify=stratify_split
+    )
+
+    df_train = df.iloc[train_idx].reset_index(drop=True)
+    df_val = df.iloc[val_idx].reset_index(drop=True)
+    mask_train = mask_df.iloc[train_idx].reset_index(drop=True)
+    mask_val = mask_df.iloc[val_idx].reset_index(drop=True)
+
+    # Replace val with the corresponding clean rows when requested.
+    # kept_rows holds the positions those rows had in the poisoned partition, so
+    # the clean partition can be indexed with them even though Learn2Clean
+    # dropped rows — which is what makes equal-length alignment unnecessary here.
+    if clean_val:
+        full_clean_df = pd.read_csv(
+            csv_file, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "]
+        )
+        test_rows = full_clean_df.sample(frac=poison_test_size, random_state=42)
+        clean_trainval_df = full_clean_df.drop(test_rows.index).reset_index(drop=True)
+
+        kept_rows = (pipeline_info or {}).get("kept_rows")
+        if kept_rows is not None and max(kept_rows, default=-1) < len(clean_trainval_df):
+            clean_kept = clean_trainval_df.iloc[list(kept_rows)].reset_index(drop=True)
+        elif len(clean_trainval_df) == len(df):
+            clean_kept = clean_trainval_df
+        else:
+            clean_kept = None
+
+        if clean_kept is not None:
+            clean_cols = [c for c in df.columns if c in clean_kept.columns]
+            df_val = clean_kept.iloc[val_idx][clean_cols].reset_index(drop=True)
+            mask_val = pd.DataFrame(
+                False, index=df_val.index, columns=df_val.columns, dtype=bool
+            )
+
+    # ---- TabularPreprocessor ----
+    preprocessor = TabularPreprocessor(
+        random_state=seed,
+        test_size=0.0,
+        val_size=0.0,
+        **preprocessor_kwargs,
+    )
+    X_train_features = df_train.drop(columns=[label_col])
+    y_train = df_train[label_col].values
+    preprocessor.fit(X_train_features, y_train)
+
+    X_train = preprocessor.transform(X_train_features)
+    X_val = preprocessor.transform(df_val.drop(columns=[label_col]))
+    X_test = preprocessor.transform(df_test.drop(columns=[label_col]))
+
+    y_val = df_val[label_col].values
+    y_test = df_test[label_col].values  # labels are never transformed
+
+    # ---- Quality metrics ----
+    def _sample_quality(mask: pd.DataFrame) -> np.ndarray:
+        cols = [c for c in feature_cols if c in mask.columns]
+        dirty = mask[cols].sum(axis=1).values
+        return (len(cols) - dirty) / max(len(cols), 1) * 100
+
+    sample_quality_train = _sample_quality(mask_train)
+    sample_quality_val = _sample_quality(mask_val)
+    sample_quality_test = np.full(len(df_test), 100.0)
+
+    feature_names_out = preprocessor.get_feature_names_out()
+    feature_quality: Dict = {}
+    for num_feat in getattr(preprocessor, "numerical_features_", []):
+        if num_feat in feature_cols and num_feat in mask_train.columns:
+            col_mask = mask_train[num_feat].values
+            feature_quality[num_feat] = (1 - col_mask.sum() / max(len(col_mask), 1)) * 100
+    for cat_feat in getattr(preprocessor, "categorical_features_", []):
+        if cat_feat in feature_cols and cat_feat in mask_train.columns:
+            col_mask = mask_train[cat_feat].values
+            q = (1 - col_mask.sum() / max(len(col_mask), 1)) * 100
+            for out_feat in feature_names_out:
+                if out_feat.startswith(f"{cat_feat}_"):
+                    feature_quality[out_feat] = q
+
+    feat_cols_present = [c for c in feature_cols if c in mask_train.columns]
+    all_masks = pd.concat(
+        [mask_train[feat_cols_present], mask_val[feat_cols_present]], ignore_index=True
+    )
+    total_dirty = all_masks.sum().sum()
+    total_cells = all_masks.size
+    overall_quality = (1 - total_dirty / max(total_cells, 1)) * 100
+
+    metadata = {
+        "mask_train": mask_train[feat_cols_present].values if feat_cols_present else np.zeros((len(df_train), 0), dtype=bool),
+        "mask_val": mask_val[feat_cols_present].values if feat_cols_present else np.zeros((len(df_val), 0), dtype=bool),
+        "mask_test": np.zeros((len(df_test), len(feat_cols_present)), dtype=bool),
+        "sample_quality_train": sample_quality_train,
+        "sample_quality_val": sample_quality_val,
+        "sample_quality_test": sample_quality_test,
+        "feature_quality": feature_quality,
+        "overall_quality": overall_quality,
+        "mode": mode,
+        "dataset_name": dataset_name,
+        "task_type": task_type,
+        "n_samples": {"train": len(X_train), "val": len(X_val), "test": len(X_test)},
+        "n_features_raw": len(feature_cols),
+        "n_features_preprocessed": X_train.shape[1],
+        # Learn2Clean-specific: how much of the poisoned partition survived, and
+        # which strategy produced it. Reported so the reduction is visible in the
+        # results rather than hidden behind an equal-looking metrics row.
+        "learn2clean_strategy": (pipeline_info or {}).get("strategy"),
+        "learn2clean_goal": (pipeline_info or {}).get("goal"),
+        "learn2clean_rows_kept": len(df),
+        "learn2clean_cols_kept": len(df.columns),
+        "learn2clean_dropped_columns": (pipeline_info or {}).get("dropped_columns", []),
+    }
+
+    return (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata
