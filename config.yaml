@@ -72,8 +72,8 @@ gate_settings:
 # -------------------
 
 # Fraction of each dataset held out as the clean test set.
-# Must be identical in poison_data.py and autogluon.py — both scripts read
-# this value from here so it never needs to be set manually in two places.
+# Must be identical wherever else it is read from config.yaml, so it never
+# needs to be set manually in two places.
 test_size: 0.3
 
 # Whether to use clean validation data even when training on poisoned data
@@ -141,25 +141,6 @@ reuse_params: true
 # Number of top trials to sample from when reusing parameters
 reuse_top_n: 8
 
-# AutoGluon Benchmark Settings
-# -----------------------------
-
-# Whether to include AutoGluon as a data-preparation benchmark.
-# When true, Optuna experiments are also run on AR/NAR modes using pre-computed
-# AutoGluon-transformed features (no further preprocessing inside the experiment).
-# These act as baselines: linear and MLP models trained on AutoGluon features.
-#
-# IMPORTANT: run the preparation script first:
-#   python scripts/autogluon.py [--datasets ...] [--data-modes ar nar]
-#
-# false: skip AutoGluon benchmark (default)
-# true:  include AutoGluon benchmark experiments
-run_autogluon: false
-
-# Directory containing pre-computed AutoGluon features produced by scripts/autogluon.py.
-# Structure: data_autogluon/{mode}/{model_type}/{dataset_name}/seed_{seed}.npz
-autogluon_data_dir: data_autogluon
-
 # Custom Pipeline (CP) Benchmark Settings
 # -----------------------------------------
 # Whether to include the custom pipeline (CP) as a data-preparation benchmark.
@@ -182,27 +163,6 @@ run_saga: true
 
 # Directory containing Saga++-cleaned data produced by scripts/saga.py.
 saga_data_dir: data_cleaned_saga
-
-# CatBoost Benchmark Settings
-# -----------------------------
-# Whether to include CatBoost as an additional model baseline.
-# Unlike the AutoGluon/CP/Saga benchmarks above (which change
-# the data-preparation step but still train the linear/MLP neural nets),
-# CatBoost is itself a different model: it runs once per dataset/data_mode,
-# independent of model_types, and requires no precomputation script.
-#
-# IMPORTANT: no preprocessing is applied for CatBoost. It is trained directly
-# on raw data — NaN values are left untouched (no imputation), categorical
-# features are passed as native strings (no one-hot encoding), and numerical
-# features are not scaled. CatBoost's own missing-value handling and
-# categorical-feature support are used instead.
-#
-# false: skip CatBoost benchmark (default)
-# true:  include CatBoost benchmark experiments (on all enabled data_modes)
-run_catboost: false
-
-# CPU threads for CatBoost (-1 = use all available cores).
-catboost_thread_count: -1
 
 # Quail + Curriculum Experiment Settings
 # ---------------------------------------
@@ -228,18 +188,15 @@ run_gate_curriculum: false
 #   curriculum       - + curriculum learning
 #   gate             - + quAIL proximal quail (this paper's method)
 #   gate_curriculum  - + quail + curriculum combined
-#   autogluon        - AutoGluon data-preparation baseline (requires run_autogluon)
 #   saga             - Saga++ data-preparation baseline (requires run_saga)
 #   cp               - Custom pipeline (CP) data-preparation baseline (requires run_cp)
-#   catboost_clean   - CatBoost trained on clean data (requires run_catboost)
-#   catboost_dirty   - CatBoost trained on AR/NAR data (requires run_catboost)
 #
 # Note: quail_analysis.py always keeps its own "Clean" reference regardless of
 # this setting — its noise-robustness analysis is built around measuring
 # degradation *from* clean, so dropping "clean" there would break it.
 #
-# Example: only compare the quAIL quail against Saga++ and CatBoost:
-#   comparison_methods: ['clean', 'baseline', 'gate', 'saga', 'catboost_clean', 'catboost_dirty']
+# Example: only compare the quAIL quail against Saga++:
+#   comparison_methods: ['clean', 'baseline', 'gate', 'saga']
 comparison_methods: ['clean', 'baseline', 'curriculum', 'gate', 'saga', 'cp']
 
 # Data Poisoning Settings
@@ -342,19 +299,6 @@ hyperparameter_ranges:
   gate_anchor_interval: [1, 20]
   gate_quality_weighting_choices: ['linear', 'quadratic', 'exp', 'inv_exp']
   gate_loss_scheduler_choices: ['none', 'decay', 'cosine']
-
-  # CatBoost-specific hyperparameters (trained on raw data: NaN preserved,
-  # categorical features passed natively — no imputation/one-hot/scaling)
-  catboost_iterations: [1000, 1000]
-  catboost_early_stopping_rounds: [50, 50]
-  catboost_learning_rate: [0.01, 0.3, 'log']
-  catboost_depth: [4, 10]
-  catboost_l2_leaf_reg: [1.0, 10.0, 'log']
-  catboost_random_strength: [0.000000001, 10.0, 'log']
-  catboost_bagging_temperature: [0.0, 1.0]
-  catboost_border_count: [32, 255]
-  catboost_min_data_in_leaf: [1, 100]
-  catboost_grow_policy_choices: ['SymmetricTree', 'Depthwise', 'Lossguide']
 
 # Data Preparation Pipeline Tuning
 # -----------------------------------

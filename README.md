@@ -38,7 +38,6 @@ data/                     Clean source datasets (OpenML-CC18-derived)
 data_poisoned/            AR/NAR-corrupted versions of data/, from scripts/poison_data.py
 data_cleaned_cp/          Custom-pipeline-cleaned data (MICE + IQR + rule repair)
 data_cleaned_saga/        Saga++-cleaned data (baseline data-repair method)
-data_autogluon/           Precomputed AutoGluon features (baseline)
 config.yaml               Single source of truth for all experiment settings
 run_pipeline.sh           Orchestrates the full pipeline end to end
 main.py                   Entry point for the Optuna hyperparameter search
@@ -82,7 +81,7 @@ python scripts/download_data.py --output-dir data
 
 Edit [config.yaml](config.yaml) to pick datasets, data-quality modes
 (`clean`/`ar`/`nar`), model types, and which benchmarks to include
-(`run_cp`, `run_saga`, `run_autogluon`, `run_catboost`). Corruption rates are
+(`run_cp`, `run_saga`). Corruption rates are
 documented in [POISONING.md](POISONING.md) and must be changed accordingly to config.yaml
 
 ### 5. Run the full pipeline
@@ -91,12 +90,12 @@ documented in [POISONING.md](POISONING.md) and must be changed accordingly to co
 ./run_pipeline.sh -y
 ```
 
-This runs all seven stages in order: select datasets, poison data, data
-preparation (CP), Saga++ and Optuna experiments with the selected methods (QuAIL and Curriculum included) (`main.py`)
+This runs all six stages in order: select datasets, poison data, data
+preparation (CP), Saga++, Optuna experiments with the selected methods (QuAIL and Curriculum included) (`main.py`), and evaluation.
 
 ```bash
 ./run_pipeline.sh --skip-poison --skip-cp          # skip specific stages
-./run_pipeline.sh --start-from 6                    # resume from a given stage
+./run_pipeline.sh --start-from 5                    # resume from a given stage
 ./run_pipeline.sh --eval-output-dir my_evaluation    # custom plot output dir
 ```
 

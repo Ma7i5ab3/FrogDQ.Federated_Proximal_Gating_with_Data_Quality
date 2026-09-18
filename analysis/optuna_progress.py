@@ -16,7 +16,7 @@ CLI arguments
 --convergence
     Also produce HPO convergence plots (best-so-far curves, convergence AUC,
     best-trial position).  Requires loading all trials, so it is slower.
---comparison-methods {clean,baseline,curriculum,gate,gate_curriculum,autogluon,saga,cp,catboost_clean,catboost_dirty}
+--comparison-methods {clean,baseline,curriculum,gate,gate_curriculum,saga,cp}
     Restrict every plot/table to these methods (overrides config.yaml's
     comparison_methods; see quail/comparison_methods.py).
 --config PATH
@@ -40,8 +40,8 @@ python optuna_progress.py --metric precision --complete-only --model-type linear
 # Test F1 + HPO convergence analysis
 python optuna_progress.py --convergence
 
-# Only compare quail vs saga vs catboost
-python optuna_progress.py --comparison-methods clean baseline gate saga catboost_dirty
+# Only compare quail vs saga
+python optuna_progress.py --comparison-methods clean baseline gate saga
 """
 
 import argparse
@@ -75,22 +75,16 @@ CONFIG_LABELS = {
     "curr1_gate0":  "Curriculum",
     "curr0_gate1":  "QuAIL",
     "curr1_gate1":  "+ Quail + Curr",
-    "ag":           "AutoGluon prep",
     "saga":         "Saga++ prep",
     "cp":           "CP prep",
-    "catboost_clean": "CatBoost Clean",
-    "catboost_dirty":  "CatBoost Dirty",
 }
 
 BAR_ORDER = [
     "Clean",
     "Standard prep",
     "Curriculum",
-    "AutoGluon prep",
     "Saga++ prep",
     "CP prep",
-    "CatBoost Clean",
-    "CatBoost Dirty",
     "QuAIL",
     "+ Quail + Curr",
 ]
@@ -99,11 +93,8 @@ BAR_COLORS = {
     "Clean":            "#4c9bcd",
     "Standard prep":         "#aaaaaa",
     "Curriculum":     "#e07b39",
-    "AutoGluon prep":   "#9b59b6",
     "Saga++ prep":      "#1abc9c",
     "CP prep":          "#f39c12",
-    "CatBoost Clean":   "#27ae60",
-    "CatBoost Dirty":   "#8e44ad",
     "QuAIL":           "#e74c3c",
     "+ Quail + Curr":    "#2ecc71",
 }
@@ -129,15 +120,13 @@ _TIME_KEYS = ["cpu_time", "train_time", "elapsed", "time"]
 _PREPROC_DIRS = {
     "saga":          Path("..") / "data_cleaned_saga",
     "cp":            Path("..") / "data_cleaned_cp",
-    "ag":            Path("..") / "data_autogluon",
 }
 
 
 def _load_external_preproc_times() -> dict:
     """
     Load cpu_time_s from preprocessing perf_metrics CSVs written by the
-    standalone scripts (saga.py, autogluon.py,
-    data_preparation_pipeline.py).
+    standalone scripts (saga.py, data_preparation_pipeline.py).
 
     Returns
     -------
@@ -150,8 +139,6 @@ def _load_external_preproc_times() -> dict:
 
     # saga / cp: metrics/{dataset}_{mode}_perf_metrics.csv
     for config, base_dir in _PREPROC_DIRS.items():
-        if config == "ag":
-            continue
         metrics_dir = base_dir / "metrics"
         if not metrics_dir.exists():
             continue
@@ -178,24 +165,6 @@ def _load_external_preproc_times() -> dict:
             except Exception:
                 continue
 
-    # autogluon: data_autogluon/{mode}/{model_type}/{dataset}/perf_metrics.csv
-    ag_dir = _PREPROC_DIRS["ag"]
-    if ag_dir.exists():
-        for csv_path in ag_dir.glob("*/*/*/perf_metrics.csv"):
-            try:
-                parts      = csv_path.parts
-                data_mode  = parts[-4]
-                model_type = parts[-3]
-                dataset    = parts[-2]
-                df_perf = pd.read_csv(csv_path)
-                if "cpu_time_s" not in df_perf.columns:
-                    continue
-                # Multiple rows (one per seed) — average over seeds
-                cpu_t = float(df_perf["cpu_time_s"].mean())
-                lookup[(dataset, data_mode, "ag", model_type)] = cpu_t
-            except Exception:
-                continue
-
     return lookup
 
 
@@ -205,17 +174,7 @@ def _load_external_preproc_times() -> dict:
 
 _RE_STANDARD = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-    r"_(?P<config>curr[01]_gate[01]|ag|saga|cp)$"
-)
-
-# CatBoost is a standalone model baseline: study names are
-# {dataset}_{data_mode}_catboost (no model_type/curr/quail suffix). Its
-# "model_type" is kept as a synthetic "catboost" value here and later
-# broadcast into every real model_type by broadcast_catboost() so it shows
-# up as two extra competitor bars ("catboost_clean"/"catboost_dirty") in
-# every linear/mlp comparison, rather than living in an isolated bucket.
-_RE_CATBOOST = re.compile(
-    r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_catboost$"
+    r"_(?P<config>curr[01]_gate[01]|saga|cp)$"
 )
 
 
@@ -224,62 +183,13 @@ def _parse_study_name(name: str) -> dict | None:
     m = _RE_STANDARD.match(name)
     if m:
         return m.groupdict()
-    m = _RE_CATBOOST.match(name)
-    if m:
-        gd = m.groupdict()
-        return {
-            "dataset":    gd["dataset"],
-            "data_mode":  gd["data_mode"],
-            "model_type": "catboost",
-            "config":     "catboost_clean" if gd["data_mode"] == "clean" else "catboost_dirty",
-        }
     return None
-
-
-def broadcast_catboost(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Broadcast CatBoost's standalone model_type=="catboost" rows into every
-    other model_type present, so "CatBoost Clean"/"CatBoost Dirty" appear as
-    two extra competitor methods in every existing linear/mlp comparison
-    (bar charts, heatmaps, efficiency scatter, convergence plots, ...).
-
-    CatBoost Clean has no AR/NAR variant (it's trained once on clean data),
-    so its single data_mode=="clean" row is also duplicated into synthetic
-    data_mode=="ar"/"nar" copies, letting it slot into every noise_mode-
-    filtered plot exactly like the fixed "Clean" reference already does.
-
-    Works on both `load_studies()`'s output and `load_convergence_curves()`'s
-    output — both have a `model_type` column.
-    """
-    catboost_rows = df[df["model_type"] == "catboost"].copy()
-    if catboost_rows.empty:
-        return df
-
-    clean_mask = catboost_rows["data_mode"] == "clean"
-    dupes = [catboost_rows]
-    for noise_mode in ("ar", "nar"):
-        dup = catboost_rows[clean_mask].copy()
-        dup["data_mode"] = noise_mode
-        dupes.append(dup)
-    catboost_rows = pd.concat(dupes, ignore_index=True)
-
-    other_model_types = sorted(df.loc[df["model_type"] != "catboost", "model_type"].unique())
-    if not other_model_types:
-        return df
-
-    broadcasted = []
-    for mt in other_model_types:
-        dup = catboost_rows.copy()
-        dup["model_type"] = mt
-        broadcasted.append(dup)
-
-    return pd.concat([df[df["model_type"] != "catboost"]] + broadcasted, ignore_index=True)
 
 
 def filter_selected_methods(df: pd.DataFrame, selected: Optional[List[str]]) -> pd.DataFrame:
     """
-    Restrict a load_studies()/load_convergence_curves() dataframe (post
-    broadcast_catboost()) to a comparison_methods selection.
+    Restrict a load_studies()/load_convergence_curves() dataframe to a
+    comparison_methods selection.
 
     Every downstream function in this file derives what to plot from the
     dataframe's contents (BAR_ORDER is only ever intersected with whatever
@@ -1436,7 +1346,6 @@ if __name__ == "__main__":
         print("No studies found. Check DB path and study naming convention.")
         raise SystemExit(1)
 
-    df = broadcast_catboost(df)
     df = filter_selected_methods(df, selected_methods)
 
     if args.complete_only:
@@ -1469,7 +1378,6 @@ if __name__ == "__main__":
         if curves_df.empty:
             print("  No per-trial data found; skipping convergence plots.")
         else:
-            curves_df = broadcast_catboost(curves_df)
             curves_df = filter_selected_methods(curves_df, selected_methods)
             for model_type in model_types:
                 for noise_mode in ["ar", "nar"]:

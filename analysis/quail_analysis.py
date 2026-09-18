@@ -17,7 +17,7 @@ Usage
     python quail_analysis.py
     python quail_analysis.py --metric accuracy
     python quail_analysis.py --metric auc --latex
-    python quail_analysis.py --comparison-methods baseline gate saga catboost_dirty
+    python quail_analysis.py --comparison-methods baseline gate saga
 
 Every competitor list in this file can be restricted to a chosen subset of
 methods via --comparison-methods (or the comparison_methods key in
@@ -62,15 +62,7 @@ STORAGE = f"sqlite:///{DB_PATH.resolve()}"
 
 _RE = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-    r"_(?P<config>curr[01]_gate[01]|ag|saga|cp)$"
-)
-
-# CatBoost is a standalone model baseline: study names are
-# {dataset}_{data_mode}_catboost (no model_type/curr/quail suffix), so it
-# needs its own pattern. Its "config" is synthesized as catboost_clean /
-# catboost_dirty in load_seed_data() below.
-_RE_CATBOOST = re.compile(
-    r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_catboost$"
+    r"_(?P<config>curr[01]_gate[01]|saga|cp)$"
 )
 
 CONFIG_LABELS = {
@@ -80,9 +72,6 @@ CONFIG_LABELS = {
     "curr1_gate1": "+ Quail + Curr",
     "saga":        "Saga++",
     "cp":          "CP prep",
-    "ag":          "AutoGluon",
-    "catboost_clean": "CatBoost Clean",
-    "catboost_dirty":  "CatBoost Dirty",
 }
 
 COLORS = {
@@ -91,8 +80,6 @@ COLORS = {
     "Curriculum": "#e07b39",
     "Saga++":       "#1abc9c",
     "CP prep":      "#f39c12",
-    "CatBoost Clean": "#27ae60",
-    "CatBoost Dirty": "#8e44ad",
 }
 
 # comparison_methods selection (canonical keys from quail.comparison_methods),
@@ -149,19 +136,9 @@ def load_seed_data(metric: str = "f1") -> pd.DataFrame:
     rows = []
     for name in optuna.get_all_study_names(storage=STORAGE):
         m = _RE.match(name)
-        if m:
-            d = m.groupdict()
-        else:
-            m_cb = _RE_CATBOOST.match(name)
-            if not m_cb:
-                continue
-            gd = m_cb.groupdict()
-            d = {
-                "dataset":    gd["dataset"],
-                "data_mode":  gd["data_mode"],
-                "model_type": "catboost",
-                "config":     "catboost_clean" if gd["data_mode"] == "clean" else "catboost_dirty",
-            }
+        if not m:
+            continue
+        d = m.groupdict()
         study = optuna.load_study(study_name=name, storage=STORAGE)
         try:
             best = study.best_trial
@@ -219,26 +196,6 @@ def dataset_means(df: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index()
     )
-
-
-def broadcast_catboost_clean(dm: pd.DataFrame) -> pd.DataFrame:
-    """
-    CatBoost-Clean has no AR/NAR variant (it's trained once, on clean data
-    only), but every comparison function below filters by (config, data_mode)
-    together. Duplicate its single clean-mode row into synthetic AR/NAR rows
-    (same scores) so it can sit alongside "catboost_dirty" and every other
-    method as a fixed reference — exactly like the "clean" baseline already
-    does via plot_noise_robustness's fixed-reference lookup.
-    """
-    clean_rows = dm[dm["config"] == "catboost_clean"]
-    if clean_rows.empty:
-        return dm
-    dupes = []
-    for noise_mode in ["ar", "nar"]:
-        dup = clean_rows.copy()
-        dup["data_mode"] = noise_mode
-        dupes.append(dup)
-    return pd.concat([dm] + dupes, ignore_index=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -311,8 +268,6 @@ def stats_summary(dm: pd.DataFrame, metric_name: str) -> None:
             ("curr1_gate0", "+ Curriculum"),
             ("saga",        "Saga++"),
             ("cp",          "CP prep"),
-            ("catboost_clean", "CatBoost Clean"),
-            ("catboost_dirty", "CatBoost Dirty"),
         ]):
             comp_rows = dm[(dm["config"] == comp_cfg) & (dm["data_mode"] == noise_mode)]
             comp_vals = comp_rows.set_index("dataset")["metric_mean"]
@@ -387,8 +342,6 @@ def plot_deltas(dm: pd.DataFrame, metric_name: str) -> None:
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
-        ("catboost_clean", "CatBoost Clean"),
-        ("catboost_dirty", "CatBoost Dirty"),
     ])
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=False)
@@ -462,8 +415,6 @@ def plot_noise_robustness(dm: pd.DataFrame, metric_name: str) -> None:
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
-        ("catboost_clean", "CatBoost Clean"),
-        ("catboost_dirty", "CatBoost Dirty"),
     ])
 
     fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
@@ -627,8 +578,6 @@ def _plot_training_efficiency_for_pct(dm: pd.DataFrame, metric_name: str, pct: i
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
-        ("catboost_clean", "CatBoost Clean"),
-        ("catboost_dirty", "CatBoost Dirty"),
     ])
 
     epochs_col = f"epochs{pct}_mean"
@@ -706,7 +655,6 @@ def plot_rank_distribution(dm: pd.DataFrame, metric_name: str) -> None:
     """
     methods_order = _filter_tokens([
         "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp",
-        "catboost_clean", "catboost_dirty",
     ])
     method_labels = [CONFIG_LABELS.get(c, c) for c in methods_order]
 
@@ -816,7 +764,6 @@ def nemenyi_posthoc(dm: pd.DataFrame, metric_name: str) -> None:
     """
     methods_order = _filter_tokens([
         "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp",
-        "catboost_clean", "catboost_dirty",
     ])
 
     print("\n" + "═" * 72)
@@ -910,8 +857,6 @@ def evidence_summary(dm: pd.DataFrame, metric_name: str, latex: bool = False) ->
         ("curr1_gate0", "+ Curriculum"),
         ("saga",        "Saga++"),
         ("cp",          "CP prep"),
-        ("catboost_clean", "CatBoost Clean"),
-        ("catboost_dirty", "CatBoost Dirty"),
     ])
 
     print("\n" + "═" * 72)
@@ -990,7 +935,6 @@ if __name__ == "__main__":
     print(f"\nDB: {DB_PATH.resolve()}  |  exists: {DB_PATH.exists()}")
     seed_df = load_seed_data(metric=args.metric)
     dm      = dataset_means(seed_df)
-    dm      = broadcast_catboost_clean(dm)
 
     print("\nRunning analyses…")
     stats_summary(dm, metric_name)

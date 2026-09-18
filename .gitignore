@@ -14,7 +14,6 @@ evaluation/*
 data_baseline_zero/*
 */ar
 */nar
-*/_ag_tmp
 .python-version
 .local
 .config
@@ -22,7 +21,6 @@ data_baseline_zero/*
 .idea
 
 .vscode
-catboost_info
 
 *.DS_Store*
 

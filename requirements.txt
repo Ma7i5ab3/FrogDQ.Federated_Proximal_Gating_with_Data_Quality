@@ -14,7 +14,6 @@ optuna
 matplotlib
 seaborn
 lightgbm
-catboost
 ray
 openml
 ucimlrepo
@@ -24,5 +23,4 @@ pyyaml
 shap
 miceforest
 mlxtend
-autogluon.tabular
 scikit-posthocs

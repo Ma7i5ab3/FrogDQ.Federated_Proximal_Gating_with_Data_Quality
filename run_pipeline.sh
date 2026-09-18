@@ -6,9 +6,8 @@
 #   2. Poison Data
 #   3. Data Preparation Pipeline (CP)
 #   4. Saga++
-#   5. AutoGluon
-#   6. Main (Optuna experiments)
-#   7. Evaluation (Friedman test + critical-difference diagrams)
+#   5. Main (Optuna experiments)
+#   6. Evaluation (Friedman test + critical-difference diagrams)
 #
 # Usage:
 #   ./run_pipeline.sh [options]
@@ -18,10 +17,9 @@
 #   --skip-poison        Skip step 2 (poison data)
 #   --skip-cp            Skip step 3 (data preparation pipeline)
 #   --skip-saga          Skip step 4 (Saga++)
-#   --skip-autogluon     Skip step 5 (AutoGluon)
-#   --skip-main          Skip step 6 (main experiments)
-#   --skip-evaluate      Skip step 7 (evaluation)
-#   --start-from N       Start from step N (1–7), skipping earlier steps
+#   --skip-main          Skip step 5 (main experiments)
+#   --skip-evaluate      Skip step 6 (evaluation)
+#   --start-from N       Start from step N (1–6), skipping earlier steps
 #   --eval-output-dir D  Output directory for evaluation plots (default: evaluation)
 #   -y, --yes            Auto-confirm the main experiment prompt
 #   -h, --help           Show this help message
@@ -68,7 +66,6 @@ SKIP_SELECT=false
 SKIP_POISON=false
 SKIP_CP=false
 SKIP_SAGA=false
-SKIP_AUTOGLUON=false
 SKIP_MAIN=false
 SKIP_EVALUATE=false
 AUTO_YES=false
@@ -81,12 +78,11 @@ while [[ $# -gt 0 ]]; do
         --skip-poison)        SKIP_POISON=true        ;;
         --skip-cp)            SKIP_CP=true            ;;
         --skip-saga)          SKIP_SAGA=true          ;;
-        --skip-autogluon)     SKIP_AUTOGLUON=true     ;;
         --skip-main)          SKIP_MAIN=true          ;;
         --skip-evaluate)      SKIP_EVALUATE=true      ;;
         --start-from)
             START_FROM="$2"; shift
-            [[ "$START_FROM" =~ ^[1-7]$ ]] || die "--start-from requires a number between 1 and 7"
+            [[ "$START_FROM" =~ ^[1-6]$ ]] || die "--start-from requires a number between 1 and 6"
             ;;
         --eval-output-dir)
             EVAL_OUTPUT_DIR="$2"; shift
@@ -106,8 +102,7 @@ done
 (( START_FROM > 2 )) && SKIP_POISON=true
 (( START_FROM > 3 )) && SKIP_CP=true
 (( START_FROM > 4 )) && SKIP_SAGA=true
-(( START_FROM > 5 )) && SKIP_AUTOGLUON=true
-(( START_FROM > 6 )) && SKIP_MAIN=true
+(( START_FROM > 5 )) && SKIP_MAIN=true
 
 # ── preflight ─────────────────────────────────────────────────────────────────
 [[ -x "$PYTHON" ]]  || die "Python not found at: $PYTHON"
@@ -167,23 +162,10 @@ else
     step_ok 4
 fi
 
-# ── step 5 — autogluon ────────────────────────────────────────────────────────
-step_header 5 "AutoGluon"
-if $SKIP_AUTOGLUON; then
-    step_skip 5
-else
-    "$PYTHON" scripts/autogluon.py \
-        --config      "$CONFIG" \
-        --output-dir  data_autogluon \
-        --data-dir    data \
-        --poisoned-dir data_poisoned
-    step_ok 5
-fi
-
-# ── step 6 — main (optuna experiments) ───────────────────────────────────────
-step_header 6 "Main (Optuna Experiments)"
+# ── step 5 — main (optuna experiments) ───────────────────────────────────────
+step_header 5 "Main (Optuna Experiments)"
 if $SKIP_MAIN; then
-    step_skip 6
+    step_skip 5
 else
     # Read benchmark flags from config.yaml so this step stays in sync
     _cfg_flag() {
@@ -192,7 +174,6 @@ else
     MAIN_ARGS=(--config "$CONFIG")
     [ "$(_cfg_flag run_cp)"            = "true" ] && MAIN_ARGS+=(--run-cp)
     [ "$(_cfg_flag run_saga)"          = "true" ] && MAIN_ARGS+=(--run-saga)
-    [ "$(_cfg_flag run_autogluon)"     = "true" ] && MAIN_ARGS+=(--run-autogluon)
 
     # Patch stdin so the "Proceed?" prompt is auto-answered when -y is passed
     if $AUTO_YES; then
@@ -200,18 +181,18 @@ else
     else
         "$PYTHON" main.py "${MAIN_ARGS[@]}"
     fi
-    step_ok 6
+    step_ok 5
 fi
 
-# ── step 7 — evaluation (friedman test + cd diagrams) ────────────────────────
-step_header 7 "Evaluation (Friedman Test + Critical-Difference Diagrams)"
+# ── step 6 — evaluation (friedman test + cd diagrams) ────────────────────────
+step_header 6 "Evaluation (Friedman Test + Critical-Difference Diagrams)"
 if $SKIP_EVALUATE; then
-    step_skip 7
+    step_skip 6
 else
     "$PYTHON" scripts/evaluate.py \
         --config     "$CONFIG" \
         --output-dir "$EVAL_OUTPUT_DIR"
-    step_ok 7
+    step_ok 6
 fi
 
 echo ""

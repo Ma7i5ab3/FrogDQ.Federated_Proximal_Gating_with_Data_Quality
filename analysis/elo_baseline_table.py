@@ -27,7 +27,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from elo_ratings import (
     ELO_BASE, ELO_SCALE, DB_PATH,
-    load_seed_data, broadcast_catboost_clean,
+    load_seed_data,
     build_matches, fit_bradley_terry, bootstrap_ratings,
 )
 
@@ -80,7 +80,6 @@ def compute_ratings(metrics, methods_order, tie_eps, reg, n_boot, seed):
 
     for metric in metrics:
         seed_df = load_seed_data(metric=metric)
-        seed_df = broadcast_catboost_clean(seed_df)
 
         for noise_mode in ["ar", "nar"]:
             sub = seed_df[seed_df["data_mode"] == noise_mode]

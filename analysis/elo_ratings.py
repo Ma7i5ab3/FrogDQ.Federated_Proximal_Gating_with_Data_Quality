@@ -30,7 +30,7 @@ Usage
 -----
     python elo_ratings.py
     python elo_ratings.py --metric accuracy
-    python elo_ratings.py --comparison-methods baseline gate saga catboost_dirty
+    python elo_ratings.py --comparison-methods baseline gate saga
     python elo_ratings.py --n-boot 1000 --latex
 """
 
@@ -69,10 +69,7 @@ STORAGE = f"sqlite:///{DB_PATH.resolve()}"
 
 _RE = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-    r"_(?P<config>curr[01]_gate[01]|ag|saga|cp)$"
-)
-_RE_CATBOOST = re.compile(
-    r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_catboost$"
+    r"_(?P<config>curr[01]_gate[01]|saga|cp)$"
 )
 
 CONFIG_LABELS = {
@@ -82,9 +79,6 @@ CONFIG_LABELS = {
     "curr1_gate1": "+ Quail + Curr",
     "saga":        "Saga++",
     "cp":          "CP prep",
-    "ag":          "AutoGluon",
-    "catboost_clean": "CatBoost Clean",
-    "catboost_dirty":  "CatBoost Dirty",
 }
 
 COLORS = {
@@ -93,8 +87,6 @@ COLORS = {
     "Curriculum":     "#e07b39",
     "Saga++":         "#1abc9c",
     "CP prep":        "#f39c12",
-    "CatBoost Clean": "#27ae60",
-    "CatBoost Dirty": "#8e44ad",
 }
 
 ELO_BASE  = 1500.0
@@ -130,19 +122,9 @@ def load_seed_data(metric: str = "f1", field: Optional[str] = None) -> pd.DataFr
     rows = []
     for name in optuna.get_all_study_names(storage=STORAGE):
         m = _RE.match(name)
-        if m:
-            d = m.groupdict()
-        else:
-            m_cb = _RE_CATBOOST.match(name)
-            if not m_cb:
-                continue
-            gd = m_cb.groupdict()
-            d = {
-                "dataset":    gd["dataset"],
-                "data_mode":  gd["data_mode"],
-                "model_type": "catboost",
-                "config":     "catboost_clean" if gd["data_mode"] == "clean" else "catboost_dirty",
-            }
+        if not m:
+            continue
+        d = m.groupdict()
         study = optuna.load_study(study_name=name, storage=STORAGE)
         try:
             best = study.best_trial
@@ -174,22 +156,6 @@ def load_seed_data(metric: str = "f1", field: Optional[str] = None) -> pd.DataFr
           f"{df['config'].nunique()} configs | "
           f"metric: {perf_key}")
     return df
-
-
-def broadcast_catboost_clean(seed_df: pd.DataFrame) -> pd.DataFrame:
-    """CatBoost-Clean has no AR/NAR variant; duplicate its per-seed rows into
-    synthetic "ar"/"nar" rows, exactly like quail_analysis.py does at the
-    dataset-mean level, so it can sit in the same per-noise-mode rating pool
-    as every other method (each seed keeps its own clean-run metric)."""
-    clean_rows = seed_df[seed_df["config"] == "catboost_clean"]
-    if clean_rows.empty:
-        return seed_df
-    dupes = []
-    for noise_mode in ["ar", "nar"]:
-        dup = clean_rows.copy()
-        dup["data_mode"] = noise_mode
-        dupes.append(dup)
-    return pd.concat([seed_df] + dupes, ignore_index=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -458,7 +424,6 @@ def compute_epochs_efficiency_elo(
     """
     field = f"epochs_to_{pct}pct"
     seed_df = load_seed_data(field=field)
-    seed_df = broadcast_catboost_clean(seed_df)
 
     compute_and_report(
         seed_df, metric_name=f"Epochs to {pct}%", methods_order=methods_order,
@@ -512,11 +477,9 @@ if __name__ == "__main__":
 
     print(f"\nDB: {DB_PATH.resolve()}  |  exists: {DB_PATH.exists()}")
     seed_df = load_seed_data(metric=args.metric)
-    seed_df = broadcast_catboost_clean(seed_df)
 
     methods_order = _filter_tokens([
         "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp",
-        "catboost_clean", "catboost_dirty",
     ])
 
     compute_and_report(

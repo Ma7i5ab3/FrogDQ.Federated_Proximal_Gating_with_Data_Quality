@@ -15,7 +15,7 @@ Plots are saved as PNG files under --output-dir.
 Usage:
     python scripts/evaluate.py --results-dir results --output-dir evaluation
     python scripts/evaluate.py --config config.yaml
-    python scripts/evaluate.py --comparison-methods clean baseline gate saga catboost_dirty
+    python scripts/evaluate.py --comparison-methods clean baseline gate saga
 """
 
 import argparse
@@ -48,12 +48,6 @@ if not hasattr(sp, "critical_difference_diagram"):
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def method_label(data_mode, use_curriculum, use_gate, preparation):
-    # CatBoost is a standalone model baseline (not tied to model_types), run
-    # once on clean data and once on AR/NAR data. Checked before the
-    # data_mode == "clean" shortcut below so its clean-mode row doesn't get
-    # merged into the "clean" reference method.
-    if preparation == "catboost":
-        return "catboost_clean" if data_mode == "clean" else "catboost_dirty"
     if data_mode == "clean":
         return "clean"
     if preparation != "standard":
@@ -107,29 +101,14 @@ def build_results(combined_results, selected_methods=None):
         for seed, score in seed_scores.items():
             method_dict[(dataset, seed)] = score
 
-    # CatBoost is a standalone model baseline (model_type == "catboost"), not
-    # tied to linear/mlp architecture, so it never shares a model_type bucket
-    # with them. Broadcast its two methods ("catboost_clean"/"catboost_dirty")
-    # into every other model_type present, so they show up as two extra
-    # competitor baselines in every comparison below — exactly like Saga/CP.
-    catboost_by_mode = results.pop("catboost", None)
-    if catboost_by_mode:
-        for model_type, by_mode in results.items():
-            for data_mode, methods in catboost_by_mode.items():
-                for method, scores in methods.items():
-                    by_mode.setdefault(data_mode, {})[method] = dict(scores)
-
     return results
 
 
 def score_matrix(results, model_type, corruption_mode):
     """(dataset, seed) × methods matrix for the Friedman test."""
-    # Every method under the "clean" data_mode bucket ("clean" itself, plus
-    # "catboost_clean" — a second fixed reference of the same kind, since
-    # CatBoost trained on clean data has no AR/NAR variant) is a fixed
-    # reference reused across both corruption modes. Built with .get() /
-    # dict unpacking (not indexing) since comparison_methods filtering may
-    # have dropped either or both of them.
+    # The "clean" data_mode bucket is a fixed reference reused across both
+    # corruption modes. Built with .get() / dict unpacking (not indexing)
+    # since comparison_methods filtering may have dropped it.
     clean_methods = results[model_type].get("clean", {})
     methods_scores = {
         **clean_methods,

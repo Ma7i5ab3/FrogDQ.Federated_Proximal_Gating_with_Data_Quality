@@ -19,9 +19,9 @@ baseline as one compact column, stacked two lines per cell:
 
 One table is produced per noise mode (AR, NAR); pass --split-by-metric to
 instead produce one (much narrower) table per (noise mode, metric). "clean"
-and "catboost_clean" have no AR/NAR variant of their own, so their per-seed
-scores are broadcast into both noise-mode match pools, exactly like
-quail_analysis.py/elo_ratings.py already do for catboost_clean.
+has no AR/NAR variant of its own, so its per-seed scores are broadcast into
+both noise-mode match pools, exactly like quail_analysis.py/elo_ratings.py
+already do for their own clean reference.
 
 In every table, the "clean" column (noise-free reference) is always bolded
 and shaded light grey (\\cellcolor{gray!15}); the best mean per (dataset,
@@ -65,7 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from quail.comparison_methods import METHOD_CHOICES, resolve_comparison_methods
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from elo_ratings import broadcast_catboost_clean, build_matches, load_seed_data
+from elo_ratings import build_matches, load_seed_data
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 warnings.filterwarnings("ignore")
@@ -91,11 +91,8 @@ CANONICAL_TO_TOKEN: Dict[str, str] = {
     "curriculum":      "curr1_gate0",
     "gate":            "curr0_gate1",
     "gate_curriculum": "curr1_gate1",
-    "autogluon":       "ag",
     "saga":            "saga",
     "cp":              "cp",
-    "catboost_clean":  "catboost_clean",
-    "catboost_dirty":  "catboost_dirty",
 }
 
 CANONICAL_LABELS: Dict[str, str] = {
@@ -104,11 +101,8 @@ CANONICAL_LABELS: Dict[str, str] = {
     "curriculum":      "Curriculum",
     "gate":            "QuAIL",
     "gate_curriculum": "+ Quail + Curr",
-    "autogluon":       "AutoGluon",
     "saga":            "Saga++",
     "cp":              "CP prep",
-    "catboost_clean":  "CatBoost Clean",
-    "catboost_dirty":  "CatBoost Dirty",
 }
 
 # The noise-free "clean" reference is an upper-bound sanity check, not a
@@ -126,7 +120,7 @@ def broadcast_clean_reference(seed_df: pd.DataFrame) -> pd.DataFrame:
     data_mode == "clean") into synthetic "ar"/"nar" rows tagged with the
     config token "clean_ref", so it can sit as its own column in the AR/NAR
     match pool without colliding with "baseline" (curr0_gate0 at data_mode
-    in {ar, nar}). Mirrors broadcast_catboost_clean() in elo_ratings.py.
+    in {ar, nar}).
     """
     clean_rows = seed_df[(seed_df["config"] == "curr0_gate0") & (seed_df["data_mode"] == "clean")]
     if clean_rows.empty:
@@ -167,7 +161,6 @@ def collect_cells(metrics: List[str], methods: List[str], noise_mode: str,
 
     for metric in metrics:
         seed_df = load_seed_data(metric=metric)
-        seed_df = broadcast_catboost_clean(seed_df)
         seed_df = broadcast_clean_reference(seed_df)
         sub = seed_df[seed_df["data_mode"] == noise_mode]
 

@@ -33,11 +33,8 @@ METHOD_CHOICES: List[str] = [
     "curriculum",
     "gate",
     "gate_curriculum",
-    "autogluon",
     "saga",
     "cp",
-    "catboost_clean",
-    "catboost_dirty",
 ]
 
 # study-name "config" token (quail_analysis.py / optuna_progress.py /
@@ -49,11 +46,8 @@ _CONFIG_TOKEN_TO_METHOD: Dict[str, str] = {
     "curr1_gate0": "curriculum",
     "curr0_gate1": "gate",
     "curr1_gate1": "gate_curriculum",
-    "ag": "autogluon",
     "saga": "saga",
     "cp": "cp",
-    "catboost_clean": "catboost_clean",
-    "catboost_dirty": "catboost_dirty",
 }
 
 # evaluate.py's method_label() string -> canonical key.
@@ -63,11 +57,8 @@ _LABEL_TO_METHOD: Dict[str, str] = {
     "curriculum": "curriculum",
     "gate": "gate",
     "gate+curriculum": "gate_curriculum",
-    "autogluon": "autogluon",
     "saga": "saga",
     "cp": "cp",
-    "catboost_clean": "catboost_clean",
-    "catboost_dirty": "catboost_dirty",
 }
 
 
@@ -85,8 +76,6 @@ def resolve_from_label(label: str) -> str:
 
 def resolve_from_column(data_mode: str, model_type: str, use_curriculum, use_gate) -> str:
     """Map a generate_latex_tables.py (data_mode, model_type, use_curr, use_gate) column to a canonical key."""
-    if model_type == "catboost":
-        return "catboost_clean" if data_mode == "clean" else "catboost_dirty"
     if use_curriculum == "aggregated" or (use_curriculum and use_gate):
         return "gate_curriculum"
     if use_gate:

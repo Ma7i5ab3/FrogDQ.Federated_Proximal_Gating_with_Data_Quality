@@ -19,8 +19,7 @@ from joblib import Parallel, delayed
 from optuna.samplers import TPESampler
 from optuna.study import Study
 
-from quail.catboost_model import fit_catboost
-from quail.data import get_datasets, load_autogluon_data, load_cp_data, load_data, load_raw_data, load_saga_data
+from quail.data import get_datasets, load_cp_data, load_data, load_saga_data
 from quail.nn import build_model
 from quail.training import fit, set_seed
 
@@ -187,13 +186,6 @@ class OptunaExperiment:
             - warm_start: Whether to resume from previous incomplete runs (default: False)
             - reuse_params: Whether to reuse parameters from runs for AR/NAR (default: False)
             - reuse_top_n: Number of top trials to sample from (default: 5)
-            - run_catboost: Whether to include CatBoost as an additional model
-              baseline (default: False). Runs once per dataset/data_mode,
-              independent of model_types. No preprocessing is applied —
-              CatBoost is trained directly on raw data (NaN preserved,
-              categorical features passed natively).
-            - catboost_thread_count: CPU threads for CatBoost (default: -1,
-              i.e. use all available cores)
         """
         self.config = config
 
@@ -226,10 +218,6 @@ class OptunaExperiment:
         self.reuse_params = config.get('reuse_params', False)
         self.reuse_top_n = config.get('reuse_top_n', 5)
 
-        # AutoGluon benchmark settings
-        self.run_autogluon = config.get('run_autogluon', False)
-        self.autogluon_data_dir = config.get('autogluon_data_dir', 'data_autogluon')
-
         # Saga benchmark settings
         self.run_saga = config.get('run_saga', False)
         self.saga_data_dir = config.get('saga_data_dir', 'data_cleaned_saga')
@@ -237,16 +225,6 @@ class OptunaExperiment:
         # Custom pipeline (CP) benchmark settings
         self.run_cp = config.get('run_cp', False)
         self.cp_data_dir = config.get('cp_data_dir', 'data_cleaned_cp')
-
-        # CatBoost benchmark settings.
-        # Unlike the other benchmarks above, this is a model baseline (not a
-        # data-preparation baseline): it runs once per dataset/data_mode,
-        # independent of model_types. It also does not need a data dir since
-        # nothing is precomputed — CatBoost is trained directly on raw data
-        # (NaN preserved, categorical features passed natively; no
-        # imputation/one-hot encoding/scaling).
-        self.run_catboost = config.get('run_catboost', False)
-        self.catboost_thread_count = config.get('catboost_thread_count', -1)
 
         # Base data directories (relative to CWD or absolute)
         self.data_dir = config.get('data_dir', 'data')
@@ -303,18 +281,6 @@ class OptunaExperiment:
             'gate_anchor_interval': (1, 20),
             'gate_quality_weighting_choices': ['linear', 'quadratic', 'exp', 'inv_exp'],
             'gate_loss_scheduler_choices': ['none', 'decay', 'cosine'],
-
-            # CatBoost-specific (trained on raw data: NaN + native categoricals, no scaling)
-            'catboost_iterations': (1000, 1000),
-            'catboost_early_stopping_rounds': (50, 50),
-            'catboost_learning_rate': (0.01, 0.3, 'log'),
-            'catboost_depth': (4, 10),
-            'catboost_l2_leaf_reg': (1.0, 10.0, 'log'),
-            'catboost_random_strength': (1e-9, 10.0, 'log'),
-            'catboost_bagging_temperature': (0.0, 1.0),
-            'catboost_border_count': (32, 255),
-            'catboost_min_data_in_leaf': (1, 100),
-            'catboost_grow_policy_choices': ['SymmetricTree', 'Depthwise', 'Lossguide'],
         }
 
     def _suggest_hyperparameters(
@@ -393,51 +359,6 @@ class OptunaExperiment:
 
         return hp
 
-    def _suggest_catboost_hyperparameters(self, trial: optuna.Trial) -> Dict[str, Any]:
-        """
-        Suggest CatBoost hyperparameters for a trial.
-
-        Parameters
-        ----------
-        trial : optuna.Trial
-            Optuna trial object
-
-        Returns
-        -------
-        dict
-            Dictionary of suggested CatBoost hyperparameters, matching the
-            keyword arguments of ``quail.catboost_model.fit_catboost``.
-        """
-        hp = {}
-        hp['iterations'] = trial.suggest_int('catboost_iterations', *self.hp_ranges['catboost_iterations'])
-        hp['early_stopping_rounds'] = trial.suggest_int(
-            'catboost_early_stopping_rounds', *self.hp_ranges['catboost_early_stopping_rounds']
-        )
-        hp['learning_rate'] = trial.suggest_float(
-            'catboost_learning_rate', *self.hp_ranges['catboost_learning_rate'][:2],
-            log=(self.hp_ranges['catboost_learning_rate'][2] == 'log')
-        )
-        hp['depth'] = trial.suggest_int('catboost_depth', *self.hp_ranges['catboost_depth'])
-        hp['l2_leaf_reg'] = trial.suggest_float(
-            'catboost_l2_leaf_reg', *self.hp_ranges['catboost_l2_leaf_reg'][:2],
-            log=(self.hp_ranges['catboost_l2_leaf_reg'][2] == 'log')
-        )
-        hp['random_strength'] = trial.suggest_float(
-            'catboost_random_strength', *self.hp_ranges['catboost_random_strength'][:2],
-            log=(self.hp_ranges['catboost_random_strength'][2] == 'log')
-        )
-        hp['bagging_temperature'] = trial.suggest_float(
-            'catboost_bagging_temperature', *self.hp_ranges['catboost_bagging_temperature']
-        )
-        hp['border_count'] = trial.suggest_int('catboost_border_count', *self.hp_ranges['catboost_border_count'])
-        hp['min_data_in_leaf'] = trial.suggest_int(
-            'catboost_min_data_in_leaf', *self.hp_ranges['catboost_min_data_in_leaf']
-        )
-        hp['grow_policy'] = trial.suggest_categorical(
-            'catboost_grow_policy', self.hp_ranges['catboost_grow_policy_choices']
-        )
-        return hp
-
     def _evaluate_single_seed(
         self,
         dataset_name: str,
@@ -470,7 +391,7 @@ class OptunaExperiment:
             Random seed for this evaluation
         preparation : str, default='standard'
             Data preparation method: 'standard' (TabularPreprocessor) or
-            'autogluon' (pre-computed AutoGluon features, no further preprocessing).
+            other precomputed baselines.
 
         Returns
         -------
@@ -484,19 +405,7 @@ class OptunaExperiment:
         preproc_wall_t0 = time.perf_counter()
         preproc_cpu_t0  = time.process_time()
 
-        if preparation == 'autogluon':
-            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
-                load_autogluon_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    model_type=model_type,
-                    seed=seed,
-                    autogluon_dir=self.autogluon_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                )
-            )
-        elif preparation == 'saga':
+        if preparation == 'saga':
             (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
                 load_saga_data(
                     dataset_name=dataset_name,
@@ -520,22 +429,6 @@ class OptunaExperiment:
                     clean_test=self.clean_test,
                     data_dir=self.data_dir,
                     poisoned_dir=self.poisoned_dir,
-                )
-            )
-        elif preparation == 'catboost':
-            # No TabularPreprocessor here on purpose: CatBoost handles NaN and
-            # categorical features natively, so raw data is used as-is (no
-            # imputation, one-hot encoding, or scaling).
-            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
-                load_raw_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=seed,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                    test_dir=self.poisoned_dir,
                 )
             )
         else:
@@ -595,108 +488,90 @@ class OptunaExperiment:
             y_val = y_val.astype(np.float64)
             y_test = y_test.astype(np.float64)
 
-        # Build model (skipped for CatBoost, which is not a torch nn.Module
-        # trained via quail.training.fit — see the 'catboost' branch below).
-        if preparation != 'catboost':
-            model_kwargs = {
-                'input_dim': X_train.shape[1],
-                'output_dim': output_dim,
-                'task': task,
-            }
+        # Build model
+        model_kwargs = {
+            'input_dim': X_train.shape[1],
+            'output_dim': output_dim,
+            'task': task,
+        }
 
-            if model_type == 'mlp':
-                model_kwargs.update({
-                    'hidden_neurons': hyperparams['hidden_neurons'],
-                    'num_layers': hyperparams['num_layers'],
-                    'dropout': hyperparams['dropout'],
-                    'activation': hyperparams['activation'],
-                    'use_batch_norm': str(hyperparams['use_batch_norm']).lower(),
-                })
-            else:
-                # Linear model (no hidden layers)
-                model_kwargs['hidden_neurons'] = hyperparams.get('hidden_neurons', 0)
+        if model_type == 'mlp':
+            model_kwargs.update({
+                'hidden_neurons': hyperparams['hidden_neurons'],
+                'num_layers': hyperparams['num_layers'],
+                'dropout': hyperparams['dropout'],
+                'activation': hyperparams['activation'],
+                'use_batch_norm': str(hyperparams['use_batch_norm']).lower(),
+            })
+        else:
+            # Linear model (no hidden layers)
+            model_kwargs['hidden_neurons'] = hyperparams.get('hidden_neurons', 0)
 
-            model = build_model(**model_kwargs)
+        model = build_model(**model_kwargs)
 
-            # Prepare training kwargs
-            train_kwargs = {
-                'model': model,
-                'X_train': X_train,
-                'y_train': y_train,
-                'X_val': X_val,
-                'y_val': y_val,
-                'X_test': X_test,
-                'y_test': y_test,
-                'task': task,
-                'epochs': hyperparams['epochs'],
-                'batch_size': hyperparams['batch_size'],
-                'learning_rate': hyperparams['learning_rate'],
-                'optimizer': hyperparams['optimizer'],
-                'weight_decay': hyperparams['weight_decay'],
-                'early_stopping_patience': hyperparams['early_stopping_patience'],
-                'lr_scheduler': hyperparams['lr_scheduler'],
-                'random_seed': seed,
-                'verbose': 0,  # Suppress training output
-            }
+        # Prepare training kwargs
+        train_kwargs = {
+            'model': model,
+            'X_train': X_train,
+            'y_train': y_train,
+            'X_val': X_val,
+            'y_val': y_val,
+            'X_test': X_test,
+            'y_test': y_test,
+            'task': task,
+            'epochs': hyperparams['epochs'],
+            'batch_size': hyperparams['batch_size'],
+            'learning_rate': hyperparams['learning_rate'],
+            'optimizer': hyperparams['optimizer'],
+            'weight_decay': hyperparams['weight_decay'],
+            'early_stopping_patience': hyperparams['early_stopping_patience'],
+            'lr_scheduler': hyperparams['lr_scheduler'],
+            'random_seed': seed,
+            'verbose': 0,  # Suppress training output
+        }
 
-            # Add curriculum learning parameters
-            if use_curriculum:
-                train_kwargs.update({
-                    'use_curriculum': 'true',
-                    'sample_quality': metadata['sample_quality_train'],
-                    'curriculum_strategy': hyperparams['curriculum_strategy'],
-                })
-            else:
-                train_kwargs['use_curriculum'] = 'false'
+        # Add curriculum learning parameters
+        if use_curriculum:
+            train_kwargs.update({
+                'use_curriculum': 'true',
+                'sample_quality': metadata['sample_quality_train'],
+                'curriculum_strategy': hyperparams['curriculum_strategy'],
+            })
+        else:
+            train_kwargs['use_curriculum'] = 'false'
 
-            # Add quail layer parameters
-            if use_gate:
-                # Convert feature quality dict to array aligned with preprocessed features
-                feature_names = preprocessor.get_feature_names_out()
-                feature_quality_array = np.zeros(len(feature_names))
+        # Add quail layer parameters
+        if use_gate:
+            # Convert feature quality dict to array aligned with preprocessed features
+            feature_names = preprocessor.get_feature_names_out()
+            feature_quality_array = np.zeros(len(feature_names))
 
-                # Map feature quality from metadata
-                for i, feat_name in enumerate(feature_names):
-                    if feat_name in metadata['feature_quality']:
-                        feature_quality_array[i] = metadata['feature_quality'][feat_name] / 100.0
-                    else:
-                        # Default to 1.0 (perfect quality) if not found
-                        feature_quality_array[i] = 1.0
+            # Map feature quality from metadata
+            for i, feat_name in enumerate(feature_names):
+                if feat_name in metadata['feature_quality']:
+                    feature_quality_array[i] = metadata['feature_quality'][feat_name] / 100.0
+                else:
+                    # Default to 1.0 (perfect quality) if not found
+                    feature_quality_array[i] = 1.0
 
-                train_kwargs.update({
-                    'use_gate': 'true',
-                    'gate_init': hyperparams['gate_init'],
-                    'feature_quality': feature_quality_array,
-                    'gate_loss_weight': hyperparams['gate_loss_weight'],
-                    'gate_anchor_interval': hyperparams['gate_anchor_interval'],
-                    'gate_quality_weighting': hyperparams['gate_quality_weighting'],
-                    'gate_loss_scheduler': hyperparams['gate_loss_scheduler'],
-                })
-            else:
-                train_kwargs['use_gate'] = 'false'
+            train_kwargs.update({
+                'use_gate': 'true',
+                'gate_init': hyperparams['gate_init'],
+                'feature_quality': feature_quality_array,
+                'gate_loss_weight': hyperparams['gate_loss_weight'],
+                'gate_anchor_interval': hyperparams['gate_anchor_interval'],
+                'gate_quality_weighting': hyperparams['gate_quality_weighting'],
+                'gate_loss_scheduler': hyperparams['gate_loss_scheduler'],
+            })
+        else:
+            train_kwargs['use_gate'] = 'false'
 
         # Train model
         try:
             train_wall_t0 = time.perf_counter()
             train_cpu_t0 = time.process_time()
 
-            if preparation == 'catboost':
-                trained_model, history = fit_catboost(
-                    X_train=X_train,
-                    y_train=y_train,
-                    X_val=X_val,
-                    y_val=y_val,
-                    X_test=X_test,
-                    y_test=y_test,
-                    cat_features=metadata.get('categorical_features', []),
-                    task=task,
-                    random_seed=seed,
-                    thread_count=self.catboost_thread_count,
-                    verbose=0,
-                    **hyperparams,
-                )
-            else:
-                trained_model, history = fit(**train_kwargs)
+            trained_model, history = fit(**train_kwargs)
 
             train_wall_time_s = time.perf_counter() - train_wall_t0
             train_cpu_time_s = time.process_time() - train_cpu_t0
@@ -860,14 +735,10 @@ class OptunaExperiment:
         use_gate: bool,
         preparation: str,
     ) -> str:
-        if preparation == 'autogluon':
-            return f"{dataset_name}_{data_mode}_{model_type}_ag"
-        elif preparation == 'saga':
+        if preparation == 'saga':
             return f"{dataset_name}_{data_mode}_{model_type}_saga"
         elif preparation == 'cp':
             return f"{dataset_name}_{data_mode}_{model_type}_cp"
-        elif preparation == 'catboost':
-            return f"{dataset_name}_{data_mode}_catboost"
         else:
             return f"{dataset_name}_{data_mode}_{model_type}_curr{int(use_curriculum)}_gate{int(use_gate)}"
 
@@ -904,7 +775,7 @@ class OptunaExperiment:
         use_gate : bool
             Whether to use quail layer
         preparation : str, default='standard'
-            Data preparation method ('standard' or 'autogluon').
+            Data preparation method ('standard' or other precomputed baselines).
 
         Returns
         -------
@@ -913,17 +784,7 @@ class OptunaExperiment:
         """
         # Load a sample to determine task type
         try:
-            if preparation == 'autogluon':
-                _, (y_train, _, _), _, metadata = load_autogluon_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    model_type=model_type,
-                    seed=self.seed_start,
-                    autogluon_dir=self.autogluon_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                )
-            elif preparation == 'saga':
+            if preparation == 'saga':
                 _, (y_train, _, _), _, metadata = load_saga_data(
                     dataset_name=dataset_name,
                     mode=data_mode,
@@ -944,17 +805,6 @@ class OptunaExperiment:
                     clean_test=self.clean_test,
                     data_dir=self.data_dir,
                     poisoned_dir=self.poisoned_dir,
-                )
-            elif preparation == 'catboost':
-                _, (y_train, _, _), _, metadata = load_raw_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=self.seed_start,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                    test_dir=self.poisoned_dir,
                 )
             else:
                 _, (y_train, _, _), _, metadata = load_data(
@@ -1022,8 +872,6 @@ class OptunaExperiment:
                 hyperparams = self._suggest_hyperparameters(trial, model_type, use_curriculum, use_gate, task)
                 if self.verbose > 1:
                     print(f"  Trial {trial.number}: Baseline params not available, full optimization")
-        elif preparation == 'catboost':
-            hyperparams = self._suggest_catboost_hyperparameters(trial)
         else:
             # Normal hyperparameter optimization
             hyperparams = self._suggest_hyperparameters(trial, model_type, use_curriculum, use_gate, task)
@@ -1124,9 +972,7 @@ class OptunaExperiment:
         use_gate : bool
             Whether to use quail layer
         preparation : str, default='standard'
-            Data preparation method ('standard' or 'autogluon').
-            AutoGluon experiments use pre-computed features; no further
-            preprocessing is applied inside the Optuna objective.
+            Data preparation method ('standard' or other precomputed baselines).
 
         Returns
         -------
@@ -1340,12 +1186,6 @@ class OptunaExperiment:
                         'use_curriculum': False, 'use_gate': False, 'preparation': 'standard',
                     })
 
-                    if self.run_autogluon:
-                        experiments.append({
-                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
-                            'use_curriculum': False, 'use_gate': False, 'preparation': 'autogluon',
-                        })
-
                     if self.run_cp:
                         experiments.append({
                             'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
@@ -1371,21 +1211,6 @@ class OptunaExperiment:
                     experiments.append({
                         'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
                         'use_curriculum': True, 'use_gate': True, 'preparation': 'standard',
-                    })
-
-            # CatBoost baseline: a model baseline (not a data-preparation
-            # baseline like autogluon/cp/saga above), so it runs once per
-            # dataset/data_mode, independent of model_types.
-            if self.run_catboost:
-                if 'clean' in self.data_modes:
-                    experiments.append({
-                        'dataset': dataset, 'data_mode': 'clean', 'model_type': 'catboost',
-                        'use_curriculum': False, 'use_gate': False, 'preparation': 'catboost',
-                    })
-                for data_mode in ar_nar_modes:
-                    experiments.append({
-                        'dataset': dataset, 'data_mode': data_mode, 'model_type': 'catboost',
-                        'use_curriculum': False, 'use_gate': False, 'preparation': 'catboost',
                     })
 
         return experiments
@@ -1414,12 +1239,11 @@ class OptunaExperiment:
         # Generate experiment list matching the benchmark per model:
         #  1. Clean baseline
         #  2. AR/NAR poisoned baseline
-        #  3. AR/NAR + AutoGluon  (if run_autogluon)
-        #  4. AR/NAR + CP         (if run_cp)
-        #  5. AR/NAR + Saga       (if run_saga)
-        #  6. AR/NAR + curriculum
-        #  7. AR/NAR + quail
-        #  8. AR/NAR + quail + curriculum
+        #  3. AR/NAR + CP         (if run_cp)
+        #  4. AR/NAR + Saga       (if run_saga)
+        #  5. AR/NAR + curriculum
+        #  6. AR/NAR + quail
+        #  7. AR/NAR + quail + curriculum
         # All configs apply symmetrically to both Linear and MLP.
         experiments = []
         ar_nar_modes = [m for m in self.data_modes if m in ('ar', 'nar')]
@@ -1448,18 +1272,7 @@ class OptunaExperiment:
                         'preparation': 'standard',
                     })
 
-                    # 3. AutoGluon data-preparation baseline
-                    if self.run_autogluon:
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': False,
-                            'use_gate': False,
-                            'preparation': 'autogluon',
-                        })
-
-                    # 4. CP (custom pipeline) data-preparation baseline
+                    # 3. CP (custom pipeline) data-preparation baseline
                     if self.run_cp:
                         experiments.append({
                             'dataset': dataset,
@@ -1470,7 +1283,7 @@ class OptunaExperiment:
                             'preparation': 'cp',
                         })
 
-                    # 5. Saga data-preparation baseline
+                    # 4. Saga data-preparation baseline
                     if self.run_saga:
                         experiments.append({
                             'dataset': dataset,
@@ -1481,7 +1294,7 @@ class OptunaExperiment:
                             'preparation': 'saga',
                         })
 
-                    # 6. Curriculum learning
+                    # 5. Curriculum learning
                     experiments.append({
                         'dataset': dataset,
                         'data_mode': data_mode,
@@ -1491,7 +1304,7 @@ class OptunaExperiment:
                         'preparation': 'standard',
                     })
 
-                    # 7. quAIL quail
+                    # 6. quAIL quail
                     experiments.append({
                         'dataset': dataset,
                         'data_mode': data_mode,
@@ -1501,7 +1314,7 @@ class OptunaExperiment:
                         'preparation': 'standard',
                     })
 
-                    # 8. quAIL quail + curriculum
+                    # 7. quAIL quail + curriculum
                     if self.config.get('run_gate_curriculum', True):
                         experiments.append({
                             'dataset': dataset,
@@ -1511,31 +1324,6 @@ class OptunaExperiment:
                             'use_gate': True,
                             'preparation': 'standard',
                         })
-
-            # 9. CatBoost baseline: a model baseline (not a data-preparation
-            # baseline like AutoGluon/CP/Saga above), so it runs once per
-            # dataset/data_mode, independent of model_types. Trained on raw
-            # data (NaN preserved, categorical features native) — no
-            # imputation, one-hot encoding, or scaling.
-            if self.run_catboost:
-                if 'clean' in self.data_modes:
-                    experiments.append({
-                        'dataset': dataset,
-                        'data_mode': 'clean',
-                        'model_type': 'catboost',
-                        'use_curriculum': False,
-                        'use_gate': False,
-                        'preparation': 'catboost',
-                    })
-                for data_mode in ar_nar_modes:
-                    experiments.append({
-                        'dataset': dataset,
-                        'data_mode': data_mode,
-                        'model_type': 'catboost',
-                        'use_curriculum': False,
-                        'use_gate': False,
-                        'preparation': 'catboost',
-                    })
 
         total_experiments = len(experiments)
         experiment_count = 0

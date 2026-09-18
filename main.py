@@ -151,22 +151,6 @@ def parse_args():
     )
 
     parser.add_argument(
-        '--run-autogluon',
-        action='store_true',
-        help=(
-            'Include AutoGluon as a data-preparation benchmark. '
-            'Runs experiments on AR/NAR modes using pre-computed AutoGluon features. '
-            'Requires running scripts/autogluon.py first.'
-        )
-    )
-
-    parser.add_argument(
-        '--autogluon-data-dir',
-        type=str,
-        help='Directory containing pre-computed AutoGluon features (default: data_autogluon)'
-    )
-
-    parser.add_argument(
         '--run-cp',
         action='store_true',
         help=(
@@ -197,18 +181,6 @@ def parse_args():
         '--saga-data-dir',
         type=str,
         help='Directory containing Saga++-cleaned data (default: data_cleaned_saga)'
-    )
-
-    parser.add_argument(
-        '--run-catboost',
-        action='store_true',
-        help=(
-            'Include CatBoost as an additional model baseline. '
-            'Unlike the other benchmarks, this is a model (not a data-preparation) '
-            'baseline: it runs once per dataset/data_mode, independent of model_types, '
-            'and needs no precomputation script. No preprocessing is applied — CatBoost '
-            'trains directly on raw data (NaN preserved, categorical features native).'
-        )
     )
 
     return parser.parse_args()
@@ -330,10 +302,6 @@ def main():
     if args.reuse_params:
         config['reuse_params'] = True
         config['reuse_top_n'] = args.reuse_top_n
-    if args.run_autogluon:
-        config['run_autogluon'] = True
-    if args.autogluon_data_dir:
-        config['autogluon_data_dir'] = args.autogluon_data_dir
     if args.run_cp:
         config['run_cp'] = True
     if args.cp_data_dir:
@@ -342,8 +310,6 @@ def main():
         config['run_saga'] = True
     if args.saga_data_dir:
         config['saga_data_dir'] = args.saga_data_dir
-    if args.run_catboost:
-        config['run_catboost'] = True
 
     # Validate configuration
     if not config.get('datasets'):
@@ -379,10 +345,6 @@ def main():
     if config.get('reuse_params'):
         print(f"  - Sample from top-{config.get('reuse_top_n', 5)} baseline trials (AR/NAR baseline)")
         print(f"  - Reduced trials: curriculum-only (3), combined ({config['n_trials']})")
-    print(f"AutoGluon benchmark: {config.get('run_autogluon', False)}")
-    if config.get('run_autogluon'):
-        print(f"  - Pre-computed features dir: {config.get('autogluon_data_dir', 'data_autogluon')}")
-        print(f"  - To pre-compute: python scripts/autogluon.py")
     print(f"Custom pipeline (CP) benchmark: {config.get('run_cp', False)}")
     if config.get('run_cp'):
         print(f"  - Cleaned data dir: {config.get('cp_data_dir', 'data_cleaned_cp')}")
@@ -391,11 +353,6 @@ def main():
     if config.get('run_saga'):
         print(f"  - Cleaned data dir: {config.get('saga_data_dir', 'data_cleaned_saga')}")
         print(f"  - To pre-compute: python scripts/saga.py")
-    print(f"CatBoost benchmark: {config.get('run_catboost', False)}")
-    if config.get('run_catboost'):
-        print(f"  - Model baseline (independent of model_types), no precomputation needed")
-        print(f"  - No preprocessing: raw data (NaN + native categoricals, no scaling)")
-
     # Calculate total configurations per model × n_models × n_datasets,
     # adjusted for which optional benchmarks are enabled.
     n_datasets = len(config['datasets'])
@@ -404,10 +361,8 @@ def main():
     n_models = len(config['model_types'])
 
     # Per model per AR/NAR mode: poisoned + curriculum + quail + quail+curriculum = 4 standard
-    # + autogluon (opt) + cp (opt) + saga (opt)
+    # + cp (opt) + saga (opt)
     per_model_ar_nar = 4
-    if config.get('run_autogluon'):
-        per_model_ar_nar += 1
     if config.get('run_cp'):
         per_model_ar_nar += 1
     if config.get('run_saga'):
@@ -416,12 +371,7 @@ def main():
     clean_configs = n_datasets * n_models * int(has_clean)
     ar_nar_configs = n_datasets * n_models * n_ar_nar * per_model_ar_nar
 
-    # CatBoost is a model baseline, not a per-model data-preparation baseline:
-    # it runs once per dataset/data_mode, independent of model_types.
-    catboost_clean_configs = n_datasets * int(has_clean) * int(config.get('run_catboost', False))
-    catboost_ar_nar_configs = n_datasets * n_ar_nar * int(config.get('run_catboost', False))
-
-    total_configs = clean_configs + ar_nar_configs + catboost_clean_configs + catboost_ar_nar_configs
+    total_configs = clean_configs + ar_nar_configs
     total_trials = total_configs * config['n_trials']
     total_evaluations = total_trials * config['n_seeds']
 
@@ -429,16 +379,11 @@ def main():
     print(f"  Clean baseline: {clean_configs} configs")
     print(f"  Per AR/NAR mode per model:")
     print(f"    - Poisoned baseline, curriculum, quail, quail+curriculum: 4 standard configs")
-    if config.get('run_autogluon'):
-        print(f"    - AutoGluon baseline: 1 config")
     if config.get('run_cp'):
         print(f"    - Custom pipeline (CP) baseline: 1 config")
     if config.get('run_saga'):
         print(f"    - Saga baseline: 1 config")
     print(f"  AR/NAR configs total: {ar_nar_configs}")
-    if config.get('run_catboost'):
-        print(f"  CatBoost configs (independent of model_types): "
-              f"{catboost_clean_configs + catboost_ar_nar_configs}")
     print(f"  Total configurations: {total_configs}")
     print(f"  Total trials: {total_trials}")
     print(f"  Total evaluations: {total_evaluations}")

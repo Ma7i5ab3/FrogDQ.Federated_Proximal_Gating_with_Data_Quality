@@ -20,7 +20,7 @@ Usage
 -----
     python run_quail_evidence_report.py
     python run_quail_evidence_report.py --metric accuracy
-    python run_quail_evidence_report.py --comparison-methods baseline gate saga catboost_dirty
+    python run_quail_evidence_report.py --comparison-methods baseline gate saga
 """
 
 import argparse
@@ -79,12 +79,10 @@ def key_findings(metric: str, selected_methods=None) -> str:
 
     seed_df = ga.load_seed_data(metric=metric)
     dm = ga.dataset_means(seed_df)
-    dm = ga.broadcast_catboost_clean(dm)
 
     ga._SELECTED_METHODS = selected_methods
     methods_order = ga._filter_tokens([
         "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp",
-        "catboost_clean", "catboost_dirty",
     ])
     lines = []
 
