@@ -32,7 +32,13 @@ matrix R; `show_traverse` then executes the greedy traversal from every possible
 starting state and keeps the pipeline whose quality metric is optimal.
 
 Input:  data_poisoned/{ar,nar}/          (poisoned CSV + mask from poison_data.py)
-Output: data_cleaned_learn2clean/{ar,nar}/ (cleaned CSV + residual mask + metrics)
+Output: data_cleaned_learn2clean/{ar,nar}/       (cleaned CSV + residual mask + metrics)
+        data_cleaned_learn2clean/test/{ar,nar}/  (hold-out, projected and put
+                                                  through the training mapping)
+        data_cleaned_learn2clean/clean/{ar,nar}/ (un-poisoned counterpart of the
+                                                  surviving rows, put through the
+                                                  mapping fitted on the training
+                                                  frame — used when clean_val)
 
 Unlike the Saga++ and CP baselines, Learn2Clean is *not* shape-preserving: outlier
 detection, deduplication and consistency checking remove rows, and feature
@@ -188,6 +194,12 @@ class Normalizer:
         self.strategy = strategy
         self.exclude = exclude
         self.verbose = verbose
+        # L2C-PORT: the statistics fitted on dataset['train'], kept so the very
+        # same mapping can be applied to another frame (see apply_fitted_step).
+        # Upstream discards them, which is harmless there but not here: the
+        # clean validation rows have to land on the scale of the training rows.
+        self.fitted_ = None
+        self._recording = False
 
     def get_params(self, deep=True):
         return {"strategy": self.strategy, "exclude": self.exclude, "verbose": self.verbose}
@@ -202,12 +214,23 @@ class Normalizer:
         Y = dataset.select_dtypes(["object"])
         Z = dataset.select_dtypes(["datetime64"])
 
+        params = {}
         for column in X.columns:
-            X[column] = X[column] - X[column].mean()
+            mean = X[column].mean()
+            X[column] = X[column] - mean
             std = X[column].std()
             # L2C-PORT: guard the constant-column division upstream leaves to numpy
             if std and not np.isnan(std):
                 X[column] = X[column] / std
+                params[column] = (mean, std)
+            else:
+                params[column] = (mean, None)
+
+        if self._recording:
+            self.fitted_ = {
+                "kind": "normalizer", "strategy": "ZS", "exclude": self.exclude,
+                "params": {c: v for c, v in params.items() if c != self.exclude},
+            }
 
         df = X.join(Y).join(Z)
         if self.exclude in list(df.columns.values):
@@ -238,8 +261,14 @@ class Normalizer:
         if Xf.shape[1] == 0 or Xf.dropna(how="all").empty:
             scaled_Xf = Xf
         else:
-            scaled_values = MinMaxScaler().fit_transform(Xf)
+            scaler = MinMaxScaler()
+            scaled_values = scaler.fit_transform(Xf)
             scaled_Xf = pd.DataFrame(scaled_values, index=Xf.index, columns=Xf.columns)
+            if self._recording:
+                self.fitted_ = {
+                    "kind": "normalizer", "strategy": "MM", "exclude": self.exclude,
+                    "columns": list(Xf.columns), "estimator": scaler,
+                }
 
         df = scaled_Xf.join(Y).join(Z)
         if self.exclude in list(df.columns.values):
@@ -271,6 +300,11 @@ class Normalizer:
             qt = QuantileTransformer(n_quantiles=n_quantiles, random_state=0)
             scaled_values = qt.fit_transform(Xf)
             scaled_Xf = pd.DataFrame(scaled_values, index=Xf.index, columns=Xf.columns)
+            if self._recording:
+                self.fitted_ = {
+                    "kind": "normalizer", "strategy": "DS", "exclude": self.exclude,
+                    "columns": list(Xf.columns), "estimator": qt,
+                }
 
         df = scaled_Xf.join(Y).join(Z)
         if self.exclude in list(df.columns.values):
@@ -290,6 +324,15 @@ class Normalizer:
         for column in X.columns:
             X[column] = np.around(np.log10(X[column].max())) + 1
 
+        if self._recording:
+            self.fitted_ = {
+                "kind": "normalizer", "strategy": "Log10", "exclude": self.exclude,
+                "constants": {
+                    c: X[c].iloc[0] if len(X) else np.nan
+                    for c in X.columns if c != self.exclude
+                },
+            }
+
         df = X.join(Y).join(Z)
         if self.exclude in list(df.columns.values):
             df[str(self.exclude)] = d[str(self.exclude)].values
@@ -305,6 +348,7 @@ class Normalizer:
                 d = self.dataset[key]
                 _p("* For", key, "dataset")
 
+                self._recording = key == "train"
                 if self.strategy == "DS":
                     dn = self.DS_normalization(d)
                 elif self.strategy == "ZS":
@@ -315,6 +359,7 @@ class Normalizer:
                     dn = self.Log10_normalization(d)
                 else:
                     raise ValueError("The normalization function should be MM, ZS, DS or Log10")
+                self._recording = False
 
                 if self.exclude in list(pd.DataFrame(d).columns.values):
                     dn[self.exclude] = d[self.exclude]
@@ -353,6 +398,11 @@ class Imputer:
         self.verbose = verbose
         self.threshold = threshold
         self.exclude = exclude
+        # L2C-PORT: what the imputation learnt on dataset['train'] (fill values,
+        # or the fitted estimator), kept for apply_fitted_step — same reason as
+        # Normalizer.fitted_.
+        self.fitted_ = None
+        self._recording = False
 
     def get_params(self, deep=True):
         return {
@@ -367,10 +417,13 @@ class Imputer:
         df = dataset
         if dataset.select_dtypes(["number"]).isnull().sum().sum() > 0:
             X = dataset.select_dtypes(["number"]).copy()
+            fill = {i: X[i].mean() for i in X.columns}
             for i in X.columns:
-                X[i] = X[i].fillna(X[i].mean())
+                X[i] = X[i].fillna(fill[i])
             Z = dataset.select_dtypes(exclude=["number"])
             df = X.join(Z)
+            if self._recording:
+                self.fitted_ = {"kind": "imputer", "strategy": "MEAN", "fill": fill}
         return df
 
     def median_imputation(self, dataset):
@@ -378,10 +431,13 @@ class Imputer:
         df = dataset
         if dataset.select_dtypes(["number"]).isnull().sum().sum() > 0:
             X = dataset.select_dtypes(["number"]).copy()
+            fill = {i: X[i].median() for i in X.columns}
             for i in X.columns:
-                X[i] = X[i].fillna(X[i].median())
+                X[i] = X[i].fillna(fill[i])
             Z = dataset.select_dtypes(include=["object"])
             df = X.join(Z)
+            if self._recording:
+                self.fitted_ = {"kind": "imputer", "strategy": "MEDIAN", "fill": fill}
         return df
 
     def NaN_drop(self, dataset):
@@ -392,19 +448,31 @@ class Imputer:
     def MF_most_frequent_imputation(self, dataset):
         # replace missing values by the most frequent value of the variable
         dataset = dataset.copy()  # L2C-PORT: upstream mutates the caller's frame
+        fill = {}
         for i in dataset.columns:
             counts = dataset[i].value_counts()
             if counts.empty:
                 continue
             mfv = counts.idxmax()
+            fill[i] = mfv
             dataset[i] = dataset[i].fillna(mfv)
             if self.verbose:
                 _p("Most frequent value for ", i, "is:", mfv)
+        if self._recording:
+            self.fitted_ = {"kind": "imputer", "strategy": "MF", "fill": fill}
         return dataset
 
     def NaN_random_replace(self, dataset):
         # replace missing data with a random observation with data
         dataset = dataset.copy()
+        if self._recording:
+            self.fitted_ = {
+                "kind": "imputer", "strategy": "RAND",
+                "observed": {
+                    col: dataset[col].dropna().to_numpy()
+                    for col in dataset.columns if dataset[col].notna().any()
+                },
+            }
         for col in dataset.columns:
             observed = dataset[col].dropna()
             if observed.empty:
@@ -428,8 +496,14 @@ class Imputer:
             X = dataset.select_dtypes(["number"])
             if X.shape[1] == 0 or X.dropna(how="all").empty:
                 return df
-            imputed = KNNImputer(n_neighbors=k, weights="distance").fit_transform(X)
+            knn = KNNImputer(n_neighbors=k, weights="distance")
+            imputed = knn.fit_transform(X)
             X = pd.DataFrame(imputed, index=X.index, columns=X.columns)
+            if self._recording:
+                self.fitted_ = {
+                    "kind": "imputer", "strategy": "KNN",
+                    "columns": list(X.columns), "estimator": knn,
+                }
             Z = dataset.select_dtypes(include=["object"])
             df = X.join(Z)
         return df
@@ -447,9 +521,15 @@ class Imputer:
             Xdf = dataset.select_dtypes(["number"])
             if Xdf.shape[1] == 0 or Xdf.dropna(how="all").empty:
                 return df
-            X = IterativeImputer(random_state=0, max_iter=10).fit_transform(Xdf)
+            mice = IterativeImputer(random_state=0, max_iter=10)
+            X = mice.fit_transform(Xdf)
             Z = dataset.select_dtypes(include=["object"])
             X = pd.DataFrame(X, index=Xdf.index, columns=Xdf.columns)
+            if self._recording:
+                self.fitted_ = {
+                    "kind": "imputer", "strategy": "MICE",
+                    "columns": list(Xdf.columns), "estimator": mice,
+                }
             df = X.join(Z)
         return df
 
@@ -468,6 +548,16 @@ class Imputer:
 
         rng = random.Random(0)
         X = Xdf.to_numpy(dtype=float, copy=True)
+        if self._recording:
+            # EM draws each missing cell from the Gaussian of its column's
+            # observed values; the training columns' Gaussians are what carries
+            # over to another frame.
+            gauss = {}
+            for j, col in enumerate(Xdf.columns):
+                observed = X[:, j][~np.isnan(X[:, j])]
+                if observed.size:
+                    gauss[col] = (float(observed.mean()), float(observed.std()))
+            self.fitted_ = {"kind": "imputer", "strategy": "EM", "gauss": gauss}
         nan_xy = np.argwhere(np.isnan(X))
 
         for x_i, y_i in nan_xy:
@@ -511,6 +601,7 @@ class Imputer:
                 _p("Total", total_missing_before, "missing values in",
                    d.columns[d.isnull().any()].tolist())
 
+                self._recording = key == "train"
                 if self.strategy == "EM":
                     dn = self.EM_imputation(d)
                 elif self.strategy == "MICE":
@@ -533,6 +624,7 @@ class Imputer:
                         "'KNN', 'RAND', 'MF', 'MEAN', 'MEDIAN', or 'DROP'"
                     )
 
+                self._recording = False
                 impd[key] = dn
                 _p("After imputation:", impd[key].isnull().sum().sum(), "missing values")
             else:
@@ -540,6 +632,89 @@ class Imputer:
 
         _p("Imputation done -- CPU time: %s seconds" % (time.time() - start_time))
         return impd
+
+
+# ===========================================================================
+# Replaying a fitted step on another frame
+# ===========================================================================
+
+def apply_fitted_step(df: pd.DataFrame, step: Dict) -> pd.DataFrame:
+    """
+    Apply to ``df`` a normalization or imputation step with the parameters it
+    was fitted with on the training frame (``Normalizer.fitted_`` /
+    ``Imputer.fitted_``, collected by ``Qlearner.pipeline``).
+
+    L2C-PORT: upstream only ever maps a frame with statistics taken from that
+    same frame. That is what ``Learn2Clean.apply_to_test`` still does for the
+    hold-out, faithfully; this function exists for the clean validation rows,
+    which stand in for rows of the training partition and therefore have to go
+    through the *training* mapping — normalized with another frame's
+    statistics they would sit on another scale than the rows the model is
+    fitted on, and validation would measure a distribution shift rather than
+    the preparation.
+
+    Columns the step was fitted on but ``df`` lacks are left alone; values that
+    are not numeric where the step expects numbers are coerced to NaN, which
+    the downstream imputers handle.
+    """
+    out = df.copy()
+    kind = step.get("kind")
+    strategy = step.get("strategy")
+    exclude = step.get("exclude")
+
+    if kind == "normalizer":
+        if strategy == "ZS":
+            for col, (mean, std) in step["params"].items():
+                if col not in out.columns:
+                    continue
+                x = pd.to_numeric(out[col], errors="coerce") - mean
+                out[col] = x / std if std else x
+        elif strategy in ("MM", "DS"):
+            cols = step["columns"]
+            X = out.reindex(columns=cols).apply(pd.to_numeric, errors="coerce")
+            values = step["estimator"].transform(X)
+            for j, col in enumerate(cols):
+                if col in out.columns and col != exclude:
+                    out[col] = values[:, j]
+        elif strategy == "Log10":
+            for col, value in step["constants"].items():
+                if col in out.columns:
+                    out[col] = value
+        return out
+
+    if kind == "imputer":
+        if "fill" in step:
+            for col, value in step["fill"].items():
+                if col in out.columns:
+                    out[col] = out[col].fillna(value)
+        elif "estimator" in step:
+            cols = step["columns"]
+            X = out.reindex(columns=cols).apply(pd.to_numeric, errors="coerce")
+            if X.isna().to_numpy().any():
+                values = step["estimator"].transform(X)
+                for j, col in enumerate(cols):
+                    if col in out.columns:
+                        out[col] = values[:, j]
+        elif "gauss" in step:
+            rng = random.Random(0)
+            for col, (mu, std) in step["gauss"].items():
+                if col not in out.columns:
+                    continue
+                na_idx = out.index[out[col].isna()]
+                if len(na_idx):
+                    out[col] = pd.to_numeric(out[col], errors="coerce")
+                    out.loc[na_idx, col] = [rng.gauss(mu, std) for _ in range(len(na_idx))]
+        elif "observed" in step:
+            rs = np.random.RandomState(0)
+            for col, observed in step["observed"].items():
+                if col not in out.columns or len(observed) == 0:
+                    continue
+                na_idx = out.index[out[col].isna()]
+                if len(na_idx):
+                    out.loc[na_idx, col] = rs.choice(observed, size=len(na_idx), replace=True)
+        return out
+
+    raise ValueError(f"Unknown fitted step: {step!r}")
 
 
 # ===========================================================================
@@ -2138,8 +2313,22 @@ class Qlearner:
     # Pipeline execution
     # ------------------------------------------------------------------
 
-    def pipeline(self, dataset, actions_list, target_goal, target_prepare, check_missing):
+    def pipeline(self, dataset, actions_list, target_goal, target_prepare, check_missing,
+                 record: Optional[List[Dict]] = None):
+        """
+        Execute ``actions_list`` on ``dataset``.
+
+        ``record``, when given, receives the parameters every normalization and
+        imputation step fitted on the training frame, in execution order — what
+        ``apply_fitted_step`` needs to put another frame through the same
+        mapping. It is a caller-owned list rather than an attribute because the
+        greedy traversals may run on threads that share this instance.
+        """
         dataset = _deepcopy_dataset(dataset)
+
+        def _record(step, action_name):
+            if record is not None and getattr(step, "fitted_", None) is not None:
+                record.append({"action": action_name, **step.fitted_})
 
         goals_name = ["LASSO", "OLS", "MARS", "HCA", "KMEANS", "CART", "LDA", "NB"]
         res = None
@@ -2211,9 +2400,11 @@ class Qlearner:
 
             try:
                 if a in impute_idx:
-                    dataset = L2C_class[a](
+                    step = L2C_class[a](
                         dataset=dataset, strategy=actions_name[a], verbose=self.verbose
-                    ).transform()
+                    )
+                    dataset = step.transform()
+                    _record(step, actions_name[a])
 
                 elif a in prep_idx:
                     cls = L2C_class[a]
@@ -2224,10 +2415,12 @@ class Qlearner:
                             verbose=self.verbose,
                         ).transform()
                     else:
-                        dataset = cls(
+                        step = cls(
                             dataset=dataset, strategy=actions_name[a],
                             exclude=target_prepare, verbose=self.verbose,
-                        ).transform()
+                        )
+                        dataset = step.transform()
+                        _record(step, actions_name[a])
 
                 elif a in outlier_dedup_idx:
                     cls = L2C_class[a]
@@ -2330,11 +2523,12 @@ class Qlearner:
             global ENCODE_CATEGORICALS
             ENCODE_CATEGORICALS = encode_categoricals
             _p("Greedy traversal:", traverse_name)
+            fitted_steps: List[Dict] = []
             prepared, res, _ = self.pipeline(
-                dataset, actions_list, target1, target2, check_missing
+                dataset, actions_list, target1, target2, check_missing, record=fitted_steps
             )
             metric = res.get("quality_metric") if isinstance(res, dict) else None
-            return traverse_name, actions_list, metric, prepared
+            return traverse_name, actions_list, metric, prepared, fitted_steps
 
         if self.n_jobs and self.n_jobs != 1:
             results = Parallel(n_jobs=self.n_jobs, backend=_parallel_backend())(
@@ -2347,12 +2541,13 @@ class Qlearner:
         strategy = [{"quality_metric": r[2]} for r in results]
         prepared_datasets = [r[3] for r in results]
         action_lists = [r[1] for r in results]
+        fitted_steps = [r[4] for r in results]
 
         _p("==== Recap ====")
         _p("List of strategies tried by Learn2Clean:", actions_strategy)
         _p("List of corresponding quality metrics:", [r[2] for r in results])
 
-        return actions_strategy, strategy, prepared_datasets, action_lists
+        return actions_strategy, strategy, prepared_datasets, action_lists, fitted_steps
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -2434,7 +2629,7 @@ class Qlearner:
         _p("=== Start Pipeline Execution ===")
         start_pipexec = time.time()
 
-        actions_strategy, strategy, prepared, action_lists = self.show_traverse(
+        actions_strategy, strategy, prepared, action_lists, fitted_steps = self.show_traverse(
             self.dataset, q, g, self.target_goal, self.target_prepare, check_missing
         )
 
@@ -2474,6 +2669,7 @@ class Qlearner:
             "strategy": actions_strategy[result_l] if result_l is not None else None,
             "actions": action_lists[result_l] if result_l is not None else None,
             "dataset": prepared[result_l] if result_l is not None else None,
+            "fitted_steps": fitted_steps[result_l] if result_l is not None else [],
             "check_missing": check_missing,
             "all_strategies": actions_strategy,
             "all_metrics": quality_metric_list,
@@ -2566,14 +2762,14 @@ def _action_names(actions: Optional[List[int]], check_missing: bool) -> List[str
     return out
 
 
-# Actions replayed on a held-out frame: the ones that transform values in place.
-# Feature selection is replayed as a plain column projection (kept_columns), and
-# the row-removing actions (outlier detection, deduplication, consistency
-# checking) are skipped so the hold-out keeps every row — the same split of
-# responsibilities as `_apply_saga_no_outliers` in quail/data.py.
-TEST_REPLAY_IMPUTERS = {"MICE", "EM", "KNN", "MF", "MEAN", "MEDIAN", "RAND"}
-TEST_REPLAY_NORMALIZERS = {"ZS", "MM", "DS", "Log10"}
-TEST_REPLAY_ACTIONS = TEST_REPLAY_IMPUTERS | TEST_REPLAY_NORMALIZERS
+# Another frame (hold-out, clean validation rows) goes through the winning
+# strategy as follows: the actions that transform values in place — imputation
+# and normalization — are replayed with the parameters they fitted on the
+# training frame (pipeline_info['fitted_steps'], see apply_fitted_step); feature
+# selection becomes a plain projection onto kept_columns; the row-removing
+# actions (outlier detection, deduplication, consistency checking) are skipped.
+# The same split of responsibilities as `_apply_saga_no_outliers` in
+# quail/data.py.
 
 
 class Learn2Clean:
@@ -2607,57 +2803,64 @@ class Learn2Clean:
             ENCODE_CATEGORICALS if encode_categoricals is None else encode_categoricals
         )
 
+    def _replay_fitted(self, df: pd.DataFrame, pipeline_info: Dict) -> pd.DataFrame:
+        """Replay the imputation/normalization steps with their training parameters,
+        then project onto the surviving columns."""
+        out = df.copy()
+        for step in pipeline_info.get("fitted_steps") or []:
+            try:
+                out = apply_fitted_step(out, step)
+            except Exception as exc:
+                logger.warning(f"    replay of {step.get('action')} failed: {exc}")
+        kept = [c for c in pipeline_info["kept_columns"] if c in out.columns]
+        return out[kept]
+
     def apply_to_test(self, df_test: pd.DataFrame, pipeline_info: Dict) -> pd.DataFrame:
         """
-        Project a held-out frame onto the preparation chosen for the training data.
+        Put the clean hold-out through the mapping fitted on the training frame.
 
         Learn2Clean drops columns (feature selection) and rescales values
         (normalization), so a hold-out read straight from ``data_poisoned/test/``
-        would no longer match the frame the model was fitted on. This replays the
-        value-transforming actions of the winning strategy, projects the columns
-        onto the ones that survived, and skips every row-removing action so the
+        would no longer match the frame the model was fitted on. The imputation
+        and normalization steps of the winning strategy are replayed with the
+        parameters recorded on the training frame, the columns are projected onto
+        the ones that survived, and every row-removing action is skipped so the
         hold-out keeps all of its rows.
 
-        No fitted state has to be carried over: upstream normalizes and imputes
-        ``dataset['train']`` and ``dataset['test']`` independently inside the same
-        ``transform()`` call, each from its own values, so replaying the actions
-        here is exactly what ``Qlearner.pipeline`` would have done had the frame
-        been sitting in ``dataset['test']``.
+        L2C-PORT: upstream normalizes and imputes ``dataset['test']`` with its
+        *own* statistics, independently of ``dataset['train']``. That puts the
+        same raw value at different coordinates in training and test — and, the
+        hold-out being clean while the training frame is poisoned, it silently
+        re-standardizes away part of the shift the poisoning introduced, using
+        statistics of the test set itself. Every other preparation baseline here
+        (Saga++, CP, DiffPrep, the plain TabularPreprocessor) maps the test with
+        training statistics, so Learn2Clean does too.
         """
-        kept = [c for c in pipeline_info["kept_columns"] if c in df_test.columns]
-        out = df_test[kept].copy()
+        return self._replay_fitted(df_test, pipeline_info).sort_index()
 
-        replay = [
-            name
-            for name in (pipeline_info.get("action_names") or [])
-            if name in TEST_REPLAY_ACTIONS
-        ]
-        if not replay:
-            return out
+    def apply_to_clean(self, df_clean_trainval: pd.DataFrame, pipeline_info: Dict) -> pd.DataFrame:
+        """
+        Put the un-poisoned counterpart of the training partition through the
+        mapping fitted on the training frame.
 
-        target_col = pipeline_info["target_col"]
-        if target_col in out.columns:
-            y = pd.Series(pd.factorize(out[target_col])[0], index=out.index, name=target_col)
-        else:
-            y = pd.Series(0, index=out.index, name=target_col)
-
-        dataset = {"train": out, "test": {}, "target": y, "target_test": {}}
-        for name in replay:
-            try:
-                if name in TEST_REPLAY_IMPUTERS:
-                    dataset = Imputer(
-                        dataset=dataset, strategy=name, verbose=self.verbose
-                    ).transform()
-                else:
-                    dataset = Normalizer(
-                        dataset=dataset, strategy=name, exclude=target_col,
-                        verbose=self.verbose,
-                    ).transform()
-            except Exception as exc:
-                logger.debug(f"    test replay of {name} failed: {exc}")
-
-        out = dataset["train"]
-        return out[[c for c in kept if c in out.columns]].sort_index()
+        quail can swap the validation split for clean rows (``clean_val``). Those
+        rows stand in for rows of the training partition, so they must end up
+        exactly where their poisoned counterparts did: same surviving rows, same
+        surviving columns, and — the point of this method — the same scale.
+        Exactly as for the hold-out (``apply_to_test``), the normalization and
+        imputation steps are replayed, in execution order, with the parameters
+        recorded on the training frame (``pipeline_info['fitted_steps']``). Feature selection becomes the final
+        projection onto ``kept_columns``, and the row-removing actions become the
+        selection of ``kept_rows`` — the rows whose poisoned version survived —
+        so the result lines up row by row with the cleaned CSV.
+        """
+        kept_rows = [r for r in pipeline_info["kept_rows"] if r in df_clean_trainval.index]
+        if len(kept_rows) != len(pipeline_info["kept_rows"]):
+            raise ValueError(
+                "the clean partition does not cover every row Learn2Clean kept "
+                f"({len(kept_rows)} of {len(pipeline_info['kept_rows'])})"
+            )
+        return self._replay_fitted(df_clean_trainval.loc[kept_rows], pipeline_info)
 
     def prepare(
         self,
@@ -2808,7 +3011,10 @@ class Learn2Clean:
             "strategy": result["strategy"],
             "actions": result["actions"],
             "action_names": action_names,
-            "test_replay_actions": [n for n in action_names if n in TEST_REPLAY_ACTIONS],
+            "test_replay_actions": [st["action"] for st in (result.get("fitted_steps") or [])],
+            # Parameters every normalization/imputation step fitted on the
+            # training frame, in execution order (see apply_to_clean).
+            "fitted_steps": result.get("fitted_steps") or [],
             "check_missing": result["check_missing"],
             "target_col": target_col,
             "col_types": col_types,
@@ -2866,6 +3072,25 @@ def save_pipeline_info(path: str, pipeline_info: Dict) -> None:
 # Dataset processing (mirrors process_all_datasets in saga.py)
 # ---------------------------------------------------------------------------
 
+def load_clean_trainval(clean_dir: str, dataset_filename: str, poison_test_size: float
+                        ) -> Optional[pd.DataFrame]:
+    """The un-poisoned train+val partition, rebuilt the way poison_data.py split it.
+
+    ``scripts/poison_data.py`` holds out ``test_size`` of each clean CSV with
+    ``df.sample(frac=test_size, random_state=42)`` and poisons the rest, so the
+    remaining rows, in order, are the clean counterparts of the poisoned
+    partition — row labels included.
+    """
+    src = Path(clean_dir) / dataset_filename
+    if not src.exists():
+        return None
+    full_clean = pd.read_csv(
+        src, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "]
+    )
+    test_rows = full_clean.sample(frac=poison_test_size, random_state=42)
+    return full_clean.drop(test_rows.index).reset_index(drop=True)
+
+
 def check_dataset_complete(csv_file: Path, output_dir: str) -> bool:
     required_files = []
     for mode in ("ar", "nar"):
@@ -2875,6 +3100,7 @@ def check_dataset_complete(csv_file: Path, output_dir: str) -> bool:
             os.path.join(mode_dir, csv_file.stem + "_mask.csv"),
             os.path.join(mode_dir, csv_file.stem + "_pipeline.pkl"),
             os.path.join(output_dir, "test", mode, csv_file.name),
+            os.path.join(output_dir, "clean", mode, csv_file.name),
             os.path.join(output_dir, "metrics", f"{csv_file.stem}_{mode}_metrics.csv"),
             os.path.join(output_dir, "metrics", f"{csv_file.stem}_{mode}_perf_metrics.csv"),
         ]
@@ -2897,6 +3123,8 @@ def process_all_datasets(
     od_threshold: float = 0.3,
     dd_threshold: float = 0.6,
     max_patterns: int = 4,
+    clean_dir: str = "data",
+    poison_test_size: float = 0.3,
     verbose: bool = False,
 ):
     """
@@ -2914,6 +3142,10 @@ def process_all_datasets(
     # frame ended up with, so one prepared copy is written per corruption mode.
     os.makedirs(os.path.join(output_dir, "test", "ar"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "test", "nar"), exist_ok=True)
+    # The clean counterpart of the surviving rows, on the training scale, for
+    # quail's clean_val substitution (see Learn2Clean.apply_to_clean).
+    os.makedirs(os.path.join(output_dir, "clean", "ar"), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "clean", "nar"), exist_ok=True)
     # Upstream keeps the discovered constraints/patterns in a `save/` directory;
     # here they live beside the cleaned data so a run is self-contained.
     save_dir = os.path.join(output_dir, "constraints")
@@ -2983,10 +3215,12 @@ def process_all_datasets(
                 out_mask = out_dir / f"{csv_file.stem}_mask.csv"
                 out_pkl = out_dir / f"{csv_file.stem}_pipeline.pkl"
                 out_test = Path(output_dir) / "test" / mode / csv_file.name
+                out_clean = Path(output_dir) / "clean" / mode / csv_file.name
                 out_metrics = Path(output_dir) / "metrics" / f"{csv_file.stem}_{mode}_metrics.csv"
                 out_perf = Path(output_dir) / "metrics" / f"{csv_file.stem}_{mode}_perf_metrics.csv"
 
-                if all(p.exists() for p in [out_csv, out_mask, out_pkl, out_test, out_metrics, out_perf]):
+                if all(p.exists() for p in [out_csv, out_mask, out_pkl, out_test, out_clean,
+                                            out_metrics, out_perf]):
                     logger.info(f"  {mode.upper()} already processed, skipping")
                     continue
 
@@ -3027,10 +3261,33 @@ def process_all_datasets(
                         f"  {mode.upper()} hold-out prepared: "
                         f"{df_test_clean.shape[0]}×{df_test_clean.shape[1]} "
                         f"(from {df_test.shape[0]}×{df_test.shape[1]}) "
-                        f"| replayed: {' → '.join(pipeline_info['test_replay_actions']) or '(none)'}"
+                        f"| replayed with training statistics: "
+                        f"{' → '.join(pipeline_info['test_replay_actions']) or '(none)'}"
                     )
                 else:
                     logger.warning(f"  {mode.upper()} clean hold-out not found: {src_test}")
+
+                df_clean_trainval = load_clean_trainval(clean_dir, csv_file.name, poison_test_size)
+                if df_clean_trainval is None:
+                    logger.warning(
+                        f"  {mode.upper()} original clean CSV not found in {clean_dir}; "
+                        "no clean train+val partition will be written"
+                    )
+                elif len(df_clean_trainval) != len(df_mode):
+                    logger.warning(
+                        f"  {mode.upper()} clean partition has {len(df_clean_trainval)} rows but "
+                        f"the poisoned one has {len(df_mode)}; poison_test_size={poison_test_size} "
+                        "probably does not match the one used by poison_data.py — skipping it"
+                    )
+                else:
+                    df_clean_prepared = cleaner.apply_to_clean(df_clean_trainval, pipeline_info)
+                    df_clean_prepared.to_csv(out_clean, index=False)
+                    logger.info(
+                        f"  {mode.upper()} clean partition prepared: "
+                        f"{df_clean_prepared.shape[0]}×{df_clean_prepared.shape[1]} "
+                        f"| replayed with training statistics: "
+                        f"{' → '.join(st['action'] for st in pipeline_info['fitted_steps']) or '(none)'}"
+                    )
 
                 pd.DataFrame({
                     "column": list(metrics["column_cleanliness"].keys()),
@@ -3118,6 +3375,15 @@ if __name__ == "__main__":
         "--dataset", type=str, default=None,
         help="Process only this dataset (overrides config; name without .csv)",
     )
+    parser.add_argument(
+        "--clean_dir", type=str, default="data",
+        help="Directory with the original clean CSVs, used to write the clean "
+             "train+val partition on the training scale (default: data)",
+    )
+    parser.add_argument(
+        "--poison_test_size", type=float, default=None,
+        help="Hold-out fraction poison_data.py used (default: config.yaml test_size)",
+    )
     parser.add_argument("--goal", type=str, default=None,
                         help="Goal-state ML model: LDA, CART, NB, MNB, LASSO, OLS, HCA, KMEANS")
     parser.add_argument("--k_folds", type=int, default=None,
@@ -3197,5 +3463,11 @@ if __name__ == "__main__":
         od_threshold=_opt("od_threshold", 0.3),
         dd_threshold=_opt("dd_threshold", 0.6),
         max_patterns=_opt("max_patterns", 4),
+        clean_dir=args.clean_dir,
+        poison_test_size=(
+            args.poison_test_size
+            if args.poison_test_size is not None
+            else _config.get("test_size", 0.3)
+        ),
         verbose=args.verbose,
     )

@@ -203,6 +203,26 @@ def parse_args():
         )
     )
 
+    parser.add_argument(
+        '--run-diffprep',
+        action='store_true',
+        help=(
+            'Include DiffPrep as a data-preparation benchmark. '
+            'Runs experiments on AR/NAR modes using DiffPrep-cleaned data '
+            '(differentiable pipeline search by bi-level optimization). '
+            'Requires running scripts/diffprep.py first.'
+        )
+    )
+
+    parser.add_argument(
+        '--diffprep-data-dir',
+        type=str,
+        help=(
+            'Directory containing DiffPrep-cleaned data '
+            '(default: data_cleaned_diffprep)'
+        )
+    )
+
     return parser.parse_args()
 
 
@@ -334,6 +354,10 @@ def main():
         config['run_learn2clean'] = True
     if args.learn2clean_data_dir:
         config['learn2clean_data_dir'] = args.learn2clean_data_dir
+    if args.run_diffprep:
+        config['run_diffprep'] = True
+    if args.diffprep_data_dir:
+        config['diffprep_data_dir'] = args.diffprep_data_dir
 
     # Validate configuration
     if not config.get('datasets'):
@@ -382,6 +406,11 @@ def main():
         print(f"  - Cleaned data dir: {config.get('learn2clean_data_dir', 'data_cleaned_learn2clean')}")
         print(f"  - To pre-compute: python scripts/learn2clean.py")
         print(f"  - Note: rows/columns may be dropped, so this baseline trains on a reduced frame")
+    print(f"DiffPrep benchmark: {config.get('run_diffprep', False)}")
+    if config.get('run_diffprep'):
+        print(f"  - Cleaned data dir: {config.get('diffprep_data_dir', 'data_cleaned_diffprep')}")
+        print(f"  - To pre-compute: python scripts/diffprep.py")
+        print(f"  - Note: values come out on the scale DiffPrep chose, so they are not standardized again")
     # Calculate total configurations per model × n_models × n_datasets,
     # adjusted for which optional benchmarks are enabled.
     n_datasets = len(config['datasets'])
@@ -390,13 +419,15 @@ def main():
     n_models = len(config['model_types'])
 
     # Per model per AR/NAR mode: poisoned + curriculum + quail + quail+curriculum = 4 standard
-    # + cp (opt) + saga (opt) + learn2clean (opt)
+    # + cp (opt) + saga (opt) + learn2clean (opt) + diffprep (opt)
     per_model_ar_nar = 4
     if config.get('run_cp'):
         per_model_ar_nar += 1
     if config.get('run_saga'):
         per_model_ar_nar += 1
     if config.get('run_learn2clean'):
+        per_model_ar_nar += 1
+    if config.get('run_diffprep'):
         per_model_ar_nar += 1
 
     clean_configs = n_datasets * n_models * int(has_clean)
@@ -416,6 +447,8 @@ def main():
         print(f"    - Saga baseline: 1 config")
     if config.get('run_learn2clean'):
         print(f"    - Learn2Clean baseline: 1 config")
+    if config.get('run_diffprep'):
+        print(f"    - DiffPrep baseline: 1 config")
     print(f"  AR/NAR configs total: {ar_nar_configs}")
     print(f"  Total configurations: {total_configs}")
     print(f"  Total trials: {total_trials}")

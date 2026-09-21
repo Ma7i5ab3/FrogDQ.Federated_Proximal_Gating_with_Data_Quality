@@ -62,7 +62,7 @@ STORAGE = f"sqlite:///{DB_PATH.resolve()}"
 
 _RE = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-    r"_(?P<config>curr[01]_gate[01]|saga|cp|learn2clean)$"
+    r"_(?P<config>curr[01]_gate[01]|saga|cp|learn2clean|diffprep)$"
 )
 
 CONFIG_LABELS = {
@@ -73,6 +73,7 @@ CONFIG_LABELS = {
     "saga":        "Saga++",
     "cp":          "CP prep",
     "learn2clean": "Learn2Clean",
+    "diffprep":    "DiffPrep",
 }
 
 COLORS = {
@@ -82,6 +83,7 @@ COLORS = {
     "Saga++":       "#1abc9c",
     "CP prep":      "#f39c12",
     "Learn2Clean":  "#e87ba4",
+    "DiffPrep":     "#7b5ea7",
 }
 
 # comparison_methods selection (canonical keys from quail.comparison_methods),

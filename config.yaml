@@ -28,15 +28,15 @@ datasets:
   - dna
   - car
   - tic_tac_toe
-  - sick
+  - cmc
   - vowel
   - climate_model_simulation_crashes
   - wilt
-  - miceprotein
+  - vehicle
   - first_order_theorem_proving
   - segment
   - kr_vs_kp
-  - cylinder_bands
+  - credit_g
   - nomao
   - pc4
   - satimage
@@ -186,7 +186,11 @@ run_learn2clean: true
 # Directory containing Learn2Clean-cleaned data produced by scripts/learn2clean.py.
 # Structure: data_cleaned_learn2clean/{mode}/{dataset_filename}.csv  (train+val),
 #            data_cleaned_learn2clean/test/{mode}/{dataset_filename}.csv (hold-out,
-#            projected onto the surviving columns and rescaled the same way).
+#            projected onto the surviving columns and rescaled the same way),
+#            data_cleaned_learn2clean/clean/{mode}/{dataset_filename}.csv (clean
+#            counterparts of the surviving rows, put through the normalization and
+#            imputation fitted on the training frame — read when clean_val is true,
+#            so clean validation rows sit on the training scale).
 learn2clean_data_dir: data_cleaned_learn2clean
 
 learn2clean:
@@ -250,6 +254,114 @@ learn2clean:
   # scripts/saga.py. Set to false for strict upstream behaviour.
   encode_categoricals: true
 
+# DiffPrep Benchmark Settings
+# ----------------------------
+# DiffPrep (Li et al., SIGMOD '23) searches the data-preparation pipeline by
+# gradient descent. The discrete choice of operator for each transformation
+# type is relaxed with a softmax (the beta matrices) and the order of the
+# transformation types with Sinkhorn normalization (the alpha doubly-stochastic
+# matrix), which turns pipeline selection into a bi-level optimization problem:
+# the model is fitted on the training loss, the pipeline on the validation loss,
+# and the end model is trained only once. Produced by scripts/diffprep.py.
+#
+# Like CP and Saga++ — and unlike Learn2Clean — DiffPrep is shape-preserving:
+# no row or column is dropped, so the cleaned CSV, its residual mask and the
+# poison mask all line up. What it does change is the *scale*: it picks a
+# normalizer, and possibly a discretizer, per feature. quail.data therefore
+# builds its TabularPreprocessor with scale_numerical=False for this baseline
+# (standardizing again would compose another affine map on top of that choice
+# and undo it), and scripts/diffprep.py writes pre-transformed companion frames
+# for the clean hold-out and the clean train+val partition so that validation
+# and test rows stay in the same space as the training rows.
+#
+# Whether to include DiffPrep as a data-preparation benchmark in the main
+# experiments. Requires running scripts/diffprep.py first.
+# false: skip DiffPrep benchmark
+# true:  include DiffPrep benchmark experiments
+run_diffprep: true
+
+# Directory containing DiffPrep-cleaned data produced by scripts/diffprep.py.
+# Structure: data_cleaned_diffprep/{mode}/{dataset_filename}.csv        (train+val),
+#            data_cleaned_diffprep/test/{mode}/{dataset_filename}.csv   (hold-out),
+#            data_cleaned_diffprep/clean/{mode}/{dataset_filename}.csv  (clean train+val).
+diffprep_data_dir: data_cleaned_diffprep
+
+diffprep:
+
+  # Which variant of the paper to run.
+  #   diffprep_fix  - pre-defined transformation order (Section 3): the order is
+  #                   {imputation, normalization, outlier removal, discretization}
+  #                   and only the operator of each type is learned, per feature.
+  #   diffprep_flex - the order is learned too (Section 4), one permutation per
+  #                   feature through Sinkhorn normalization. Largest search
+  #                   space in the paper, and the variant that does not depend on
+  #                   a pre-defined order being a good one; it costs roughly 3x
+  #                   Fix per epoch (it evaluates every transformation type at
+  #                   every position) and upstream gives it more epochs too.
+  method: diffprep_flex
+
+  # End model the pipeline is searched against. The paper uses logistic
+  # regression throughout; 'two' is the two-layer, 100-neuron ReLU network of the
+  # sensitivity analysis in Section 5.3.
+  #   log - logistic regression
+  #   two - two-layer neural network
+  model: log
+
+  # Seeds. train_seed initializes the model and the pipeline parameters,
+  # split_seed draws the train/validation split the outer objective uses.
+  train_seed: 1
+  split_seed: 1
+
+  # Validation share of the poisoned partition. This split is the outer
+  # objective of the bi-level problem, so it is what the pipeline is selected
+  # on. Same ratio as val_size in the quail loaders, but not the same rows: it
+  # is drawn once with split_seed, while the loaders redraw per experiment seed.
+  # Both halves are poisoned rows, so the search never sees clean data
+  # regardless of clean_val.
+  # Section 5.3 of the paper finds a 60:20 train/val split (25 % of the
+  # train+val partition there) about right, and warns that a too small
+  # validation set makes the pipeline overfit it.
+  val_size: 0.2
+
+  # Training budget. Upstream defaults: 2000 epochs for Fix, 3000 for Flex.
+  # Early stopping is only re-checked every 100 epochs, so patience is counted
+  # in hundreds of epochs, not in epochs (patience 3 -> stops around epoch 300
+  # at the earliest).
+  num_epochs: 2000
+  flex_num_epochs: 3000
+  patience: 3
+  flex_patience: 10
+  batch_size: 512
+
+  # Learning rates tried for the end model; the one with the lowest validation
+  # loss wins (upstream tunes exactly this, and nothing else, by grid search).
+  # Each extra value multiplies the runtime of every dataset and mode, so this
+  # is the first knob to shrink if the search is too slow.
+  model_lr: [0.1, 0.01, 0.001]
+
+  # Learning rate of the pipeline parameters (eta1 in Algorithm 1). null keeps
+  # upstream's shortcut of reusing the model learning rate, which is what the
+  # paper's footnote 1 suggests to avoid tuning two of them.
+  prep_lr: null
+
+  # Temperature of the relaxed categorical distribution, and the mini-batch the
+  # pipeline parameters are updated on (Section 3.3, "Complexity").
+  temperature: 0.1
+  pipeline_update_sample_size: 512
+
+  # Initialization of the pipeline parameters.
+  #   default - the default operator of each type starts at probability 0.5
+  #   random  - random logits
+  init_method: default
+
+  # false: plain softmax relaxation (Equation 7, upstream default).
+  # true : Gumbel-softmax straight-through sampling.
+  sample: false
+
+  # torch intra-op threads. null leaves torch's own default. DiffPrep is a
+  # single-process search, so this is what controls how many cores it uses.
+  n_threads: null
+
 # Quail + Curriculum Experiment Settings
 # ---------------------------------------
 # Whether to include the combined quail+curriculum experiment.
@@ -277,6 +389,7 @@ run_gate_curriculum: false
 #   saga             - Saga++ data-preparation baseline (requires run_saga)
 #   cp               - Custom pipeline (CP) data-preparation baseline (requires run_cp)
 #   learn2clean      - Learn2Clean data-preparation baseline (requires run_learn2clean)
+#   diffprep         - DiffPrep data-preparation baseline (requires run_diffprep)
 #
 # Note: quail_analysis.py always keeps its own "Clean" reference regardless of
 # this setting — its noise-robustness analysis is built around measuring
@@ -284,7 +397,7 @@ run_gate_curriculum: false
 #
 # Example: only compare the quAIL quail against Saga++:
 #   comparison_methods: ['clean', 'baseline', 'gate', 'saga']
-comparison_methods: ['clean', 'baseline', 'curriculum', 'gate', 'saga', 'cp', 'learn2clean']
+comparison_methods: ['clean', 'baseline', 'curriculum', 'gate', 'saga', 'cp', 'learn2clean', 'diffprep']
 
 # Data Poisoning Settings
 # -----------------------
@@ -336,13 +449,12 @@ poisoning:
     enable_categorical_flips: true  # Random label flips for categorical features
     enable_missing: true            # MCAR: Missing Completely At Random
 
-    # Each poisonable column's tier rate is a corruption budget split exactly
-    # 50/50 between noise/flip and MCAR missingness (disjoint rows, no
-    # overlap), so AR's total is deterministic by construction. This cap
-    # (fraction of ALL feature cells, incl. clean-reserved) is a safety net
-    # only — left unset here means it defaults to that same deterministic
-    # total (see compute_ar_expected_rate), i.e. a no-op unless tier settings
-    # are overridden inconsistently (e.g. mismatched CLI flags).
+    # Each poisonable column gets exactly round(rows × tier rate) corrupted
+    # cells among its observed ones, split 50/50 between noise/flip and MCAR
+    # missingness (disjoint rows), so AR's total is fixed by construction.
+    # Unset (default) = no clamp. Setting it (fraction of ALL feature cells,
+    # incl. clean-reserved) restores randomly chosen corrupted cells to their
+    # clean value until the total fits — at the cost of per-column exactness.
     # max_corruption: 0.40
 
   # NAR (Not At Random) poisoning mechanisms.
@@ -354,13 +466,12 @@ poisoning:
     enable_correlated_noise: true # Correlated noise propagation across features
     enable_rare_missing: true     # Rare categories more likely to be missing
 
-    # Total cell corruption rate (floor/cap), as a fraction of ALL feature
-    # cells (incl. clean-reserved columns), applied after all NAR mechanisms
-    # run. Left unset here on purpose: poison_data.py then computes both
-    # bounds dynamically from the AR noise-tier settings above (mild/moderate/
-    # heavy/severe fracs and rates), so NAR's total corrupted-cell share
-    # always matches AR's — no matter how those tier settings change.
-    # Uncomment to pin explicit bounds instead of tracking AR:
+    # Every poisonable column gets exactly its tier budget in NAR too (the
+    # correlated noise competes inside each column's noise half), so NAR's
+    # total equals AR's on every dataset by construction. Left unset (default)
+    # no clamp runs. Uncomment to force explicit bounds on the total (fraction
+    # of ALL feature cells): the clamp then restores or corrupts real cells to
+    # fit, at the cost of per-column exactness.
     # min_corruption: 0.35
     # max_corruption: 0.40
 

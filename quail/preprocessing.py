@@ -52,6 +52,7 @@ class TabularPreprocessor:
         numerical_features: Optional[List[str]] = None,
         categorical_features: Optional[List[str]] = None,
         use_column_prefixes: bool = True,
+        scale_numerical: bool = True,
         verbose: bool = False,
     ):
         """
@@ -85,6 +86,13 @@ class TabularPreprocessor:
             Explicit list of categorical feature names. If None, auto-detected.
         use_column_prefixes : bool, default=True
             Whether to use column name prefixes (cls_, reg_, cat_, num_, etc.) for type detection.
+        scale_numerical : bool, default=True
+            Whether to standardize numerical features. Set to False when the input
+            has already been put on its final scale upstream — DiffPrep-cleaned
+            data is the case this exists for: its pipeline search picks a
+            normalizer (and possibly a discretizer) per feature, so standardizing
+            again would compose a second affine map on top of that choice and
+            undo it. Imputation and one-hot encoding still run either way.
         verbose : bool, default=False
             Whether to print detailed logs during processing.
         """
@@ -101,6 +109,7 @@ class TabularPreprocessor:
         self.numerical_features = numerical_features
         self.categorical_features = categorical_features
         self.use_column_prefixes = use_column_prefixes
+        self.scale_numerical = scale_numerical
         self.verbose = verbose
 
         # These will be set during fit
@@ -399,15 +408,15 @@ class TabularPreprocessor:
             self.numerical_features_ = self.numerical_features_ + self.date_features_
 
         # Build preprocessing pipeline
-        numerical_pipeline = Pipeline(
-            [
-                # keep_empty_features=True retains all-NaN columns (e.g. num_TBG in sick)
-                # as zeros after scaling, preserving the feature count expected by
-                # get_feature_names_out() and the quail's feature_quality array.
-                ("imputer", SimpleImputer(strategy=self.numerical_impute_strategy, keep_empty_features=True)),
-                ("scaler", StandardScaler()),
-            ]
-        )
+        numerical_steps = [
+            # keep_empty_features=True retains all-NaN columns (e.g. num_TBG in sick)
+            # as zeros after scaling, preserving the feature count expected by
+            # get_feature_names_out() and the quail's feature_quality array.
+            ("imputer", SimpleImputer(strategy=self.numerical_impute_strategy, keep_empty_features=True)),
+        ]
+        if self.scale_numerical:
+            numerical_steps.append(("scaler", StandardScaler()))
+        numerical_pipeline = Pipeline(numerical_steps)
 
         categorical_pipeline = Pipeline(
             [

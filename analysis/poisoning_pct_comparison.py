@@ -73,13 +73,15 @@ NOISE_MODE_LABELS = {"ar": "CCAR (AR)", "nar": "CNAR (NAR)"}
 # 6-slot order had saga++ next to cp and missed the normal-vision floor (13.7).
 # Aqua, yellow and magenta sit below 3:1 contrast on the light surface, so the
 # relief rule applies: the per-bar value labels below are what satisfies it.
-CATEGORY_ORDER = ["clean", "cp", "baseline", "saga++", "learn2clean", "curriculum", "quail"]
+CATEGORY_ORDER = ["clean", "cp", "baseline", "saga++", "learn2clean", "diffprep",
+                  "curriculum", "quail"]
 CATEGORY_LABELS = {
     "clean": "Clean",
     "baseline": "Standard",
     "saga++": "Saga++",
     "cp": "CP",
     "learn2clean": "Learn2Clean",
+    "diffprep": "DiffPrep",
     "curriculum": "Curriculum",
     "quail": "QuAIL",
 }
@@ -89,6 +91,7 @@ CATEGORY_COLORS = {
     "saga++": "#eda100",
     "cp": "#eb6834",
     "learn2clean": "#e87ba4",
+    "diffprep": "#7b5ea7",
     "curriculum": "#4a3aa7",
     "quail": "#e34948",
 }
@@ -119,6 +122,7 @@ _EXTERNAL_PREPROC_DIRS = {
     "saga++":      HERE.parent / "data_cleaned_saga",
     "cp":          HERE.parent / "data_cleaned_cp",
     "learn2clean": HERE.parent / "data_cleaned_learn2clean",
+    "diffprep":    HERE.parent / "data_cleaned_diffprep",
 }
 
 
@@ -168,6 +172,8 @@ def _categorize(row) -> str | None:
         return "cp"
     if row["preparation"] == "learn2clean":
         return "learn2clean"
+    if row["preparation"] == "diffprep":
+        return "diffprep"
     if row["preparation"] == "standard" and row["use_curriculum"] and not row["use_gate"]:
         return "curriculum"
     if row["preparation"] == "standard" and row["use_gate"] and not row["use_curriculum"]:

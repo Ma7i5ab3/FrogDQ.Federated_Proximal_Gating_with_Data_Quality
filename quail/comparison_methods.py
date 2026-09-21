@@ -36,6 +36,7 @@ METHOD_CHOICES: List[str] = [
     "saga",
     "cp",
     "learn2clean",
+    "diffprep",
 ]
 
 # study-name "config" token (quail_analysis.py / optuna_progress.py /
@@ -50,6 +51,7 @@ _CONFIG_TOKEN_TO_METHOD: Dict[str, str] = {
     "saga": "saga",
     "cp": "cp",
     "learn2clean": "learn2clean",
+    "diffprep": "diffprep",
 }
 
 # evaluate.py's method_label() string -> canonical key.
@@ -62,6 +64,7 @@ _LABEL_TO_METHOD: Dict[str, str] = {
     "saga": "saga",
     "cp": "cp",
     "learn2clean": "learn2clean",
+    "diffprep": "diffprep",
 }
 
 
