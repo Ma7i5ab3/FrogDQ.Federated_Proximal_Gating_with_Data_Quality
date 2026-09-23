@@ -79,6 +79,7 @@ CONFIG_LABELS = {
     "cp":           "CP prep",
     "learn2clean":  "Learn2Clean",
     "diffprep":     "DiffPrep",
+    "ctxpipe":      "CtxPipe",
 }
 
 BAR_ORDER = [
@@ -89,6 +90,7 @@ BAR_ORDER = [
     "CP prep",
     "Learn2Clean",
     "DiffPrep",
+    "CtxPipe",
     "QuAIL",
     "+ Quail + Curr",
 ]
@@ -101,9 +103,15 @@ BAR_COLORS = {
     "CP prep":          "#f39c12",
     "Learn2Clean":      "#e87ba4",
     "DiffPrep":         "#7b5ea7",
+    "CtxPipe":          "#7b5ea7",
     "QuAIL":           "#e74c3c",
     "+ Quail + Curr":    "#2ecc71",
 }
+# CtxPipe shares DiffPrep's hue — both are automated pipeline-search baselines —
+# and is told apart by a 45° line texture (a dashed line on line plots): a ninth
+# hue would push the palette past what stays distinguishable.
+BAR_HATCHES = {"CtxPipe": "///"}
+LINE_STYLES = {"CtxPipe": "--"}
 
 NCOLS = 5
 
@@ -128,6 +136,7 @@ _PREPROC_DIRS = {
     "cp":            Path("..") / "data_cleaned_cp",
     "learn2clean":   Path("..") / "data_cleaned_learn2clean",
     "diffprep":      Path("..") / "data_cleaned_diffprep",
+    "ctxpipe":       Path("..") / "data_cleaned_ctxpipe",
 }
 
 
@@ -135,7 +144,7 @@ def _load_external_preproc_times() -> dict:
     """
     Load cpu_time_s from preprocessing perf_metrics CSVs written by the
     standalone scripts (saga.py, data_preparation_pipeline.py, learn2clean.py,
-    diffprep.py).
+    diffprep.py, ctxpipe.py).
 
     Returns
     -------
@@ -183,7 +192,7 @@ def _load_external_preproc_times() -> dict:
 
 _RE_STANDARD = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-    r"_(?P<config>curr[01]_gate[01]|saga|cp|learn2clean|diffprep)$"
+    r"_(?P<config>curr[01]_gate[01]|saga|cp|learn2clean|diffprep|ctxpipe)$"
 )
 
 
@@ -520,12 +529,14 @@ def plot_comparison(
                 means.append(np.nan)
                 stds.append(0.0)
 
-        ax.bar(
+        bars = ax.bar(
             x_pos, means, width=0.65,
             yerr=stds, capsize=3,
             color=colors,
             error_kw={"elinewidth": 0.9, "ecolor": "#333"},
         )
+        for bar, label in zip(bars, bar_labels):
+            bar.set_hatch(BAR_HATCHES.get(label, ""))
 
         for xi, mean, std in zip(x_pos, means, stds):
             if not np.isnan(mean):
@@ -871,7 +882,9 @@ def plot_time_percentage(
     x = np.arange(len(bar_labels))
 
     _, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(x, agg["pct"], width=0.6, color=colors, alpha=0.85)
+    bars = ax.bar(x, agg["pct"], width=0.6, color=colors, alpha=0.85)
+    for bar, label in zip(bars, bar_labels):
+        bar.set_hatch(BAR_HATCHES.get(label, ""))
 
     for xi, pct in zip(x, agg["pct"]):
         ax.text(xi, pct + 1, f"{pct:.1f}%", ha="center", va="bottom", fontsize=8)
@@ -1162,7 +1175,8 @@ def plot_convergence(
         mean_curve = np.nanmean(mat, axis=0)
         std_curve  = np.nanstd(mat, axis=0, ddof=min(1, mat.shape[0] - 1))
 
-        ax.plot(bin_centers, mean_curve, color=color, linewidth=1.8, label=config_label)
+        ax.plot(bin_centers, mean_curve, color=color, linewidth=1.8, label=config_label,
+                linestyle=LINE_STYLES.get(config_label, "-"))
         ax.fill_between(
             bin_centers,
             np.clip(mean_curve - std_curve, 0, None),
@@ -1249,8 +1263,10 @@ def plot_convergence_stats(
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
     def _bar(ax, means, stds, title, ylabel, ylim=None):
-        ax.bar(x, means, width=0.65, yerr=stds, capsize=3,
-               color=colors, error_kw=ekw)
+        bars = ax.bar(x, means, width=0.65, yerr=stds, capsize=3,
+                      color=colors, error_kw=ekw)
+        for bar, label in zip(bars, bar_labels):
+            bar.set_hatch(BAR_HATCHES.get(label, ""))
         for xi, m, s in zip(x, means, stds):
             ax.text(xi, m + s + 0.01, f"{m:.3f}",
                     ha="center", va="bottom", fontsize=6, rotation=90)

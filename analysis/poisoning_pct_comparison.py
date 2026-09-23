@@ -73,8 +73,11 @@ NOISE_MODE_LABELS = {"ar": "CCAR (AR)", "nar": "CNAR (NAR)"}
 # 6-slot order had saga++ next to cp and missed the normal-vision floor (13.7).
 # Aqua, yellow and magenta sit below 3:1 contrast on the light surface, so the
 # relief rule applies: the per-bar value labels below are what satisfies it.
+# CtxPipe gets no hue of its own: it shares DiffPrep's (both are automated
+# pipeline-search baselines) and is told apart by a 45° line texture
+# (CATEGORY_HATCHES) — a ninth generated hue would not stay distinguishable.
 CATEGORY_ORDER = ["clean", "cp", "baseline", "saga++", "learn2clean", "diffprep",
-                  "curriculum", "quail"]
+                  "ctxpipe", "curriculum", "quail"]
 CATEGORY_LABELS = {
     "clean": "Clean",
     "baseline": "Standard",
@@ -82,6 +85,7 @@ CATEGORY_LABELS = {
     "cp": "CP",
     "learn2clean": "Learn2Clean",
     "diffprep": "DiffPrep",
+    "ctxpipe": "CtxPipe",
     "curriculum": "Curriculum",
     "quail": "QuAIL",
 }
@@ -92,9 +96,13 @@ CATEGORY_COLORS = {
     "cp": "#eb6834",
     "learn2clean": "#e87ba4",
     "diffprep": "#7b5ea7",
+    "ctxpipe": "#7b5ea7",
     "curriculum": "#4a3aa7",
     "quail": "#e34948",
 }
+CATEGORY_HATCHES = {"ctxpipe": "///"}
+# Texture ink: a darker step of the violet the textured bars are filled with.
+HATCH_INK = "#3f2d66"
 
 # Metric registry. Score metrics (kind="score") read one CSV column directly.
 # Cost metrics (kind="time") sum the in-process preproc + training columns
@@ -123,6 +131,7 @@ _EXTERNAL_PREPROC_DIRS = {
     "cp":          HERE.parent / "data_cleaned_cp",
     "learn2clean": HERE.parent / "data_cleaned_learn2clean",
     "diffprep":    HERE.parent / "data_cleaned_diffprep",
+    "ctxpipe":     HERE.parent / "data_cleaned_ctxpipe",
 }
 
 
@@ -174,6 +183,8 @@ def _categorize(row) -> str | None:
         return "learn2clean"
     if row["preparation"] == "diffprep":
         return "diffprep"
+    if row["preparation"] == "ctxpipe":
+        return "ctxpipe"
     if row["preparation"] == "standard" and row["use_curriculum"] and not row["use_gate"]:
         return "curriculum"
     if row["preparation"] == "standard" and row["use_gate"] and not row["use_curriculum"]:
@@ -299,16 +310,24 @@ def main():
         corner_rx = BAR_RADIUS_PX * data_per_px_x
         corner_aspect = data_per_px_y / data_per_px_x
 
-        def _rounded_bar(xpos, h, width, color, edgecolor, linewidth, zorder):
+        def _rounded_bar(xpos, h, width, color, edgecolor, linewidth, zorder, hatch=""):
             # box starts at y=0 (the true baseline): the bottom two rounded
             # corners land far below the visible y_lo and get clipped by the
             # axes, leaving a flat/square baseline with only the top rounded
+            box = dict(boxstyle=f"round,pad=0,rounding_size={corner_rx}",
+                       mutation_aspect=corner_aspect, clip_on=True)
             ax.add_patch(FancyBboxPatch(
                 (xpos - width / 2, 0.0), width, h,
-                boxstyle=f"round,pad=0,rounding_size={corner_rx}",
-                mutation_aspect=corner_aspect,
                 linewidth=linewidth, edgecolor=edgecolor, facecolor=color,
-                zorder=zorder, clip_on=True))
+                zorder=zorder, **box))
+            if hatch:
+                # matplotlib inks a hatch with the patch's edge color, which is
+                # "none" (or the best-method green) above: draw the texture as
+                # its own outline-less layer
+                ax.add_patch(FancyBboxPatch(
+                    (xpos - width / 2, 0.0), width, h,
+                    linewidth=0, edgecolor=HATCH_INK, facecolor="none", hatch=hatch,
+                    zorder=zorder, **box))
 
         for j, pct in enumerate(PCTS):
             clean_h = grid["clean"][j] if not drop_clean else None
@@ -342,7 +361,8 @@ def main():
                              color=CATEGORY_COLORS[cat],
                              edgecolor=BEST_COLOR if is_best else "none",
                              linewidth=2.4 if is_best else 0,
-                             zorder=3 if cat == "quail" else 2)
+                             zorder=3 if cat == "quail" else 2,
+                             hatch=CATEGORY_HATCHES.get(cat, ""))
 
                 label_color = BEST_COLOR if is_best else INK_PRIMARY
                 ax.text(xpos, h + span * 0.03, f"{h:.{dec}f}", rotation=90,
@@ -375,7 +395,9 @@ def main():
         ax.tick_params(axis="y", length=0)
         ax.tick_params(axis="x", length=0)
 
-    handles = [plt.Rectangle((0, 0), 1, 1, color=CATEGORY_COLORS[c]) for c in cats_to_plot]
+    handles = [plt.Rectangle((0, 0), 1, 1, facecolor=CATEGORY_COLORS[c], linewidth=0,
+                             edgecolor=HATCH_INK, hatch=CATEGORY_HATCHES.get(c, ""))
+               for c in cats_to_plot]
     labels = [CATEGORY_LABELS[c] for c in cats_to_plot]
     if not drop_clean:
         handles.append(plt.Line2D([0], [0], linestyle=(0, (4, 2)), color=CLEAN_LINE_COLOR, linewidth=1.2))

@@ -1378,3 +1378,290 @@ def load_diffprep_data(
     }
 
     return (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata
+
+
+def load_ctxpipe_data(
+    dataset_name: str,
+    mode: str,
+    seed: int = 42,
+    ctxpipe_dir: str = "data_cleaned_ctxpipe",
+    clean_val: bool = True,
+    clean_test: bool = True,
+    data_dir: str = "data",
+    poisoned_dir: str = "data_poisoned",
+    val_size: float = 0.2,
+    test_sample_size: float = 0.8,
+    poison_test_size: float = 0.3,
+    **preprocessor_kwargs,
+) -> Tuple[
+    Tuple[np.ndarray, np.ndarray, np.ndarray],
+    Tuple[np.ndarray, np.ndarray, np.ndarray],
+    TabularPreprocessor,
+    Dict,
+]:
+    """
+    Load CtxPipe-prepared data for a dataset split.
+
+    CtxPipe (Gao et al., SIGMOD '25) builds the preparation pipeline with deep
+    Q-network agents guided by a text embedding of the data (the context
+    plug-in).  ``scripts/ctxpipe.py`` writes out the whole pipeline the agents
+    chose — imputation, encoding, scaling, feature engineering and feature
+    selection — so the CSV keeps the rows of the poisoned input but not its
+    columns: every feature is numeric and prefixed ``num_*``, either an input
+    column transformed in place or a feature a step derived (``num_pca_0``,
+    ``num_poly_12``, ``num_rte_431``, ...).  This loader is otherwise close to
+    ``load_diffprep_data``:
+
+    * **No second standardization.** The features already are on the scale,
+      and in the space, CtxPipe chose, so the TabularPreprocessor is built with
+      ``scale_numerical=False`` unless the caller overrides it.  Imputation
+      still runs (it is a no-op: CtxPipe leaves no missing value behind).
+
+    * **Pre-transformed companion frames.** The clean hold-out and, when
+      ``clean_val`` is set, the clean train+val partition are read from
+      ``ctxpipe_dir/test/{mode}/`` and ``ctxpipe_dir/clean/{mode}/``, where
+      ``scripts/ctxpipe.py`` wrote them after pushing them through the pipeline
+      fitted on the training frame.  A raw row would not even have the same
+      columns.
+
+    The ``_mask.csv`` next to the CSV is the residual mask over those output
+    columns: a derived feature is flagged in a row when one of the input
+    columns it is computed from was poisoned there *and* the value is still
+    missing.
+
+    Parameters
+    ----------
+    dataset_name : str
+        Name of the dataset (e.g. "iris").
+    mode : str
+        Poisoning mode ("ar" or "nar").
+    seed : int, default=42
+        Random seed for the train/val split.
+    ctxpipe_dir : str, default="data_cleaned_ctxpipe"
+        Root directory written by ``scripts/ctxpipe.py``.
+    clean_val : bool, default=True
+        If True, replace the validation split with the corresponding clean
+        (un-poisoned) rows, transformed by the same pipeline.
+    clean_test : bool, default=True
+        Kept for API compatibility; has no effect — the test set always comes
+        from the prepared clean hold-out.
+    data_dir : str, default="data"
+        Directory containing the original clean CSV files (used to locate the
+        dataset's filename).
+    poisoned_dir : str, default="data_poisoned"
+        Kept for API compatibility; the prepared hold-out is read from
+        ``ctxpipe_dir`` instead.
+    val_size : float, default=0.2
+        Fraction of the train+val partition used as validation.
+    test_sample_size : float, default=0.8
+        Fraction of the prepared hold-out sampled as the final test set, with
+        ``seed`` — the same draw every other loader makes, so all methods are
+        scored on the same test rows for a given seed.
+    poison_test_size : float, default=0.3
+        Fraction held out as test when running ``poison_data.py``.
+
+    Returns
+    -------
+    Same structure as ``load_data``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the CtxPipe-prepared files do not exist; run ``scripts/ctxpipe.py``
+        first.
+    """
+    import pickle
+
+    from sklearn.model_selection import train_test_split
+
+    data_path = Path(data_dir)
+    cp_mode_path = Path(ctxpipe_dir) / mode
+
+    # Locate dataset file by matching name suffix
+    csv_files = list(data_path.glob(f"*_{dataset_name}.csv"))
+    if not csv_files:
+        raise FileNotFoundError(
+            f"Dataset '{dataset_name}' not found in {data_dir}. "
+            f"Use get_datasets() to see available datasets."
+        )
+    if len(csv_files) > 1:
+        raise ValueError(
+            f"Multiple files found for dataset '{dataset_name}': {[f.name for f in csv_files]}"
+        )
+    csv_file = csv_files[0]
+    dataset_filename = csv_file.name
+
+    # ---- Load CtxPipe-prepared train+val partition ----
+    cp_csv = cp_mode_path / dataset_filename
+    cp_mask_file = cp_mode_path / f"{csv_file.stem}_mask.csv"
+    pipeline_pkl = cp_mode_path / f"{csv_file.stem}_pipeline.pkl"
+
+    if not cp_csv.exists():
+        raise FileNotFoundError(
+            f"CtxPipe-prepared data not found: {cp_csv}. "
+            "Run 'python scripts/ctxpipe.py' first."
+        )
+
+    df = pd.read_csv(cp_csv, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "])
+    if cp_mask_file.exists():
+        mask_df = pd.read_csv(cp_mask_file).astype(bool)
+    else:
+        mask_df = pd.DataFrame(False, index=df.index, columns=df.columns, dtype=bool)
+
+    pipeline_info: Optional[dict] = None
+    if pipeline_pkl.exists():
+        with open(pipeline_pkl, "rb") as f:
+            pipeline_info = pickle.load(f)
+
+    # ---- Detect label column ----
+    label_cols = [col for col in df.columns if col.startswith(("cls_", "reg_"))]
+    if not label_cols:
+        raise ValueError(f"No label column found in dataset {dataset_name}")
+    label_col = label_cols[0]
+    task_type = "classification" if label_col.startswith("cls_") else "regression"
+    feature_cols = [col for col in df.columns if col != label_col]
+
+    # ---- Load the prepared clean hold-out ----
+    test_file = Path(ctxpipe_dir) / "test" / mode / dataset_filename
+    if not test_file.exists():
+        raise FileNotFoundError(
+            f"Prepared CtxPipe hold-out not found: {test_file}. "
+            "Run scripts/ctxpipe.py (and scripts/poison_data.py) first."
+        )
+    df_test_full = pd.read_csv(
+        test_file, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "]
+    )
+    df_test = df_test_full.sample(frac=test_sample_size, random_state=seed).reset_index(drop=True)
+    missing_in_test = [c for c in feature_cols if c not in df_test.columns]
+    if missing_in_test:
+        raise ValueError(
+            f"Prepared hold-out {test_file} is missing columns kept in training: "
+            f"{missing_in_test[:10]}. Re-run scripts/ctxpipe.py for '{dataset_name}'."
+        )
+    df_test = df_test[feature_cols + ([label_col] if label_col in df_test.columns else [])]
+
+    # ---- Split train+val ----
+    indices = np.arange(len(df))
+    y_full = df[label_col].values
+    stratify_split = y_full if task_type == "classification" else None
+    if stratify_split is not None:
+        counts = pd.Series(y_full).value_counts()
+        if counts.min() < 2:
+            stratify_split = None  # a singleton class cannot be stratified
+    train_idx, val_idx = train_test_split(
+        indices, test_size=val_size, random_state=seed, stratify=stratify_split
+    )
+
+    df_train = df.iloc[train_idx].reset_index(drop=True)
+    df_val = df.iloc[val_idx].reset_index(drop=True)
+    mask_train = mask_df.iloc[train_idx].reset_index(drop=True)
+    mask_val = mask_df.iloc[val_idx].reset_index(drop=True)
+
+    # Replace val with the corresponding clean rows when requested. They come
+    # from ctxpipe_dir/clean/{mode}/, i.e. already pushed through the pipeline
+    # fitted on the poisoned training frame.
+    if clean_val:
+        clean_file = Path(ctxpipe_dir) / "clean" / mode / dataset_filename
+        if not clean_file.exists():
+            raise FileNotFoundError(
+                f"Prepared clean train+val partition not found: {clean_file}. "
+                "Re-run scripts/ctxpipe.py, or pass clean_val=False."
+            )
+        clean_trainval_df = pd.read_csv(
+            clean_file, na_values=["?", "NA", "N/A", "NaN", "nan", "NAN", "", " "]
+        )
+        if len(clean_trainval_df) != len(df):
+            raise ValueError(
+                f"Prepared clean partition {clean_file} has {len(clean_trainval_df)} rows "
+                f"but the CtxPipe-prepared partition has {len(df)}; they must line up "
+                f"row by row (poison_test_size={poison_test_size})."
+            )
+        clean_cols = [c for c in df.columns if c in clean_trainval_df.columns]
+        df_val = clean_trainval_df.iloc[val_idx][clean_cols].reset_index(drop=True)
+        mask_val = pd.DataFrame(
+            False, index=df_val.index, columns=df_val.columns, dtype=bool
+        )
+
+    # ---- TabularPreprocessor ----
+    # scale_numerical defaults to False here: CtxPipe already chose the scale.
+    preprocessor_kwargs.setdefault("scale_numerical", False)
+    preprocessor = TabularPreprocessor(
+        random_state=seed,
+        test_size=0.0,
+        val_size=0.0,
+        **preprocessor_kwargs,
+    )
+    X_train_features = df_train.drop(columns=[label_col])
+    y_train = df_train[label_col].values
+    preprocessor.fit(X_train_features, y_train)
+
+    X_train = preprocessor.transform(X_train_features)
+    X_val = preprocessor.transform(df_val.drop(columns=[label_col]))
+    X_test = preprocessor.transform(df_test.drop(columns=[label_col]))
+
+    y_val = df_val[label_col].values
+    y_test = df_test[label_col].values  # labels are never transformed
+
+    # ---- Quality metrics ----
+    def _sample_quality(mask: pd.DataFrame) -> np.ndarray:
+        cols = [c for c in feature_cols if c in mask.columns]
+        dirty = mask[cols].sum(axis=1).values
+        return (len(cols) - dirty) / max(len(cols), 1) * 100
+
+    sample_quality_train = _sample_quality(mask_train)
+    sample_quality_val = _sample_quality(mask_val)
+    sample_quality_test = np.full(len(df_test), 100.0)
+
+    feature_names_out = preprocessor.get_feature_names_out()
+    feature_quality: Dict = {}
+    for num_feat in getattr(preprocessor, "numerical_features_", []):
+        if num_feat in feature_cols and num_feat in mask_train.columns:
+            col_mask = mask_train[num_feat].values
+            feature_quality[num_feat] = (1 - col_mask.sum() / max(len(col_mask), 1)) * 100
+    for cat_feat in getattr(preprocessor, "categorical_features_", []):
+        if cat_feat in feature_cols and cat_feat in mask_train.columns:
+            col_mask = mask_train[cat_feat].values
+            q = (1 - col_mask.sum() / max(len(col_mask), 1)) * 100
+            for out_feat in feature_names_out:
+                if out_feat.startswith(f"{cat_feat}_"):
+                    feature_quality[out_feat] = q
+
+    feat_cols_present = [c for c in feature_cols if c in mask_train.columns]
+    all_masks = pd.concat(
+        [mask_train[feat_cols_present], mask_val[feat_cols_present]], ignore_index=True
+    )
+    total_dirty = all_masks.sum().sum()
+    total_cells = all_masks.size
+    overall_quality = (1 - total_dirty / max(total_cells, 1)) * 100
+
+    cp_result = (pipeline_info or {}).get("result", {})
+
+    metadata = {
+        "mask_train": mask_train[feat_cols_present].values if feat_cols_present else np.zeros((len(df_train), 0), dtype=bool),
+        "mask_val": mask_val[feat_cols_present].values if feat_cols_present else np.zeros((len(df_val), 0), dtype=bool),
+        "mask_test": np.zeros((len(df_test), len(feat_cols_present)), dtype=bool),
+        "sample_quality_train": sample_quality_train,
+        "sample_quality_val": sample_quality_val,
+        "sample_quality_test": sample_quality_test,
+        "feature_quality": feature_quality,
+        "overall_quality": overall_quality,
+        "mode": mode,
+        "dataset_name": dataset_name,
+        "task_type": task_type,
+        "n_samples": {"train": len(X_train), "val": len(X_val), "test": len(X_test)},
+        "n_features_raw": len(feature_cols),
+        "n_features_preprocessed": X_train.shape[1],
+        # CtxPipe-specific: the pipeline the agents built and how the reward
+        # model scored it — so the search that produced this data is visible in
+        # the results rather than only in its log.
+        "ctxpipe_logical_pipeline": (pipeline_info or {}).get("logical_pipeline"),
+        "ctxpipe_physical_pipeline": [
+            step.get("primitive") for step in (pipeline_info or {}).get("physical_pipeline", [])
+        ],
+        "ctxpipe_input_features": len((pipeline_info or {}).get("input_feature_columns", [])),
+        "ctxpipe_dropped_columns": (pipeline_info or {}).get("dropped_columns", []),
+        "ctxpipe_search_acc": cp_result.get("search_score"),
+        "ctxpipe_holdout_acc": cp_result.get("holdout_test_acc"),
+    }
+
+    return (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata

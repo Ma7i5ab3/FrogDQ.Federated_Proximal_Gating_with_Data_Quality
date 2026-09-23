@@ -69,7 +69,7 @@ STORAGE = f"sqlite:///{DB_PATH.resolve()}"
 
 _RE = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-    r"_(?P<config>curr[01]_gate[01]|saga|cp|learn2clean|diffprep)$"
+    r"_(?P<config>curr[01]_gate[01]|saga|cp|learn2clean|diffprep|ctxpipe)$"
 )
 
 CONFIG_LABELS = {
@@ -81,6 +81,7 @@ CONFIG_LABELS = {
     "cp":          "CP prep",
     "learn2clean": "Learn2Clean",
     "diffprep":    "DiffPrep",
+    "ctxpipe":     "CtxPipe",
 }
 
 COLORS = {
@@ -91,7 +92,12 @@ COLORS = {
     "CP prep":        "#f39c12",
     "Learn2Clean":    "#e87ba4",
     "DiffPrep":       "#7b5ea7",
+    "CtxPipe":        "#7b5ea7",
 }
+# CtxPipe shares DiffPrep's hue — both are automated pipeline-search baselines —
+# and is told apart by a 45° line texture: a ninth hue would push the palette
+# past what stays distinguishable.
+HATCHES = {"CtxPipe": "///"}
 
 ELO_BASE  = 1500.0
 ELO_SCALE = 400.0 / np.log(10.0)  # Elo points per unit of natural-log BT strength
@@ -352,7 +358,9 @@ def _plot_ratings(df_out: pd.DataFrame, noise_mode: str, metric_name: str,
     err_high = df_sorted["95% CI high"] - df_sorted["Elo"]
     colors = [COLORS.get(lbl, "#888") for lbl in df_sorted["Method"]]
 
-    ax.barh(y, df_sorted["Elo"], color=colors, alpha=0.85, height=0.6)
+    bars = ax.barh(y, df_sorted["Elo"], color=colors, alpha=0.85, height=0.6)
+    for bar, lbl in zip(bars, df_sorted["Method"]):
+        bar.set_hatch(HATCHES.get(lbl, ""))
     ax.errorbar(df_sorted["Elo"], y, xerr=[err_low, err_high],
                 fmt="none", ecolor="black", elinewidth=1.2, capsize=4)
     ax.set_yticks(y)
@@ -484,7 +492,7 @@ if __name__ == "__main__":
 
     methods_order = _filter_tokens([
         "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp", "learn2clean",
-        "diffprep",
+        "diffprep", "ctxpipe",
     ])
 
     compute_and_report(

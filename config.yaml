@@ -373,6 +373,81 @@ diffprep:
   # spend the spare cores on running several datasets in parallel instead.
   n_threads: 1
 
+# CtxPipe Benchmark Settings
+# ---------------------------
+# CtxPipe (Gao et al., SIGMOD '25) builds the data-preparation pipeline with deep
+# Q-network agents: one picks the logical pipeline (the order of the component
+# types), then one agent per type picks the component filling each slot —
+# imputer, encoder, feature preprocessing, feature engineering, feature
+# selection. Each agent reads column statistics of the intermediate data plus
+# a context embedding of 100 sampled rows (GTE-large), fed in through a gated
+# context plug-in. The agents are the ones released upstream (32,000 training
+# steps, scripts/ctxpipe_weights/), used as they are — nothing is trained here.
+# Produced by scripts/ctxpipe.py.
+#
+# Unlike CP, Saga++ and DiffPrep — and like Learn2Clean — CtxPipe is NOT
+# column-preserving: the encoder, feature engineering (PCA, polynomial features,
+# random-trees embedding, ...) and feature selection it picks are all written
+# out, so every feature comes out numeric (num_*) and the columns differ from
+# the poisoned input. Rows are never dropped. The residual mask is written over
+# the output columns, and the clean hold-out and the clean train+val partition
+# are written already pushed through the same pipeline, as for DiffPrep, so
+# quail.data builds its TabularPreprocessor with scale_numerical=False.
+#
+# Whether to include CtxPipe as a data-preparation benchmark in the main
+# experiments. Requires running scripts/ctxpipe.py first.
+# false: skip CtxPipe benchmark
+# true:  include CtxPipe benchmark experiments
+run_ctxpipe: true
+
+# Directory containing CtxPipe-prepared data produced by scripts/ctxpipe.py.
+# Structure: data_cleaned_ctxpipe/{mode}/{dataset_filename}.csv        (train+val),
+#            data_cleaned_ctxpipe/test/{mode}/{dataset_filename}.csv   (hold-out),
+#            data_cleaned_ctxpipe/clean/{mode}/{dataset_filename}.csv  (clean train+val).
+ctxpipe_data_dir: data_cleaned_ctxpipe
+
+ctxpipe:
+
+  # The released agents: directory and file prefix (<tag>_<agent>_model.pkl).
+  # ctx_32000 is the context plug-in + OCG experience replay setup the paper
+  # evaluates, trained for 32,000 steps on the HAIPipe corpus.
+  weights_dir: scripts/ctxpipe_weights
+  weights_tag: ctx_32000
+
+  # Text embedding model of the context plug-in (Hugging Face id or local path).
+  # Downloaded to the Hugging Face cache on first use (~670 MB). The agents were
+  # trained on GTE-large embeddings (1024-d): another model would not fit them.
+  embedding_model: thenlper/gte-large
+
+  # Rows sampled and serialized to CSV (header included) for the context
+  # embedding; the text is then cut at 512 tokens. The paper says 50, the
+  # released code — which trained the agents — uses 100.
+  n_ctx_rows: 100
+
+  # torch device for the embedding model and the agents: cpu, cuda, mps or auto.
+  device: cpu
+
+  # Seeds. seed is upstream's RANDOM_SEED, re-applied before every run: it fixes
+  # the context rows sampled and the context-gate matrices, which upstream never
+  # trains nor saves and draws afresh for every agent. split_seed and
+  # search_train_size are the 80/20 split the agents' reward (a logistic
+  # regression's accuracy) is computed on — upstream's Pipeline.load_data. Both
+  # halves are poisoned rows; the clean hold-out never steers the choice.
+  seed: 1145
+  split_seed: 0
+  search_train_size: 0.8
+
+  # KernelPCA builds the full n×n kernel matrix. null keeps upstream's unbounded
+  # behaviour; a row count makes KernelPCA refuse larger frames, and the agent
+  # falls back to its next-best feature-engineering component (for nomao, ~34k
+  # rows, the kernel alone would take ~9 GB).
+  kernel_pca_max_rows: null
+
+  # torch intra-op threads. null leaves torch's own default (one per core).
+  # Unlike DiffPrep, the time goes into the forward passes of GTE-large, which
+  # do use the threads.
+  n_threads: null
+
 # Quail + Curriculum Experiment Settings
 # ---------------------------------------
 # Whether to include the combined quail+curriculum experiment.
@@ -401,6 +476,7 @@ run_gate_curriculum: true
 #   cp               - Custom pipeline (CP) data-preparation baseline (requires run_cp)
 #   learn2clean      - Learn2Clean data-preparation baseline (requires run_learn2clean)
 #   diffprep         - DiffPrep data-preparation baseline (requires run_diffprep)
+#   ctxpipe          - CtxPipe data-preparation baseline (requires run_ctxpipe)
 #
 # Note: quail_analysis.py always keeps its own "Clean" reference regardless of
 # this setting — its noise-robustness analysis is built around measuring
@@ -408,7 +484,7 @@ run_gate_curriculum: true
 #
 # Example: only compare the quAIL quail against Saga++:
 #   comparison_methods: ['clean', 'baseline', 'gate', 'saga']
-comparison_methods: ['clean', 'baseline', 'curriculum', 'gate', 'gate_curriculum', 'saga', 'cp', 'learn2clean', 'diffprep']
+comparison_methods: ['clean', 'baseline', 'curriculum', 'gate', 'gate_curriculum', 'saga', 'cp', 'learn2clean', 'diffprep', 'ctxpipe']
 
 # Data Poisoning Settings
 # -----------------------

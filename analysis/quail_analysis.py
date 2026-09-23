@@ -62,7 +62,7 @@ STORAGE = f"sqlite:///{DB_PATH.resolve()}"
 
 _RE = re.compile(
     r"^(?P<dataset>.+)_(?P<data_mode>clean|ar|nar)_(?P<model_type>linear|mlp)"
-    r"_(?P<config>curr[01]_gate[01]|saga|cp|learn2clean|diffprep)$"
+    r"_(?P<config>curr[01]_gate[01]|saga|cp|learn2clean|diffprep|ctxpipe)$"
 )
 
 CONFIG_LABELS = {
@@ -74,6 +74,7 @@ CONFIG_LABELS = {
     "cp":          "CP prep",
     "learn2clean": "Learn2Clean",
     "diffprep":    "DiffPrep",
+    "ctxpipe":     "CtxPipe",
 }
 
 COLORS = {
@@ -84,7 +85,12 @@ COLORS = {
     "CP prep":      "#f39c12",
     "Learn2Clean":  "#e87ba4",
     "DiffPrep":     "#7b5ea7",
+    "CtxPipe":      "#7b5ea7",
 }
+# CtxPipe shares DiffPrep's hue — both are automated pipeline-search baselines —
+# and is told apart by a 45° line texture: a ninth hue would push the palette
+# past what stays distinguishable.
+HATCHES = {"CtxPipe": "///"}
 
 # comparison_methods selection (canonical keys from quail.comparison_methods),
 # set once by __main__ from --comparison-methods / config.yaml. None = all
@@ -371,6 +377,7 @@ def plot_deltas(dm: pd.DataFrame, metric_name: str) -> None:
         )
         for patch, lbl in zip(bp["boxes"], all_labels):
             patch.set_facecolor(COLORS.get(lbl, "#cccccc"))
+            patch.set_hatch(HATCHES.get(lbl, ""))
             patch.set_alpha(0.7)
 
         # Strip overlay
@@ -450,6 +457,7 @@ def plot_noise_robustness(dm: pd.DataFrame, metric_name: str) -> None:
         )
         for patch, lbl in zip(bp["boxes"], labels_used):
             patch.set_facecolor(COLORS.get(lbl, "#cccccc"))
+            patch.set_hatch(HATCHES.get(lbl, ""))
             patch.set_alpha(0.7)
 
         for xi, (lbl, drops) in enumerate(zip(labels_used, all_drops)):
@@ -612,6 +620,8 @@ def _plot_training_efficiency_for_pct(dm: pd.DataFrame, metric_name: str, pct: i
                        capsize=3, label=f"Epochs to {pct}%",
                        color=[COLORS.get(l, "#ccc") for l in labels_used],
                        alpha=0.85, error_kw={"elinewidth": 0.8})
+        for bar, lbl in zip(bars1, labels_used):
+            bar.set_hatch(HATCHES.get(lbl, ""))
         ax2 = ax.twinx()
         bars2 = ax2.bar(xi + w / 2,
                         [np.nanmean(v) for v in all_stab],
@@ -694,9 +704,11 @@ def plot_rank_distribution(dm: pd.DataFrame, metric_name: str) -> None:
 
         # Mean rank bar (bars span [1, mean_rank] — rank can never be < 1)
         colors_used = [COLORS.get(l, "#ccc") for l in avail_labels]
-        ax.bar(avail_labels, mean_ranks - 1, bottom=1, yerr=std_ranks, capsize=4,
-               color=colors_used, alpha=0.8,
-               error_kw={"elinewidth": 0.9, "ecolor": "#333"}, width=0.6)
+        rank_bars = ax.bar(avail_labels, mean_ranks - 1, bottom=1, yerr=std_ranks, capsize=4,
+                           color=colors_used, alpha=0.8,
+                           error_kw={"elinewidth": 0.9, "ecolor": "#333"}, width=0.6)
+        for bar, lbl in zip(rank_bars, avail_labels):
+            bar.set_hatch(HATCHES.get(lbl, ""))
         ax.set_ylim(0.5, len(available) + 0.5)
         ax.invert_yaxis()
         ax.axhline(1, color="black", linewidth=0.6, linestyle="--", alpha=0.4)

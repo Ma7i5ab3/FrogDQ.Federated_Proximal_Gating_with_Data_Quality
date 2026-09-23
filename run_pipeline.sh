@@ -7,11 +7,12 @@
 #   4. Saga++
 #   5. Learn2Clean
 #   6. DiffPrep
-#   7. Main (Optuna experiments)   -> results/<preset>pct/
-#   8. Evaluation (Friedman test + critical-difference diagrams) -> results/<preset>pct/evaluation/
-#   9. Cleanup of the regenerable poisoning/cleaning dirs (data_poisoned, data_cleaned_cp,
-#      data_cleaned_saga, data_cleaned_learn2clean, data_cleaned_diffprep) before moving on
-#      to the next preset.
+#   7. CtxPipe
+#   8. Main (Optuna experiments)   -> results/<preset>pct/
+#   9. Evaluation (Friedman test + critical-difference diagrams) -> results/<preset>pct/evaluation/
+#  10. Cleanup of the regenerable poisoning/cleaning dirs (data_poisoned, data_cleaned_cp,
+#      data_cleaned_saga, data_cleaned_learn2clean, data_cleaned_diffprep,
+#      data_cleaned_ctxpipe) before moving on to the next preset.
 #
 # Step 1 (select datasets) runs once, before the preset loop — dataset selection
 # doesn't depend on the poisoning level.
@@ -32,8 +33,9 @@
 #   --skip-saga          Skip step 4 (Saga++) for every preset
 #   --skip-learn2clean   Skip step 5 (Learn2Clean) for every preset
 #   --skip-diffprep      Skip step 6 (DiffPrep) for every preset
-#   --skip-main          Skip step 7 (main experiments) for every preset
-#   --skip-evaluate      Skip step 8 (evaluation) for every preset
+#   --skip-ctxpipe       Skip step 7 (CtxPipe) for every preset
+#   --skip-main          Skip step 8 (main experiments) for every preset
+#   --skip-evaluate      Skip step 9 (evaluation) for every preset
 #   --no-cleanup         Keep the data_poisoned/data_cleaned_* dirs between presets
 #   --eval-output-dir D  Subdirectory (under each preset's results dir) for evaluation plots
 #                        (default: evaluation, i.e. results/<preset>pct/evaluation)
@@ -121,7 +123,7 @@ PY
 # Regenerable poisoning/cleaning directories wiped between presets. Never
 # touches "data" (the original input) or "results" (the accumulated output).
 CLEANUP_DIRS=("data_poisoned" "data_cleaned_cp" "data_cleaned_saga" "data_cleaned_learn2clean"
-              "data_cleaned_diffprep")
+              "data_cleaned_diffprep" "data_cleaned_ctxpipe")
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 step_header() {
@@ -159,6 +161,7 @@ SKIP_CP=false
 SKIP_SAGA=false
 SKIP_LEARN2CLEAN=false
 SKIP_DIFFPREP=false
+SKIP_CTXPIPE=false
 SKIP_MAIN=false
 SKIP_EVALUATE=false
 NO_CLEANUP=false
@@ -175,6 +178,7 @@ while [[ $# -gt 0 ]]; do
         --skip-saga)          SKIP_SAGA=true          ;;
         --skip-learn2clean)   SKIP_LEARN2CLEAN=true   ;;
         --skip-diffprep)      SKIP_DIFFPREP=true      ;;
+        --skip-ctxpipe)       SKIP_CTXPIPE=true       ;;
         --skip-main)          SKIP_MAIN=true          ;;
         --skip-evaluate)      SKIP_EVALUATE=true      ;;
         --no-cleanup)         NO_CLEANUP=true         ;;
@@ -306,10 +310,23 @@ run_round() {
         step_ok 6
     fi
 
-    # ── step 7 — main (optuna experiments) ─────────────────────────────────
-    step_header 7 "Main (Optuna Experiments) (${pct}%)"
-    if $SKIP_MAIN; then
+    # ── step 7 — ctxpipe ────────────────────────────────────────────────────
+    step_header 7 "CtxPipe (${pct}%)"
+    if $SKIP_CTXPIPE; then
         step_skip 7
+    else
+        "$PYTHON" scripts/ctxpipe.py \
+            --input_dir  data_poisoned \
+            --output_dir data_cleaned_ctxpipe \
+            --clean_dir  data \
+            --config     "$CONFIG"
+        step_ok 7
+    fi
+
+    # ── step 8 — main (optuna experiments) ─────────────────────────────────
+    step_header 8 "Main (Optuna Experiments) (${pct}%)"
+    if $SKIP_MAIN; then
+        step_skip 8
     else
         _cfg_flag() {
             "$PYTHON" -c "import yaml; cfg=yaml.safe_load(open('$CONFIG')); print('true' if cfg.get('$1', False) else 'false')"
@@ -319,31 +336,32 @@ run_round() {
         [ "$(_cfg_flag run_saga)"        = "true" ] && MAIN_ARGS+=(--run-saga)
         [ "$(_cfg_flag run_learn2clean)" = "true" ] && MAIN_ARGS+=(--run-learn2clean)
         [ "$(_cfg_flag run_diffprep)"    = "true" ] && MAIN_ARGS+=(--run-diffprep)
+        [ "$(_cfg_flag run_ctxpipe)"     = "true" ] && MAIN_ARGS+=(--run-ctxpipe)
 
         if $AUTO_YES; then
             echo "y" | "$PYTHON" main.py "${MAIN_ARGS[@]}"
         else
             "$PYTHON" main.py "${MAIN_ARGS[@]}"
         fi
-        step_ok 7
+        step_ok 8
     fi
 
-    # ── step 8 — evaluation (friedman test + cd diagrams) ──────────────────
-    step_header 8 "Evaluation (Friedman Test + Critical-Difference Diagrams) (${pct}%)"
+    # ── step 9 — evaluation (friedman test + cd diagrams) ──────────────────
+    step_header 9 "Evaluation (Friedman Test + Critical-Difference Diagrams) (${pct}%)"
     if $SKIP_EVALUATE; then
-        step_skip 8
+        step_skip 9
     else
         "$PYTHON" scripts/evaluate.py \
             --config      "$CONFIG" \
             --results-dir "$output_dir" \
             --output-dir  "${output_dir}/${EVAL_OUTPUT_SUBDIR}"
-        step_ok 8
+        step_ok 9
     fi
 
-    # ── step 9 — cleanup regenerable poisoning/cleaning dirs ───────────────
-    step_header 9 "Cleanup (${pct}%)"
+    # ── step 10 — cleanup regenerable poisoning/cleaning dirs ──────────────
+    step_header 10 "Cleanup (${pct}%)"
     if $NO_CLEANUP; then
-        step_skip 9
+        step_skip 10
     else
         for d in "${CLEANUP_DIRS[@]}"; do
             if [[ -d "$d" ]]; then
@@ -351,7 +369,7 @@ run_round() {
                 echo -e "${YELLOW}  Removed ${d}/${RESET}"
             fi
         done
-        step_ok 9
+        step_ok 10
     fi
 }
 

@@ -83,7 +83,7 @@ def key_findings(metric: str, selected_methods=None) -> str:
     ga._SELECTED_METHODS = selected_methods
     methods_order = ga._filter_tokens([
         "curr0_gate0", "curr0_gate1", "curr1_gate0", "saga", "cp", "learn2clean",
-        "diffprep",
+        "diffprep", "ctxpipe",
     ])
     lines = []
 

@@ -38,15 +38,16 @@ HERE = Path(__file__).resolve().parent
 REPORTS_DIR = HERE / "reports"
 
 # canonical study "config" token -> column label, in the display order
-# requested: baseline, saga++, cp, learn2clean, diffprep, curriculum, quail.
+# requested: baseline, saga++, cp, learn2clean, diffprep, ctxpipe, curriculum, quail.
 METHODS_ORDER = ["curr0_gate0", "saga", "cp", "learn2clean", "diffprep",
-                 "curr1_gate0", "curr0_gate1"]
+                 "ctxpipe", "curr1_gate0", "curr0_gate1"]
 METHOD_LABELS = {
     "curr0_gate0": "Baseline",
     "saga":        "Saga++",
     "cp":          "CP",
     "learn2clean": "Learn2Clean",
     "diffprep": "DiffPrep",
+    "ctxpipe": "CtxPipe",
     "curr1_gate0": "Curriculum",
     "curr0_gate1": "QuAIL",
 }

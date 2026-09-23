@@ -22,6 +22,7 @@ from optuna.study import Study
 from quail.data import (
     get_datasets,
     load_cp_data,
+    load_ctxpipe_data,
     load_data,
     load_diffprep_data,
     load_learn2clean_data,
@@ -243,6 +244,12 @@ class OptunaExperiment:
         self.run_diffprep = config.get('run_diffprep', False)
         self.diffprep_data_dir = config.get(
             'diffprep_data_dir', 'data_cleaned_diffprep'
+        )
+
+        # CtxPipe benchmark settings
+        self.run_ctxpipe = config.get('run_ctxpipe', False)
+        self.ctxpipe_data_dir = config.get(
+            'ctxpipe_data_dir', 'data_cleaned_ctxpipe'
         )
 
         # Base data directories (relative to CWD or absolute)
@@ -470,6 +477,19 @@ class OptunaExperiment:
                     mode=data_mode,
                     seed=seed,
                     diffprep_dir=self.diffprep_data_dir,
+                    clean_val=self.clean_val,
+                    clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
+                )
+            )
+        elif preparation == 'ctxpipe':
+            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
+                load_ctxpipe_data(
+                    dataset_name=dataset_name,
+                    mode=data_mode,
+                    seed=seed,
+                    ctxpipe_dir=self.ctxpipe_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
                     data_dir=self.data_dir,
@@ -788,6 +808,8 @@ class OptunaExperiment:
             return f"{dataset_name}_{data_mode}_{model_type}_learn2clean"
         elif preparation == 'diffprep':
             return f"{dataset_name}_{data_mode}_{model_type}_diffprep"
+        elif preparation == 'ctxpipe':
+            return f"{dataset_name}_{data_mode}_{model_type}_ctxpipe"
         else:
             return f"{dataset_name}_{data_mode}_{model_type}_curr{int(use_curriculum)}_gate{int(use_gate)}"
 
@@ -872,6 +894,17 @@ class OptunaExperiment:
                     mode=data_mode,
                     seed=self.seed_start,
                     diffprep_dir=self.diffprep_data_dir,
+                    clean_val=self.clean_val,
+                    clean_test=self.clean_test,
+                    data_dir=self.data_dir,
+                    poisoned_dir=self.poisoned_dir,
+                )
+            elif preparation == 'ctxpipe':
+                _, (y_train, _, _), _, metadata = load_ctxpipe_data(
+                    dataset_name=dataset_name,
+                    mode=data_mode,
+                    seed=self.seed_start,
+                    ctxpipe_dir=self.ctxpipe_data_dir,
                     clean_val=self.clean_val,
                     clean_test=self.clean_test,
                     data_dir=self.data_dir,
@@ -1283,6 +1316,13 @@ class OptunaExperiment:
                             'preparation': 'diffprep',
                         })
 
+                    if self.run_ctxpipe:
+                        experiments.append({
+                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
+                            'use_curriculum': False, 'use_gate': False,
+                            'preparation': 'ctxpipe',
+                        })
+
                     experiments.append({
                         'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
                         'use_curriculum': True, 'use_gate': False, 'preparation': 'standard',
@@ -1328,9 +1368,10 @@ class OptunaExperiment:
         #  4. AR/NAR + Saga         (if run_saga)
         #  5. AR/NAR + Learn2Clean  (if run_learn2clean)
         #  6. AR/NAR + DiffPrep     (if run_diffprep)
-        #  7. AR/NAR + curriculum
-        #  8. AR/NAR + quail
-        #  9. AR/NAR + quail + curriculum
+        #  7. AR/NAR + CtxPipe      (if run_ctxpipe)
+        #  8. AR/NAR + curriculum
+        #  9. AR/NAR + quail
+        # 10. AR/NAR + quail + curriculum
         # All configs apply symmetrically to both Linear and MLP.
         experiments = []
         ar_nar_modes = [m for m in self.data_modes if m in ('ar', 'nar')]
@@ -1401,6 +1442,17 @@ class OptunaExperiment:
                             'use_curriculum': False,
                             'use_gate': False,
                             'preparation': 'diffprep',
+                        })
+
+                    # 7. CtxPipe data-preparation baseline
+                    if self.run_ctxpipe:
+                        experiments.append({
+                            'dataset': dataset,
+                            'data_mode': data_mode,
+                            'model_type': model_type,
+                            'use_curriculum': False,
+                            'use_gate': False,
+                            'preparation': 'ctxpipe',
                         })
 
                     # 6. Curriculum learning

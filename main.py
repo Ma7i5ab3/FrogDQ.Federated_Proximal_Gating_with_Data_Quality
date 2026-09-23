@@ -223,6 +223,26 @@ def parse_args():
         )
     )
 
+    parser.add_argument(
+        '--run-ctxpipe',
+        action='store_true',
+        help=(
+            'Include CtxPipe as a data-preparation benchmark. '
+            'Runs experiments on AR/NAR modes using CtxPipe-prepared data '
+            '(context-aware pipeline construction by deep RL agents). '
+            'Requires running scripts/ctxpipe.py first.'
+        )
+    )
+
+    parser.add_argument(
+        '--ctxpipe-data-dir',
+        type=str,
+        help=(
+            'Directory containing CtxPipe-prepared data '
+            '(default: data_cleaned_ctxpipe)'
+        )
+    )
+
     return parser.parse_args()
 
 
@@ -358,6 +378,10 @@ def main():
         config['run_diffprep'] = True
     if args.diffprep_data_dir:
         config['diffprep_data_dir'] = args.diffprep_data_dir
+    if args.run_ctxpipe:
+        config['run_ctxpipe'] = True
+    if args.ctxpipe_data_dir:
+        config['ctxpipe_data_dir'] = args.ctxpipe_data_dir
 
     # Validate configuration
     if not config.get('datasets'):
@@ -411,6 +435,11 @@ def main():
         print(f"  - Cleaned data dir: {config.get('diffprep_data_dir', 'data_cleaned_diffprep')}")
         print(f"  - To pre-compute: python scripts/diffprep.py")
         print(f"  - Note: values come out on the scale DiffPrep chose, so they are not standardized again")
+    print(f"CtxPipe benchmark: {config.get('run_ctxpipe', False)}")
+    if config.get('run_ctxpipe'):
+        print(f"  - Prepared data dir: {config.get('ctxpipe_data_dir', 'data_cleaned_ctxpipe')}")
+        print(f"  - To pre-compute: python scripts/ctxpipe.py")
+        print(f"  - Note: features come out in the space CtxPipe built (encoded, engineered, selected), not standardized again")
     # Calculate total configurations per model × n_models × n_datasets,
     # adjusted for which optional benchmarks are enabled.
     n_datasets = len(config['datasets'])
@@ -419,7 +448,7 @@ def main():
     n_models = len(config['model_types'])
 
     # Per model per AR/NAR mode: poisoned + curriculum + quail + quail+curriculum = 4 standard
-    # + cp (opt) + saga (opt) + learn2clean (opt) + diffprep (opt)
+    # + cp (opt) + saga (opt) + learn2clean (opt) + diffprep (opt) + ctxpipe (opt)
     per_model_ar_nar = 4
     if config.get('run_cp'):
         per_model_ar_nar += 1
@@ -428,6 +457,8 @@ def main():
     if config.get('run_learn2clean'):
         per_model_ar_nar += 1
     if config.get('run_diffprep'):
+        per_model_ar_nar += 1
+    if config.get('run_ctxpipe'):
         per_model_ar_nar += 1
 
     clean_configs = n_datasets * n_models * int(has_clean)
@@ -449,6 +480,8 @@ def main():
         print(f"    - Learn2Clean baseline: 1 config")
     if config.get('run_diffprep'):
         print(f"    - DiffPrep baseline: 1 config")
+    if config.get('run_ctxpipe'):
+        print(f"    - CtxPipe baseline: 1 config")
     print(f"  AR/NAR configs total: {ar_nar_configs}")
     print(f"  Total configurations: {total_configs}")
     print(f"  Total trials: {total_trials}")

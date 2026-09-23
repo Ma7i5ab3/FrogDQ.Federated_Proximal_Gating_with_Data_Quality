@@ -40,6 +40,7 @@ data_cleaned_cp/          Custom-pipeline-cleaned data (MICE + IQR + rule repair
 data_cleaned_saga/        Saga++-cleaned data (baseline data-repair method)
 data_cleaned_learn2clean/ Learn2Clean-cleaned data (Q-learning pipeline selection)
 data_cleaned_diffprep/    DiffPrep-cleaned data (differentiable pipeline search)
+data_cleaned_ctxpipe/     CtxPipe-prepared data (context-aware RL pipeline construction)
 config.yaml               Single source of truth for all experiment settings
 run_pipeline.sh           Orchestrates the full pipeline end to end
 main.py                   Entry point for the Optuna hyperparameter search
@@ -86,8 +87,10 @@ Edit [config.yaml](config.yaml) to pick datasets, data-quality modes
 (`run_cp`, `run_saga`). The corruption levels the pipeline sweeps live under
 `poisoning.presets` and are documented in [POISONING.md](POISONING.md).
 The Learn2Clean baseline is tuned under the `learn2clean` block (goal model,
-Q-learning parameters, per-method thresholds), and DiffPrep under the `diffprep`
-block (variant, end model, training budget, learning-rate grid).
+Q-learning parameters, per-method thresholds), DiffPrep under the `diffprep`
+block (variant, end model, training budget, learning-rate grid), and CtxPipe
+under the `ctxpipe` block (released agent weights, context embedding model,
+device, seeds).
 
 ### 5. Run the full pipeline
 
@@ -97,17 +100,18 @@ block (variant, end model, training budget, learning-rate grid).
 
 After selecting datasets once, this loops over every corruption preset in
 `poisoning.presets.run` (10%, 20%, 30%, 40%). For each preset it poisons the data,
-runs data preparation (CP), Saga++, Learn2Clean and DiffPrep, runs the Optuna
+runs data preparation (CP), Saga++, Learn2Clean, DiffPrep and CtxPipe, runs the Optuna
 experiments with the selected methods (QuAIL and Curriculum included) into
 `results/<preset>pct/`, evaluates them, then wipes `data_poisoned/`,
-`data_cleaned_cp/`, `data_cleaned_saga/`, `data_cleaned_learn2clean/` and
-`data_cleaned_diffprep/` before the next preset.
+`data_cleaned_cp/`, `data_cleaned_saga/`, `data_cleaned_learn2clean/`,
+`data_cleaned_diffprep/` and `data_cleaned_ctxpipe/` before the next preset.
 
 ```bash
 ./run_pipeline.sh --presets "10,30"                  # only some presets
 ./run_pipeline.sh --skip-poison --skip-cp            # skip stages in every preset
 ./run_pipeline.sh --skip-learn2clean                 # skip the Learn2Clean stage
 ./run_pipeline.sh --skip-diffprep                    # skip the DiffPrep stage
+./run_pipeline.sh --skip-ctxpipe                     # skip the CtxPipe stage
 ./run_pipeline.sh --no-cleanup                       # keep the intermediate data dirs
 ./run_pipeline.sh --eval-output-dir my_evaluation    # plot subdir inside each results dir
 ```
@@ -120,6 +124,7 @@ experiments with the selected methods (QuAIL and Curriculum included) into
 | Saga++ | `scripts/saga.py` | `data_cleaned_saga/` | preserved |
 | Learn2Clean | `scripts/learn2clean.py` | `data_cleaned_learn2clean/` | **reduced** |
 | DiffPrep | `scripts/diffprep.py` | `data_cleaned_diffprep/` | preserved (**rescaled**) |
+| CtxPipe | `scripts/ctxpipe.py` | `data_cleaned_ctxpipe/` | rows preserved, **new columns** |
 
 Learn2Clean ([Berti-Equille, WWW '19](https://doi.org/10.1145/3308558.3313602),
 ported from [the reference implementation](https://github.com/LaureBerti/Learn2Clean))
@@ -171,7 +176,7 @@ transformers fitted on the training frame. One-hot encoding is the single step o
 the DiffPrep pipeline that `scripts/diffprep.py` deliberately does not write out,
 because the `TabularPreprocessor` performs it downstream.
 
-DiffPrep is by far the most expensive of the four baselines: it trains the end
+DiffPrep is by far the most expensive of the data-preparation baselines: it trains the end
 model once per learning rate in `diffprep.model_lr`, for every dataset and every
 corruption mode, and `diffprep_flex` evaluates every transformation type at every
 position of the permutation. Shrinking `model_lr` to a single value is the
@@ -180,6 +185,38 @@ quickest way to cut the runtime.
 Enable it with `run_diffprep` in [config.yaml](config.yaml) (or `--run-diffprep`
 on `main.py`), and add `diffprep` to `comparison_methods` to include it in the
 evaluation and analysis outputs. `scripts/diffprep.py --help` documents the
+standalone CLI.
+
+CtxPipe ([Gao et al., SIGMOD '25](https://doi.org/10.1145/3698831),
+ported from [the reference implementation](https://github.com/ctxpipe/ctxpipe))
+builds the pipeline with deep Q-network agents: one picks the logical pipeline
+(the order of feature preprocessing, feature engineering and feature selection
+after imputation and encoding), then one agent per component type picks the
+component filling each slot, reading column statistics of the intermediate data
+and — through a gated *context plug-in* — a GTE-large embedding of 100 sampled
+rows, header included. The agents are the ones released upstream, trained for
+32,000 steps on the HAIPipe corpus and shipped in `scripts/ctxpipe_weights/`;
+nothing is trained here, exactly as in the paper's evaluation. The first run
+downloads GTE-large (~670 MB) into the Hugging Face cache and needs the
+`transformers` package.
+
+The whole pipeline the agents chose is written out, encoder and feature
+engineering included, so the output keeps every row but not the columns: every
+feature is numeric and prefixed `num_*` (its original name when a step transforms
+it in place, `num_pca_0`, `num_poly_12`, `num_rte_431`, ... when a step derives
+new ones). `quail.data.load_ctxpipe_data` builds its `TabularPreprocessor` with
+`scale_numerical=False`, and reads the hold-out and the clean train+val
+partition from `data_cleaned_ctxpipe/test/{mode}/` and
+`data_cleaned_ctxpipe/clean/{mode}/`, already pushed through the pipeline fitted
+on the training frame. The residual mask is written over the output columns, a
+derived feature inheriting the poison mask of the input columns it comes from.
+The port reproduces upstream's decisions exactly — same Q-values, same pipeline,
+same reward — and every deviation needed to write the data out is flagged with a
+`CTX-PORT` note in `scripts/ctxpipe.py`.
+
+Enable it with `run_ctxpipe` in [config.yaml](config.yaml) (or `--run-ctxpipe`
+on `main.py`), and add `ctxpipe` to `comparison_methods` to include it in the
+evaluation and analysis outputs. `scripts/ctxpipe.py --help` documents the
 standalone CLI.
 
 Each stage can also be run standalone via the corresponding script in

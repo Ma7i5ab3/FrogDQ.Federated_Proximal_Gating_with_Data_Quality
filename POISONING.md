@@ -101,7 +101,7 @@ shares are *not* repeated there — they come from `poisoning.noise`
 every preset.
 
 `./run_pipeline.sh` reads that block and runs each preset end-to-end (poison → CP → Saga++ →
-Learn2Clean → DiffPrep → experiments → evaluation) into `results/<preset>pct/`, wiping
+Learn2Clean → DiffPrep → CtxPipe → experiments → evaluation) into `results/<preset>pct/`, wiping
 `data_poisoned/` and every `data_cleaned_*/` directory between rounds. Restrict a run with
 `--presets "10,30"`.
 
