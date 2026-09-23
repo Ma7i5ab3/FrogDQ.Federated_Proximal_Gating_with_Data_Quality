@@ -1290,10 +1290,15 @@ class DiffPrepSGD(object):
             tr_loss, tr_acc = self.train(X_train, y_train, X_val, y_val)
 
             val_loss, val_acc = self.evaluate(X_val, y_val, X_type="val", max_only=False)
-            test_loss, test_acc = self.evaluate(X_test, y_test, X_type="test", max_only=False)
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
+                # The test frame is only ever read to report best_test_acc, never
+                # to select: upstream evaluates it every epoch and throws the
+                # value away unless the validation loss improved. Evaluating it
+                # here instead keeps best_test_acc identical while skipping one
+                # full-test forward pass on every non-improving epoch.
+                _, test_acc = self.evaluate(X_test, y_test, X_type="test", max_only=False)
                 best_result = {
                     "best_epoch": e,
                     "best_val_loss": val_loss,

@@ -327,17 +327,22 @@ diffprep:
   # Early stopping is only re-checked every 100 epochs, so patience is counted
   # in hundreds of epochs, not in epochs (patience 3 -> stops around epoch 300
   # at the earliest).
+  # flex_patience 10 means the search cannot stop before epoch 1100, since the
+  # check only fires every 100 epochs; 3 lowers that floor to 400 epochs, which
+  # is the same budget upstream gives DiffPrep-Fix.
   num_epochs: 2000
   flex_num_epochs: 3000
   patience: 3
-  flex_patience: 10
+  flex_patience: 3
   batch_size: 512
 
   # Learning rates tried for the end model; the one with the lowest validation
   # loss wins (upstream tunes exactly this, and nothing else, by grid search).
   # Each extra value multiplies the runtime of every dataset and mode, so this
-  # is the first knob to shrink if the search is too slow.
-  model_lr: [0.1, 0.01, 0.001]
+  # is the first knob to shrink if the search is too slow. 0.001 is dropped from
+  # upstream's grid: with momentum 0.9 it is the least likely of the three to
+  # win inside this epoch budget. Cut to [0.1] for another 2x.
+  model_lr: [0.1, 0.01]
 
   # Learning rate of the pipeline parameters (eta1 in Algorithm 1). null keeps
   # upstream's shortcut of reusing the model learning rate, which is what the
@@ -358,16 +363,22 @@ diffprep:
   # true : Gumbel-softmax straight-through sampling.
   sample: false
 
-  # torch intra-op threads. null leaves torch's own default. DiffPrep is a
-  # single-process search, so this is what controls how many cores it uses.
-  n_threads: null
+  # torch intra-op threads. null leaves torch's own default (one per core).
+  # DiffPrep is a single-process search, so this is what controls how many cores
+  # it uses — but the tensors here are tiny (a batch of 512 through a logistic
+  # regression) and the search spends ~99 % of its time in scikit-learn/numpy
+  # operators that these threads never touch. Measured on 019_00054_vehicle,
+  # 4 epochs: 1 thread 0.98 s/epoch at 100 % CPU, 16 threads 2.85 s/epoch at
+  # 700 % CPU — the OpenMP pool spins instead of working. Keep this at 1 and
+  # spend the spare cores on running several datasets in parallel instead.
+  n_threads: 1
 
 # Quail + Curriculum Experiment Settings
 # ---------------------------------------
 # Whether to include the combined quail+curriculum experiment.
 # true:  run quail+curriculum (default)
 # false: skip quail+curriculum
-run_gate_curriculum: false
+run_gate_curriculum: true
 
 # Comparison Methods (Evaluation / Analysis Scripts)
 # -----------------------------------------------------
@@ -397,7 +408,7 @@ run_gate_curriculum: false
 #
 # Example: only compare the quAIL quail against Saga++:
 #   comparison_methods: ['clean', 'baseline', 'gate', 'saga']
-comparison_methods: ['clean', 'baseline', 'curriculum', 'gate', 'saga', 'cp', 'learn2clean', 'diffprep']
+comparison_methods: ['clean', 'baseline', 'curriculum', 'gate', 'gate_curriculum', 'saga', 'cp', 'learn2clean', 'diffprep']
 
 # Data Poisoning Settings
 # -----------------------

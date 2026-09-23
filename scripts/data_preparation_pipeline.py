@@ -829,6 +829,24 @@ class DataPreparation:
 # Hyperparameter tuning
 # ---------------------------------------------------------------------------
 
+def _set_lightgbm_max_threads(num_threads: int) -> bool:
+    """
+    Set LightGBM's process-wide cap on OpenMP threads (num_threads <= 0 removes it).
+
+    Returns False (and does nothing) if the installed LightGBM does not export
+    LGBM_SetMaxThreads.
+    """
+    import ctypes
+    from lightgbm.basic import _LIB, _safe_call
+
+    try:
+        set_max_threads = _LIB.LGBM_SetMaxThreads
+    except AttributeError:
+        return False
+    _safe_call(set_max_threads(ctypes.c_int(num_threads)))
+    return True
+
+
 def _tune_dataset_hyperparams(
     df_poisoned: pd.DataFrame,
     mask_df: pd.DataFrame,
@@ -1048,13 +1066,27 @@ def _tune_dataset_hyperparams(
     )
     sampler = optuna.samplers.TPESampler(seed=seed)
     study   = optuna.create_study(direction="minimize", sampler=sampler)
-    study.optimize(
-        objective,
-        n_trials=n_trials,
-        n_jobs=n_jobs,
-        show_progress_bar=False,
-        catch=(Exception,),
-    )
+
+    # LightGBM keeps its OpenMP thread count in a process-wide global that every
+    # train()/predict() call overwrites (miceforest's predict() resets it to all
+    # cores, the objective booster sets it to 1).  With parallel Optuna threads a
+    # trial can size its per-thread buffers for one value and run an OpenMP loop
+    # with another → out-of-bounds write → segfault.  Capping LightGBM at 1 thread
+    # for the parallel study gives every trial the same value (matching
+    # internal_jobs=1); the cap is lifted afterwards so full-data cleaning still
+    # uses all cores.
+    lgb_capped = n_jobs > 1 and _set_lightgbm_max_threads(1)
+    try:
+        study.optimize(
+            objective,
+            n_trials=n_trials,
+            n_jobs=n_jobs,
+            show_progress_bar=False,
+            catch=(Exception,),
+        )
+    finally:
+        if lgb_capped:
+            _set_lightgbm_max_threads(-1)
 
     valid_trials = [t for t in study.trials if t.value is not None and t.value != float("inf")]
     if not valid_trials:
