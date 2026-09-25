@@ -6,6 +6,10 @@ This script provides a command-line interface for running Optuna-based
 hyperparameter optimization across different model configurations, data
 quality modes, and datasets.
 
+It is the centralized (non-federated) reference: one model per dataset,
+trained on the whole train split. The federated entry point is still a TODO
+(see README.md).
+
 Usage:
     # Run with default config file
     python main.py
@@ -140,7 +144,7 @@ def parse_args():
     parser.add_argument(
         '--reuse-params',
         action='store_true',
-        help='For MLP with curriculum/quail on AR/NAR, reuse baseline (no curr/quail) hyperparameters from same data mode. Reduces trials for curriculum-only (3 params) and combined (8 params).'
+        help='For quail runs on AR/NAR, reuse baseline (no quail) hyperparameters from the same data mode and optimize only the quail parameters.'
     )
 
     parser.add_argument(
@@ -148,99 +152,6 @@ def parse_args():
         type=int,
         default=5,
         help='Number of top baseline trials to sample from (default: 5, requires --reuse-params)'
-    )
-
-    parser.add_argument(
-        '--run-cp',
-        action='store_true',
-        help=(
-            'Include the custom pipeline (CP) as a data-preparation benchmark. '
-            'Runs experiments on AR/NAR modes using CP-cleaned data (MICE + IQR + '
-            'association-rule repair). '
-            'Requires running scripts/data_preparation_pipeline.py first.'
-        )
-    )
-
-    parser.add_argument(
-        '--cp-data-dir',
-        type=str,
-        help='Directory containing CP-cleaned data (default: data_cleaned_cp)'
-    )
-
-    parser.add_argument(
-        '--run-saga',
-        action='store_true',
-        help=(
-            'Include Saga++ as a data-preparation benchmark. '
-            'Runs experiments on AR/NAR modes using Saga++-cleaned data. '
-            'Requires running scripts/saga.py first.'
-        )
-    )
-
-    parser.add_argument(
-        '--saga-data-dir',
-        type=str,
-        help='Directory containing Saga++-cleaned data (default: data_cleaned_saga)'
-    )
-
-    parser.add_argument(
-        '--run-learn2clean',
-        action='store_true',
-        help=(
-            'Include Learn2Clean as a data-preparation benchmark. '
-            'Runs experiments on AR/NAR modes using Learn2Clean-cleaned data '
-            '(Q-learning over the preparation pipeline). '
-            'Requires running scripts/learn2clean.py first.'
-        )
-    )
-
-    parser.add_argument(
-        '--learn2clean-data-dir',
-        type=str,
-        help=(
-            'Directory containing Learn2Clean-cleaned data '
-            '(default: data_cleaned_learn2clean)'
-        )
-    )
-
-    parser.add_argument(
-        '--run-diffprep',
-        action='store_true',
-        help=(
-            'Include DiffPrep as a data-preparation benchmark. '
-            'Runs experiments on AR/NAR modes using DiffPrep-cleaned data '
-            '(differentiable pipeline search by bi-level optimization). '
-            'Requires running scripts/diffprep.py first.'
-        )
-    )
-
-    parser.add_argument(
-        '--diffprep-data-dir',
-        type=str,
-        help=(
-            'Directory containing DiffPrep-cleaned data '
-            '(default: data_cleaned_diffprep)'
-        )
-    )
-
-    parser.add_argument(
-        '--run-ctxpipe',
-        action='store_true',
-        help=(
-            'Include CtxPipe as a data-preparation benchmark. '
-            'Runs experiments on AR/NAR modes using CtxPipe-prepared data '
-            '(context-aware pipeline construction by deep RL agents). '
-            'Requires running scripts/ctxpipe.py first.'
-        )
-    )
-
-    parser.add_argument(
-        '--ctxpipe-data-dir',
-        type=str,
-        help=(
-            'Directory containing CtxPipe-prepared data '
-            '(default: data_cleaned_ctxpipe)'
-        )
     )
 
     return parser.parse_args()
@@ -280,8 +191,6 @@ def get_quick_test_config():
         'datasets': ['iris'],
         'data_modes': ['clean'],
         'model_types': ['linear', 'mlp'],
-        'curriculum_settings': [False],
-        'gate_settings': [False],
         'n_trials': 5,
         'n_seeds': 2,
         'seed_start': 42,
@@ -362,26 +271,6 @@ def main():
     if args.reuse_params:
         config['reuse_params'] = True
         config['reuse_top_n'] = args.reuse_top_n
-    if args.run_cp:
-        config['run_cp'] = True
-    if args.cp_data_dir:
-        config['cp_data_dir'] = args.cp_data_dir
-    if args.run_saga:
-        config['run_saga'] = True
-    if args.saga_data_dir:
-        config['saga_data_dir'] = args.saga_data_dir
-    if args.run_learn2clean:
-        config['run_learn2clean'] = True
-    if args.learn2clean_data_dir:
-        config['learn2clean_data_dir'] = args.learn2clean_data_dir
-    if args.run_diffprep:
-        config['run_diffprep'] = True
-    if args.diffprep_data_dir:
-        config['diffprep_data_dir'] = args.diffprep_data_dir
-    if args.run_ctxpipe:
-        config['run_ctxpipe'] = True
-    if args.ctxpipe_data_dir:
-        config['ctxpipe_data_dir'] = args.ctxpipe_data_dir
 
     # Validate configuration
     if not config.get('datasets'):
@@ -405,8 +294,6 @@ def main():
     print(f"Datasets: {config['datasets']}")
     print(f"Data modes: {config['data_modes']}")
     print(f"Model types: {config['model_types']}")
-    print(f"Curriculum settings: {config['curriculum_settings']} (applied to all model types on AR/NAR)")
-    print(f"Quail settings: {config['gate_settings']} (applied to all model types on AR/NAR)")
     print(f"Trials per config: {config['n_trials']}")
     print(f"Seeds per trial: {config['n_seeds']}")
     print(f"Parallel jobs (seeds): {config['n_jobs_seeds']}")
@@ -416,50 +303,14 @@ def main():
     print(f"Reuse baseline params: {config.get('reuse_params', False)}")
     if config.get('reuse_params'):
         print(f"  - Sample from top-{config.get('reuse_top_n', 5)} baseline trials (AR/NAR baseline)")
-        print(f"  - Reduced trials: curriculum-only (3), combined ({config['n_trials']})")
-    print(f"Custom pipeline (CP) benchmark: {config.get('run_cp', False)}")
-    if config.get('run_cp'):
-        print(f"  - Cleaned data dir: {config.get('cp_data_dir', 'data_cleaned_cp')}")
-        print(f"  - To pre-compute: python scripts/data_preparation_pipeline.py")
-    print(f"Saga benchmark: {config.get('run_saga', False)}")
-    if config.get('run_saga'):
-        print(f"  - Cleaned data dir: {config.get('saga_data_dir', 'data_cleaned_saga')}")
-        print(f"  - To pre-compute: python scripts/saga.py")
-    print(f"Learn2Clean benchmark: {config.get('run_learn2clean', False)}")
-    if config.get('run_learn2clean'):
-        print(f"  - Cleaned data dir: {config.get('learn2clean_data_dir', 'data_cleaned_learn2clean')}")
-        print(f"  - To pre-compute: python scripts/learn2clean.py")
-        print(f"  - Note: rows/columns may be dropped, so this baseline trains on a reduced frame")
-    print(f"DiffPrep benchmark: {config.get('run_diffprep', False)}")
-    if config.get('run_diffprep'):
-        print(f"  - Cleaned data dir: {config.get('diffprep_data_dir', 'data_cleaned_diffprep')}")
-        print(f"  - To pre-compute: python scripts/diffprep.py")
-        print(f"  - Note: values come out on the scale DiffPrep chose, so they are not standardized again")
-    print(f"CtxPipe benchmark: {config.get('run_ctxpipe', False)}")
-    if config.get('run_ctxpipe'):
-        print(f"  - Prepared data dir: {config.get('ctxpipe_data_dir', 'data_cleaned_ctxpipe')}")
-        print(f"  - To pre-compute: python scripts/ctxpipe.py")
-        print(f"  - Note: features come out in the space CtxPipe built (encoded, engineered, selected), not standardized again")
-    # Calculate total configurations per model × n_models × n_datasets,
-    # adjusted for which optional benchmarks are enabled.
+    # Calculate total configurations per model × n_models × n_datasets.
     n_datasets = len(config['datasets'])
     n_ar_nar = sum(1 for m in config['data_modes'] if m in ['ar', 'nar'])
     has_clean = 'clean' in config['data_modes']
     n_models = len(config['model_types'])
 
-    # Per model per AR/NAR mode: poisoned + curriculum + quail + quail+curriculum = 4 standard
-    # + cp (opt) + saga (opt) + learn2clean (opt) + diffprep (opt) + ctxpipe (opt)
-    per_model_ar_nar = 4
-    if config.get('run_cp'):
-        per_model_ar_nar += 1
-    if config.get('run_saga'):
-        per_model_ar_nar += 1
-    if config.get('run_learn2clean'):
-        per_model_ar_nar += 1
-    if config.get('run_diffprep'):
-        per_model_ar_nar += 1
-    if config.get('run_ctxpipe'):
-        per_model_ar_nar += 1
+    # Per model per AR/NAR mode: poisoned baseline + quail
+    per_model_ar_nar = 2
 
     clean_configs = n_datasets * n_models * int(has_clean)
     ar_nar_configs = n_datasets * n_models * n_ar_nar * per_model_ar_nar
@@ -471,17 +322,7 @@ def main():
     print(f"\nConfiguration breakdown (per model: Linear + MLP):")
     print(f"  Clean baseline: {clean_configs} configs")
     print(f"  Per AR/NAR mode per model:")
-    print(f"    - Poisoned baseline, curriculum, quail, quail+curriculum: 4 standard configs")
-    if config.get('run_cp'):
-        print(f"    - Custom pipeline (CP) baseline: 1 config")
-    if config.get('run_saga'):
-        print(f"    - Saga baseline: 1 config")
-    if config.get('run_learn2clean'):
-        print(f"    - Learn2Clean baseline: 1 config")
-    if config.get('run_diffprep'):
-        print(f"    - DiffPrep baseline: 1 config")
-    if config.get('run_ctxpipe'):
-        print(f"    - CtxPipe baseline: 1 config")
+    print(f"    - Poisoned baseline, quail: {per_model_ar_nar} configs")
     print(f"  AR/NAR configs total: {ar_nar_configs}")
     print(f"  Total configurations: {total_configs}")
     print(f"  Total trials: {total_trials}")
@@ -508,7 +349,7 @@ def main():
 
             # Group by configuration
             summary = results.groupby(['dataset', 'data_mode', 'model_type',
-                                      'use_curriculum', 'use_gate']).agg({
+                                      'use_gate']).agg({
                 'trial_value': ['mean', 'std', 'max'],
                 'trial_number': 'count'
             }).round(4)

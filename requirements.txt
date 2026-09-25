@@ -1,5 +1,4 @@
 torch
-transformers
 pandas
 numpy
 xgboost
@@ -14,14 +13,10 @@ isort
 optuna
 matplotlib
 seaborn
-lightgbm
 ray
 openml
 ucimlrepo
 tabulate
 pytest
 pyyaml
-shap
-miceforest
-mlxtend
 scikit-posthocs

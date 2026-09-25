@@ -88,11 +88,9 @@ class TabularPreprocessor:
             Whether to use column name prefixes (cls_, reg_, cat_, num_, etc.) for type detection.
         scale_numerical : bool, default=True
             Whether to standardize numerical features. Set to False when the input
-            has already been put on its final scale upstream — DiffPrep-cleaned
-            data is the case this exists for: its pipeline search picks a
-            normalizer (and possibly a discretizer) per feature, so standardizing
-            again would compose a second affine map on top of that choice and
-            undo it. Imputation and one-hot encoding still run either way.
+            has already been put on its final scale upstream, so that standardizing
+            again would not compose a second affine map on top of it. Imputation
+            and one-hot encoding still run either way.
         verbose : bool, default=False
             Whether to print detailed logs during processing.
         """

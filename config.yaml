@@ -1,7 +1,8 @@
-# Quail Hyperparameter Optimization Configuration
-# =================================================
-# This file configures the Optuna-based hyperparameter optimization experiments
-# for testing model performance across different configurations.
+# Quail Experiment Configuration
+# ==============================
+# Single source of truth for the data poisoning step (scripts/poison_data.py),
+# the dataset selection step (scripts/select_datasets.py), the centralized
+# Optuna reference (main.py) and the evaluation/analysis scripts.
 
 # Experiment Settings
 # -------------------
@@ -9,21 +10,10 @@
 # Datasets to run experiments on
 # Options:
 #   - 'all': Run on all available datasets from data/ directory
-#   - List of dataset names: e.g., ['iris', 'wine', 'adult']
-# To see available datasets, run: python -c "from quail.data import get_datasets; print(get_datasets())"
-
-# datasets: ['iris']
-
-# (ALL DATASETS)
-# datasets: ['iris', 'breast_cancer_wisconsin_diagnostic', 'bank_marketing', 'adult', 'wine', 'car_evaluation', 'predict_students_dropout_and_academic_success', 'default_of_credit_card_clients', 'mushroom', 'statlog_german_credit_data', 'estimation_of_obesity_levels_based_on_eating_habits_and_physical_condition', 'spambase', 'online_shoppers_purchasing_intention_dataset', 'magic_gamma_telescope', 'breast_cancer_wisconsin_original', 'breast_cancer', 'dry_bean', 'heart_failure_clinical_records', 'credit_approval', 'chronic_kidney_disease', 'wholesale_customers', 'seoul_bike_sharing_demand', 'rice_cammeo_and_osmancik', 'optical_recognition_of_handwritten_digits', 'glass_identification', 'zoo', 'higher_education_students_performance_evaluation', 'maternal_health_risk', 'early_stage_diabetes_risk_prediction', 'letter_recognition', 'national_poll_on_healthy_aging_npha', 'hepatitis', 'aids_clinical_trials_group_study_175', 'iranian_churn']
-
-# (REGRESSION DATASETS)
-# datasets: ['heart_disease', 'wine_quality', 'automobile', 'abalone', 'bike_sharing', 'auto_mpg', 'forest_fires', 'real_estate_valuation', 'concrete_compressive_strength', 'parkinsons', 'phishing_websites', 'appliances_energy_prediction', 'banknote_authentication', 'productivity_prediction_of_garment_employees', 'combined_cycle_power_plant', 'liver_disorders']
-
-# (CLASSIFICATION DATASETS)
-# datasets: ['breast_cancer_wisconsin_original', 'chronic_kidney_disease', 'dry_bean', 'glass', 'heart_failure', 'hepatitis', 'higher_education_students_performance_evaluation']
-
-# Datasets 001-068
+#   - List of dataset names: e.g., ['car', 'vowel', 'credit_g']
+# To see available datasets, run: python main.py --list-datasets
+# This block is rewritten in place by scripts/select_datasets.py --output config.yaml,
+# so keep it in the "datasets:\n  - name" form.
 datasets:
   - dna
   - car
@@ -54,20 +44,6 @@ data_modes:
 model_types:
   - mlp
 
-# Curriculum learning settings to test
-# true: Enable curriculum learning (prioritize high-quality samples)
-# false: Standard random sampling
-curriculum_settings:
-  - false
-  - true
-
-# Quail layer settings to test
-# true: Enable learnable input quail layer
-# false: No quail
-gate_settings:
-  - false
-  - true
-
 # Data Split Settings
 # -------------------
 
@@ -86,8 +62,8 @@ clean_val: False
 # false: Use same mode as training data
 clean_test: true
 
-# Optuna Settings
-# ---------------
+# Optuna Settings (centralized reference, main.py)
+# ------------------------------------------------
 
 # Number of Optuna trials per configuration
 # Each trial tests a different hyperparameter combination
@@ -132,359 +108,34 @@ warm_start: true
 
 # Reuse Parameter Settings
 # ------------------------------
-# Whether to reuse best hyperparameters
-# for training on poisoned data.
-# true: Sample hyperparameters from top-N trials
+# Whether the quail runs on AR/NAR reuse the best hyperparameters of the
+# poisoned baseline (same data mode) and only optimize the quail parameters.
+# true: Sample hyperparameters from top-N baseline trials
 # false: Do not reuse parameters
 reuse_params: true
 
 # Number of top trials to sample from when reusing parameters
 reuse_top_n: 8
 
-# Custom Pipeline (CP) Benchmark Settings
-# -----------------------------------------
-# Whether to include the custom pipeline (CP) as a data-preparation benchmark.
-# Requires running scripts/data_preparation_pipeline.py first.
-# false: skip CP benchmark (default)
-# true:  include CP benchmark experiments
-run_cp: true
-
-# Directory containing CP-cleaned data produced by scripts/data_preparation_pipeline.py.
-# Structure: data_cleaned_cp/{mode}/{dataset_filename}.csv
-cp_data_dir: data_cleaned_cp
-
-# Saga++ Benchmark Settings
-# --------------------------
-# Whether to include Saga++ as a data-preparation benchmark.
-# Requires running scripts/saga.py first.
-# false: skip Saga benchmark (default)
-# true:  include Saga benchmark experiments
-run_saga: true
-
-# Directory containing Saga++-cleaned data produced by scripts/saga.py.
-saga_data_dir: data_cleaned_saga
-
-# Learn2Clean Benchmark Settings
-# -------------------------------
-# Learn2Clean (Berti-Equille, WWW '19) selects the data-preparation pipeline by
-# reinforcement learning: Q-learning explores the state-action graph of the 18
-# preparation/cleaning methods, then the greedy traversal from every starting
-# state is executed and the pipeline maximizing the goal model's quality metric
-# is kept. Produced by scripts/learn2clean.py.
-#
-# Unlike CP and Saga++, Learn2Clean is NOT shape-preserving: outlier detection,
-# deduplication and consistency checking remove rows, feature selection removes
-# columns. The cleaned CSV, its residual mask and the surviving row/column labels
-# stored in <dataset>_pipeline.pkl are all aligned to the reduced frame.
-#
-# Whether to include Learn2Clean as a data-preparation benchmark in the main
-# experiments. Requires running scripts/learn2clean.py first.
-# false: skip Learn2Clean benchmark
-# true:  include Learn2Clean benchmark experiments
-run_learn2clean: true
-
-# Directory containing Learn2Clean-cleaned data produced by scripts/learn2clean.py.
-# Structure: data_cleaned_learn2clean/{mode}/{dataset_filename}.csv  (train+val),
-#            data_cleaned_learn2clean/test/{mode}/{dataset_filename}.csv (hold-out,
-#            projected onto the surviving columns and rescaled the same way),
-#            data_cleaned_learn2clean/clean/{mode}/{dataset_filename}.csv (clean
-#            counterparts of the surviving rows, put through the normalization and
-#            imputation fitted on the training frame — read when clean_val is true,
-#            so clean validation rows sit on the training scale).
-learn2clean_data_dir: data_cleaned_learn2clean
-
-learn2clean:
-
-  # Goal state: the ML model whose quality metric the Q-learner optimizes.
-  # Classification (metric: accuracy) : 'LDA', 'CART', 'NB', 'MNB'
-  # Regression     (metric: MSE)      : 'LASSO', 'OLS'
-  # Clustering     (metric: silhouette): 'KMEANS', 'HCA'
-  # All datasets selected above are classification (cls_* target). LDA is the
-  # closest proxy to the linear/MLP models trained downstream: it reacts to
-  # scaling and to the shape of the distributions, so the normalization and
-  # outlier actions are scored for what they are actually worth later on.
-  # CART is scale-invariant and would make the normalization actions look inert;
-  # it is also by far the most expensive goal (nested CV, see cart_num_trials
-  # in scripts/learn2clean.py).
-  goal: LDA
-
-  # Cross-validation folds used to score a candidate pipeline. Automatically
-  # reduced when a class has fewer members than this. Upstream default: 10.
-  k_folds: 10
-
-  # Q-learning parameters (Section 3 of the paper). Upstream defaults.
-  #   gamma   - discount factor: 0 = immediate rewards only, ->1 = far-sighted
-  #   beta    - learning rate of the Q update
-  #   epsilon - epsilon-greedy exploration probability
-  n_episodes: 1000
-  gamma: 0.8
-  beta: 1.0
-  epsilon: 0.05
-
-  # Random seed for the Q-learning exploration (upstream uses 1999).
-  seed: 1999
-
-  # Parallel workers for the 19 greedy traversals, which are independent
-  # (each one works on its own deep copy). -1 = all cores.
-  n_jobs: 16
-
-  # Thresholds of the preparation methods. Upstream stores a single `threshold`
-  # on the Q-learner but never forwards it (its own TODO: "handle an array of
-  # thresholds"), so each method silently falls back to its default; these are
-  # exactly those defaults, now actually applied.
-  #   fs_threshold - feature selection: MR max missing ratio, LC max |correlation|
-  #   od_threshold - outlier detection: fraction of a row's variables that must be
-  #                  outlying for the row to go (-1 = any single outlying value).
-  #                  LOF reads it as k = int(od_threshold * 100) rows to remove.
-  #   dd_threshold - deduplication: minimum similarity for AD
-  fs_threshold: 0.3
-  od_threshold: 0.3
-  dd_threshold: 0.6
-
-  # Patterns induced per column by the PC consistency check. Only the most
-  # frequent value shapes are kept, so rare shapes — typically the injected typos
-  # and out-of-vocabulary categories — end up outside the induced patterns.
-  max_patterns: 4
-
-  # Goal models consume `select_dtypes(['number'])` upstream, so a fully
-  # categorical dataset yields no features and no strategy can be scored at all
-  # (4 of the selected datasets are categorical-only: kr_vs_kp, tic_tac_toe, car,
-  # dna). When true, categorical columns are ordinal-encoded for scoring only —
-  # the written CSV keeps the original labels. Mirrors _encode_for_model in
-  # scripts/saga.py. Set to false for strict upstream behaviour.
-  encode_categoricals: true
-
-# DiffPrep Benchmark Settings
-# ----------------------------
-# DiffPrep (Li et al., SIGMOD '23) searches the data-preparation pipeline by
-# gradient descent. The discrete choice of operator for each transformation
-# type is relaxed with a softmax (the beta matrices) and the order of the
-# transformation types with Sinkhorn normalization (the alpha doubly-stochastic
-# matrix), which turns pipeline selection into a bi-level optimization problem:
-# the model is fitted on the training loss, the pipeline on the validation loss,
-# and the end model is trained only once. Produced by scripts/diffprep.py.
-#
-# Like CP and Saga++ — and unlike Learn2Clean — DiffPrep is shape-preserving:
-# no row or column is dropped, so the cleaned CSV, its residual mask and the
-# poison mask all line up. What it does change is the *scale*: it picks a
-# normalizer, and possibly a discretizer, per feature. quail.data therefore
-# builds its TabularPreprocessor with scale_numerical=False for this baseline
-# (standardizing again would compose another affine map on top of that choice
-# and undo it), and scripts/diffprep.py writes pre-transformed companion frames
-# for the clean hold-out and the clean train+val partition so that validation
-# and test rows stay in the same space as the training rows.
-#
-# Whether to include DiffPrep as a data-preparation benchmark in the main
-# experiments. Requires running scripts/diffprep.py first.
-# false: skip DiffPrep benchmark
-# true:  include DiffPrep benchmark experiments
-run_diffprep: true
-
-# Directory containing DiffPrep-cleaned data produced by scripts/diffprep.py.
-# Structure: data_cleaned_diffprep/{mode}/{dataset_filename}.csv        (train+val),
-#            data_cleaned_diffprep/test/{mode}/{dataset_filename}.csv   (hold-out),
-#            data_cleaned_diffprep/clean/{mode}/{dataset_filename}.csv  (clean train+val).
-diffprep_data_dir: data_cleaned_diffprep
-
-diffprep:
-
-  # Which variant of the paper to run.
-  #   diffprep_fix  - pre-defined transformation order (Section 3): the order is
-  #                   {imputation, normalization, outlier removal, discretization}
-  #                   and only the operator of each type is learned, per feature.
-  #   diffprep_flex - the order is learned too (Section 4), one permutation per
-  #                   feature through Sinkhorn normalization. Largest search
-  #                   space in the paper, and the variant that does not depend on
-  #                   a pre-defined order being a good one; it costs roughly 3x
-  #                   Fix per epoch (it evaluates every transformation type at
-  #                   every position) and upstream gives it more epochs too.
-  method: diffprep_flex
-
-  # End model the pipeline is searched against. The paper uses logistic
-  # regression throughout; 'two' is the two-layer, 100-neuron ReLU network of the
-  # sensitivity analysis in Section 5.3.
-  #   log - logistic regression
-  #   two - two-layer neural network
-  model: log
-
-  # Seeds. train_seed initializes the model and the pipeline parameters,
-  # split_seed draws the train/validation split the outer objective uses.
-  train_seed: 1
-  split_seed: 1
-
-  # Validation share of the poisoned partition. This split is the outer
-  # objective of the bi-level problem, so it is what the pipeline is selected
-  # on. Same ratio as val_size in the quail loaders, but not the same rows: it
-  # is drawn once with split_seed, while the loaders redraw per experiment seed.
-  # Both halves are poisoned rows, so the search never sees clean data
-  # regardless of clean_val.
-  # Section 5.3 of the paper finds a 60:20 train/val split (25 % of the
-  # train+val partition there) about right, and warns that a too small
-  # validation set makes the pipeline overfit it.
-  val_size: 0.2
-
-  # Training budget. Upstream defaults: 2000 epochs for Fix, 3000 for Flex.
-  # Early stopping is only re-checked every 100 epochs, so patience is counted
-  # in hundreds of epochs, not in epochs (patience 3 -> stops around epoch 300
-  # at the earliest).
-  # flex_patience 10 means the search cannot stop before epoch 1100, since the
-  # check only fires every 100 epochs; 3 lowers that floor to 400 epochs, which
-  # is the same budget upstream gives DiffPrep-Fix.
-  num_epochs: 2000
-  flex_num_epochs: 3000
-  patience: 3
-  flex_patience: 3
-  batch_size: 512
-
-  # Learning rates tried for the end model; the one with the lowest validation
-  # loss wins (upstream tunes exactly this, and nothing else, by grid search).
-  # Each extra value multiplies the runtime of every dataset and mode, so this
-  # is the first knob to shrink if the search is too slow. 0.001 is dropped from
-  # upstream's grid: with momentum 0.9 it is the least likely of the three to
-  # win inside this epoch budget. Cut to [0.1] for another 2x.
-  model_lr: [0.1, 0.01]
-
-  # Learning rate of the pipeline parameters (eta1 in Algorithm 1). null keeps
-  # upstream's shortcut of reusing the model learning rate, which is what the
-  # paper's footnote 1 suggests to avoid tuning two of them.
-  prep_lr: null
-
-  # Temperature of the relaxed categorical distribution, and the mini-batch the
-  # pipeline parameters are updated on (Section 3.3, "Complexity").
-  temperature: 0.1
-  pipeline_update_sample_size: 512
-
-  # Initialization of the pipeline parameters.
-  #   default - the default operator of each type starts at probability 0.5
-  #   random  - random logits
-  init_method: default
-
-  # false: plain softmax relaxation (Equation 7, upstream default).
-  # true : Gumbel-softmax straight-through sampling.
-  sample: false
-
-  # torch intra-op threads. null leaves torch's own default (one per core).
-  # DiffPrep is a single-process search, so this is what controls how many cores
-  # it uses — but the tensors here are tiny (a batch of 512 through a logistic
-  # regression) and the search spends ~99 % of its time in scikit-learn/numpy
-  # operators that these threads never touch. Measured on 019_00054_vehicle,
-  # 4 epochs: 1 thread 0.98 s/epoch at 100 % CPU, 16 threads 2.85 s/epoch at
-  # 700 % CPU — the OpenMP pool spins instead of working. Keep this at 1 and
-  # spend the spare cores on running several datasets in parallel instead.
-  n_threads: 1
-
-# CtxPipe Benchmark Settings
-# ---------------------------
-# CtxPipe (Gao et al., SIGMOD '25) builds the data-preparation pipeline with deep
-# Q-network agents: one picks the logical pipeline (the order of the component
-# types), then one agent per type picks the component filling each slot —
-# imputer, encoder, feature preprocessing, feature engineering, feature
-# selection. Each agent reads column statistics of the intermediate data plus
-# a context embedding of 100 sampled rows (GTE-large), fed in through a gated
-# context plug-in. The agents are the ones released upstream (32,000 training
-# steps, scripts/ctxpipe_weights/), used as they are — nothing is trained here.
-# Produced by scripts/ctxpipe.py.
-#
-# Unlike CP, Saga++ and DiffPrep — and like Learn2Clean — CtxPipe is NOT
-# column-preserving: the encoder, feature engineering (PCA, polynomial features,
-# random-trees embedding, ...) and feature selection it picks are all written
-# out, so every feature comes out numeric (num_*) and the columns differ from
-# the poisoned input. Rows are never dropped. The residual mask is written over
-# the output columns, and the clean hold-out and the clean train+val partition
-# are written already pushed through the same pipeline, as for DiffPrep, so
-# quail.data builds its TabularPreprocessor with scale_numerical=False.
-#
-# Whether to include CtxPipe as a data-preparation benchmark in the main
-# experiments. Requires running scripts/ctxpipe.py first.
-# false: skip CtxPipe benchmark
-# true:  include CtxPipe benchmark experiments
-run_ctxpipe: true
-
-# Directory containing CtxPipe-prepared data produced by scripts/ctxpipe.py.
-# Structure: data_cleaned_ctxpipe/{mode}/{dataset_filename}.csv        (train+val),
-#            data_cleaned_ctxpipe/test/{mode}/{dataset_filename}.csv   (hold-out),
-#            data_cleaned_ctxpipe/clean/{mode}/{dataset_filename}.csv  (clean train+val).
-ctxpipe_data_dir: data_cleaned_ctxpipe
-
-ctxpipe:
-
-  # The released agents: directory and file prefix (<tag>_<agent>_model.pkl).
-  # ctx_32000 is the context plug-in + OCG experience replay setup the paper
-  # evaluates, trained for 32,000 steps on the HAIPipe corpus.
-  weights_dir: scripts/ctxpipe_weights
-  weights_tag: ctx_32000
-
-  # Text embedding model of the context plug-in (Hugging Face id or local path).
-  # Downloaded to the Hugging Face cache on first use (~670 MB). The agents were
-  # trained on GTE-large embeddings (1024-d): another model would not fit them.
-  embedding_model: thenlper/gte-large
-
-  # Rows sampled and serialized to CSV (header included) for the context
-  # embedding; the text is then cut at 512 tokens. The paper says 50, the
-  # released code — which trained the agents — uses 100.
-  n_ctx_rows: 100
-
-  # torch device for the embedding model and the agents: cpu, cuda, mps or auto.
-  device: cpu
-
-  # Seeds. seed is upstream's RANDOM_SEED, re-applied before every run: it fixes
-  # the context rows sampled and the context-gate matrices, which upstream never
-  # trains nor saves and draws afresh for every agent. split_seed and
-  # search_train_size are the 80/20 split the agents' reward (a logistic
-  # regression's accuracy) is computed on — upstream's Pipeline.load_data. Both
-  # halves are poisoned rows; the clean hold-out never steers the choice.
-  seed: 1145
-  split_seed: 0
-  search_train_size: 0.8
-
-  # KernelPCA builds the full n×n kernel matrix. null keeps upstream's unbounded
-  # behaviour; a row count makes KernelPCA refuse larger frames, and the agent
-  # falls back to its next-best feature-engineering component (for nomao, ~34k
-  # rows, the kernel alone would take ~9 GB).
-  kernel_pca_max_rows: null
-
-  # torch intra-op threads. null leaves torch's own default (one per core).
-  # Unlike DiffPrep, the time goes into the forward passes of GTE-large, which
-  # do use the threads.
-  n_threads: null
-
-# Quail + Curriculum Experiment Settings
-# ---------------------------------------
-# Whether to include the combined quail+curriculum experiment.
-# true:  run quail+curriculum (default)
-# false: skip quail+curriculum
-run_gate_curriculum: true
-
 # Comparison Methods (Evaluation / Analysis Scripts)
 # -----------------------------------------------------
 # Restricts scripts/evaluate.py and the
 # analysis/*.py scripts (quail_analysis.py, optuna_progress.py,
-# run_quail_evidence_report.py) to a chosen subset of methods/baselines,
-# instead of showing every method found in the results. Useful once you've
-# accumulated many optional baselines and only want a couple in a given
-# report — pass --comparison-methods on any of those scripts' CLIs to
-# override this per-run without editing the file.
+# run_quail_evidence_report.py) to a chosen subset of methods,
+# instead of showing every method found in the results. Pass
+# --comparison-methods on any of those scripts' CLIs to override this
+# per-run without editing the file.
 #
 # null (default): include every method found in the results.
 # List of method keys to restrict to. Valid keys:
-#   clean            - un-poisoned reference (Linear/MLP trained & tested on clean data)
-#   baseline         - Linear/MLP trained directly on poisoned (AR/NAR) data, no mitigation
-#   curriculum       - + curriculum learning
-#   gate             - + quAIL proximal quail (this paper's method)
-#   gate_curriculum  - + quail + curriculum combined
-#   saga             - Saga++ data-preparation baseline (requires run_saga)
-#   cp               - Custom pipeline (CP) data-preparation baseline (requires run_cp)
-#   learn2clean      - Learn2Clean data-preparation baseline (requires run_learn2clean)
-#   diffprep         - DiffPrep data-preparation baseline (requires run_diffprep)
-#   ctxpipe          - CtxPipe data-preparation baseline (requires run_ctxpipe)
+#   clean     - un-poisoned reference (Linear/MLP trained & tested on clean data)
+#   baseline  - Linear/MLP trained directly on poisoned (AR/NAR) data, no mitigation
+#   gate      - + quAIL proximal quail (this paper's method)
 #
 # Note: quail_analysis.py always keeps its own "Clean" reference regardless of
 # this setting — its noise-robustness analysis is built around measuring
 # degradation *from* clean, so dropping "clean" there would break it.
-#
-# Example: only compare the quAIL quail against Saga++:
-#   comparison_methods: ['clean', 'baseline', 'gate', 'saga']
-comparison_methods: ['clean', 'baseline', 'curriculum', 'gate', 'gate_curriculum', 'saga', 'cp', 'learn2clean', 'diffprep', 'ctxpipe']
+comparison_methods: ['clean', 'baseline', 'gate']
 
 # Data Poisoning Settings
 # -----------------------
@@ -499,9 +150,8 @@ poisoning:
   # mild_frac is computed automatically as 1 - moderate_frac - heavy_frac - severe_frac.
   noise:
     # Fraction of feature columns kept completely unpoisoned (0.0–1.0).
-    # 0.0 = all features may be poisoned (current behaviour).
+    # 0.0 = all features may be poisoned.
     # e.g. 0.4 = 40 % of columns are randomly selected and never touched.
-
     clean_feature_frac: 0.40
 
     moderate_frac: 0.35
@@ -512,7 +162,7 @@ poisoning:
   # Each key under `rates` is the target total corruption as a percentage of
   # ALL feature cells, mapped to the per-tier per-column corruption rates that
   # hit it. Column shares come from `noise` above and are identical for every
-  # preset, so they are not repeated here. Results land in results/<preset>pct/.
+  # preset, so they are not repeated here.
   presets:
 
     # Which presets the pipeline runs, and in what order.
@@ -562,6 +212,10 @@ poisoning:
     # min_corruption: 0.35
     # max_corruption: 0.40
 
+# Federated Learning Settings
+# ---------------------------
+# TODO: client partitioning and aggregation settings (see README.md, "TODO").
+
 # Output Settings
 # ---------------
 
@@ -601,56 +255,9 @@ hyperparameter_ranges:
   activation_choices: ['relu', 'gelu', 'elu']
   use_batch_norm: [true, false]
 
-  # Curriculum learning hyperparameters
-  curriculum_strategy_choices: ['linear', 'exponential', 'step']
-
   # Quail layer hyperparameters
   gate_init_choices: ['quality'] # ['random', 'ones', 'quality']
   gate_loss_weight: [0.0001, 0.1, 'log']
   gate_anchor_interval: [1, 20]
   gate_quality_weighting_choices: ['linear', 'quadratic', 'exp', 'inv_exp']
   gate_loss_scheduler_choices: ['none', 'decay', 'cosine']
-
-# Data Preparation Pipeline Tuning
-# -----------------------------------
-# Optuna Bayesian optimisation for the data-preparation pipeline.
-# Each dataset gets its own tuning run on a small poisoned sample.
-# The downstream objective is a LightGBM loss (log-loss for classification,
-# RMSE for regression) — no ground-truth mask is used as signal.
-# Best params are then applied to the full AR and NAR cleaning runs.
-data_preparation_tuning:
-
-  # Enable per-dataset hyperparameter tuning before cleaning.
-  # Set to false to skip tuning and use the CLI / default values.
-  enabled: true
-
-  # Number of Optuna TPE trials per dataset.
-  n_trials: 30
-
-  # Parallel Optuna workers (threads).
-  # When > 1, internal RF/MICE n_jobs is forced to 1 to avoid CPU oversubscription.
-  # Set to n_jobs_optuna or a lower value to limit resource usage.
-  n_jobs: 16
-
-  # Fraction of the full poisoned dataset used as the tuning pool (train + val).
-  # Capped at max_sample_frac; guaranteed to be at least min_sample_rows rows.
-  sample_frac: 0.08
-  max_sample_frac: 0.10
-  min_sample_rows: 100
-
-  # Fraction of the tuning pool held out for validation (LightGBM evaluation).
-  val_frac: 0.20
-
-  # Random seed for row sampling and the Optuna TPE sampler.
-  seed: 42
-
-  # Search space for each tunable parameter.
-  # Format: [min, max]  (floats are suggest_float; int keys use suggest_int)
-  hyperparameter_ranges:
-    iqr_factor:        [1.0, 4.0]   # IQR whisker multiplier for outlier clipping
-    shap_top_pct:      [0.3, 0.8]   # fraction of top SHAP features used in cleaning
-    ar_min_support:    [0.8, 0.99]  # Apriori minimum support for AR rule mining
-    ar_min_confidence: [0.8, 0.99]  # Apriori minimum confidence for AR rule mining
-    mice_n_iterations: [1, 5]       # MICE RF imputation cycles (int)
-    mice_n_estimators: [5, 50]      # LightGBM trees per MICE column per iteration (int)
-    mice_num_leaves:   [10, 50]     # LightGBM max leaves per tree inside MICE (int)

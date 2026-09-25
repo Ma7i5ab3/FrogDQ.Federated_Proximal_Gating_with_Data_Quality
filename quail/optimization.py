@@ -2,8 +2,11 @@
 Hyperparameter optimization with Optuna for Quail experiments.
 
 This module provides a comprehensive pipeline for hyperparameter tuning across
-different model architectures (linear, MLP), curriculum learning settings, and
-quail configurations using Optuna with multi-seed evaluation.
+different model architectures (linear, MLP) and quail configurations using
+Optuna with multi-seed evaluation.
+
+This is the centralized (non-federated) reference setup: a single model is
+trained on the whole train split of each dataset.
 """
 
 import time
@@ -19,17 +22,14 @@ from joblib import Parallel, delayed
 from optuna.samplers import TPESampler
 from optuna.study import Study
 
-from quail.data import (
-    get_datasets,
-    load_cp_data,
-    load_ctxpipe_data,
-    load_data,
-    load_diffprep_data,
-    load_learn2clean_data,
-    load_saga_data,
-)
+from quail.data import get_datasets, load_data
 from quail.nn import build_model
 from quail.training import fit, set_seed
+
+# Constant columns kept in the results CSVs so that scripts/evaluate.py and the
+# analysis/ scripts, which still group by them, keep working after the removal
+# of curriculum learning and of the data-preparation baselines.
+_LEGACY_RESULT_COLUMNS = {'use_curriculum': False, 'preparation': 'standard'}
 
 
 def compute_convergence_metrics(history: Dict[str, List], primary_metric: str,
@@ -137,8 +137,7 @@ class OptunaExperiment:
 
     This class manages hyperparameter optimization across different configurations:
     - Model type: linear (no hidden layers) or MLP
-    - Curriculum learning: on or off
-    - Gate layer: on or off
+    - Gate layer: on or off (on only for AR/NAR modes)
     - Data quality modes: clean, AR (At Random), NAR (Not At Random)
 
     The optimization:
@@ -154,8 +153,6 @@ class OptunaExperiment:
     ...     'datasets': ['iris', 'wine'],
     ...     'data_modes': ['clean', 'ar'],
     ...     'model_types': ['linear', 'mlp'],
-    ...     'curriculum_settings': [True, False],
-    ...     'gate_settings': [True, False],
     ...     'n_trials': 50,
     ...     'n_seeds': 5,
     ...     'seed_start': 42,
@@ -177,8 +174,6 @@ class OptunaExperiment:
             - datasets: List of dataset names to run on
             - data_modes: List of data modes ('clean', 'ar', 'nar')
             - model_types: List of model types ('linear', 'mlp')
-            - curriculum_settings: List of curriculum on/off (True/False)
-            - gate_settings: List of quail on/off (True/False)
             - n_trials: Number of Optuna trials per configuration
             - n_seeds: Number of random seeds to evaluate per trial
             - seed_start: Starting seed (incremental from this)
@@ -201,8 +196,6 @@ class OptunaExperiment:
         self.datasets = config.get('datasets', [])
         self.data_modes = config.get('data_modes', ['clean'])
         self.model_types = config.get('model_types', ['linear', 'mlp'])
-        self.curriculum_settings = config.get('curriculum_settings', [False, True])
-        self.gate_settings = config.get('gate_settings', [False, True])
 
         self.n_trials = config.get('n_trials', 50)
         self.n_seeds = config.get('n_seeds', 5)
@@ -225,32 +218,6 @@ class OptunaExperiment:
         # Parameter reuse from previous runs
         self.reuse_params = config.get('reuse_params', False)
         self.reuse_top_n = config.get('reuse_top_n', 5)
-
-        # Saga benchmark settings
-        self.run_saga = config.get('run_saga', False)
-        self.saga_data_dir = config.get('saga_data_dir', 'data_cleaned_saga')
-
-        # Custom pipeline (CP) benchmark settings
-        self.run_cp = config.get('run_cp', False)
-        self.cp_data_dir = config.get('cp_data_dir', 'data_cleaned_cp')
-
-        # Learn2Clean benchmark settings
-        self.run_learn2clean = config.get('run_learn2clean', False)
-        self.learn2clean_data_dir = config.get(
-            'learn2clean_data_dir', 'data_cleaned_learn2clean'
-        )
-
-        # DiffPrep benchmark settings
-        self.run_diffprep = config.get('run_diffprep', False)
-        self.diffprep_data_dir = config.get(
-            'diffprep_data_dir', 'data_cleaned_diffprep'
-        )
-
-        # CtxPipe benchmark settings
-        self.run_ctxpipe = config.get('run_ctxpipe', False)
-        self.ctxpipe_data_dir = config.get(
-            'ctxpipe_data_dir', 'data_cleaned_ctxpipe'
-        )
 
         # Base data directories (relative to CWD or absolute)
         self.data_dir = config.get('data_dir', 'data')
@@ -278,7 +245,6 @@ class OptunaExperiment:
             Dictionary of hyperparameter ranges with keys:
             - Common ranges (for both linear and MLP)
             - MLP-specific ranges
-            - Curriculum-specific ranges
             - Gate-specific ranges
         """
         return {
@@ -298,9 +264,6 @@ class OptunaExperiment:
             'activation_choices': ['relu', 'gelu', 'elu'],
             'use_batch_norm': [True, False],
 
-            # Curriculum-specific
-            'curriculum_strategy_choices': ['linear', 'exponential', 'step'],
-
             # Gate-specific
             'gate_init_choices': ['random', 'ones', 'quality'],
             'gate_loss_weight': (1e-4, 1e-1, 'log'),
@@ -313,7 +276,6 @@ class OptunaExperiment:
         self,
         trial: optuna.Trial,
         model_type: str,
-        use_curriculum: bool,
         use_gate: bool,
         task: str,
     ) -> Dict[str, Any]:
@@ -326,8 +288,6 @@ class OptunaExperiment:
             Optuna trial object
         model_type : str
             'linear' or 'mlp'
-        use_curriculum : bool
-            Whether curriculum learning is enabled
         use_gate : bool
             Whether quail layer is enabled
         task : str
@@ -365,11 +325,6 @@ class OptunaExperiment:
             hp['use_batch_norm'] = trial.suggest_categorical('use_batch_norm',
                                                               self.hp_ranges['use_batch_norm'])
 
-        # Curriculum learning
-        if use_curriculum:
-            hp['curriculum_strategy'] = trial.suggest_categorical('curriculum_strategy',
-                                                                   self.hp_ranges['curriculum_strategy_choices'])
-
         # Gate layer
         if use_gate:
             hp['gate_init'] = trial.suggest_categorical('gate_init', self.hp_ranges['gate_init_choices'])
@@ -390,11 +345,9 @@ class OptunaExperiment:
         dataset_name: str,
         data_mode: str,
         model_type: str,
-        use_curriculum: bool,
         use_gate: bool,
         hyperparams: Dict[str, Any],
         seed: int,
-        preparation: str = 'standard',
     ) -> Dict[str, Any]:
         """
         Evaluate a single seed for a given configuration.
@@ -407,17 +360,12 @@ class OptunaExperiment:
             Data quality mode ('clean', 'ar', 'nar')
         model_type : str
             'linear' or 'mlp'
-        use_curriculum : bool
-            Whether to use curriculum learning
         use_gate : bool
             Whether to use quail layer
         hyperparams : dict
             Dictionary of hyperparameters
         seed : int
             Random seed for this evaluation
-        preparation : str, default='standard'
-            Data preparation method: 'standard' (TabularPreprocessor) or
-            other precomputed baselines.
 
         Returns
         -------
@@ -427,86 +375,20 @@ class OptunaExperiment:
         # Set random seed
         set_seed(seed)
 
-        # Load data — branch on preparation method
+        # Load data
         preproc_wall_t0 = time.perf_counter()
         preproc_cpu_t0  = time.process_time()
 
-        if preparation == 'saga':
-            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
-                load_saga_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=seed,
-                    saga_dir=self.saga_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
-            )
-        elif preparation == 'cp':
-            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
-                load_cp_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=seed,
-                    cp_dir=self.cp_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
-            )
-        elif preparation == 'learn2clean':
-            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
-                load_learn2clean_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=seed,
-                    learn2clean_dir=self.learn2clean_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
-            )
-        elif preparation == 'diffprep':
-            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
-                load_diffprep_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=seed,
-                    diffprep_dir=self.diffprep_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
-            )
-        elif preparation == 'ctxpipe':
-            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = (
-                load_ctxpipe_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=seed,
-                    ctxpipe_dir=self.ctxpipe_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
-            )
-        else:
-            (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = load_data(
-                dataset_name=dataset_name,
-                mode=data_mode,
-                seed=seed,
-                clean_val=self.clean_val,
-                clean_test=self.clean_test,
-                data_dir=self.data_dir,
-                poisoned_dir=self.poisoned_dir,
-                test_dir=self.poisoned_dir,
-            )
+        (X_train, X_val, X_test), (y_train, y_val, y_test), preprocessor, metadata = load_data(
+            dataset_name=dataset_name,
+            mode=data_mode,
+            seed=seed,
+            clean_val=self.clean_val,
+            clean_test=self.clean_test,
+            data_dir=self.data_dir,
+            poisoned_dir=self.poisoned_dir,
+            test_dir=self.poisoned_dir,
+        )
 
         preproc_wall_time_s = time.perf_counter() - preproc_wall_t0
         preproc_cpu_time_s  = time.process_time()  - preproc_cpu_t0
@@ -594,16 +476,6 @@ class OptunaExperiment:
             'random_seed': seed,
             'verbose': 0,  # Suppress training output
         }
-
-        # Add curriculum learning parameters
-        if use_curriculum:
-            train_kwargs.update({
-                'use_curriculum': 'true',
-                'sample_quality': metadata['sample_quality_train'],
-                'curriculum_strategy': hyperparams['curriculum_strategy'],
-            })
-        else:
-            train_kwargs['use_curriculum'] = 'false'
 
         # Add quail layer parameters
         if use_gate:
@@ -727,7 +599,7 @@ class OptunaExperiment:
 
     def _load_baseline_params(self, dataset_name: str, data_mode: str, model_type: str) -> Optional[List[Dict[str, Any]]]:
         """
-        Load top-N hyperparameter configurations from baseline run (no curriculum, no quail).
+        Load top-N hyperparameter configurations from baseline run (no quail).
 
         For AR/NAR modes, loads from the corresponding AR/NAR baseline run, not clean.
         This makes sense because AR/NAR baseline is already optimized for degraded data.
@@ -752,8 +624,8 @@ class OptunaExperiment:
         if cache_key in self._clean_params_cache:
             return self._clean_params_cache[cache_key]
 
-        # Load from baseline study (no curriculum, no quail)
-        study_name = f"{dataset_name}_{data_mode}_{model_type}_curr0_gate0"
+        # Load from baseline study (no quail)
+        study_name = self._get_study_name(dataset_name, data_mode, model_type, use_gate=False)
 
         try:
             # Load existing study
@@ -796,22 +668,11 @@ class OptunaExperiment:
         dataset_name: str,
         data_mode: str,
         model_type: str,
-        use_curriculum: bool,
         use_gate: bool,
-        preparation: str,
     ) -> str:
-        if preparation == 'saga':
-            return f"{dataset_name}_{data_mode}_{model_type}_saga"
-        elif preparation == 'cp':
-            return f"{dataset_name}_{data_mode}_{model_type}_cp"
-        elif preparation == 'learn2clean':
-            return f"{dataset_name}_{data_mode}_{model_type}_learn2clean"
-        elif preparation == 'diffprep':
-            return f"{dataset_name}_{data_mode}_{model_type}_diffprep"
-        elif preparation == 'ctxpipe':
-            return f"{dataset_name}_{data_mode}_{model_type}_ctxpipe"
-        else:
-            return f"{dataset_name}_{data_mode}_{model_type}_curr{int(use_curriculum)}_gate{int(use_gate)}"
+        # The fixed "curr0" token keeps study names parseable by the analysis/
+        # scripts, whose regex expects "curr[01]_gate[01]".
+        return f"{dataset_name}_{data_mode}_{model_type}_curr0_gate{int(use_gate)}"
 
     def _objective(
         self,
@@ -819,9 +680,7 @@ class OptunaExperiment:
         dataset_name: str,
         data_mode: str,
         model_type: str,
-        use_curriculum: bool,
         use_gate: bool,
-        preparation: str = 'standard',
     ) -> float:
         """
         Objective function for Optuna optimization.
@@ -841,12 +700,8 @@ class OptunaExperiment:
             Data quality mode
         model_type : str
             'linear' or 'mlp'
-        use_curriculum : bool
-            Whether to use curriculum learning
         use_gate : bool
             Whether to use quail layer
-        preparation : str, default='standard'
-            Data preparation method ('standard' or other precomputed baselines).
 
         Returns
         -------
@@ -855,72 +710,16 @@ class OptunaExperiment:
         """
         # Load a sample to determine task type
         try:
-            if preparation == 'saga':
-                _, (y_train, _, _), _, metadata = load_saga_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=self.seed_start,
-                    saga_dir=self.saga_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
-            elif preparation == 'cp':
-                _, (y_train, _, _), _, metadata = load_cp_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=self.seed_start,
-                    cp_dir=self.cp_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
-            elif preparation == 'learn2clean':
-                _, (y_train, _, _), _, metadata = load_learn2clean_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=self.seed_start,
-                    learn2clean_dir=self.learn2clean_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
-            elif preparation == 'diffprep':
-                _, (y_train, _, _), _, metadata = load_diffprep_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=self.seed_start,
-                    diffprep_dir=self.diffprep_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
-            elif preparation == 'ctxpipe':
-                _, (y_train, _, _), _, metadata = load_ctxpipe_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=self.seed_start,
-                    ctxpipe_dir=self.ctxpipe_data_dir,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                )
-            else:
-                _, (y_train, _, _), _, metadata = load_data(
-                    dataset_name=dataset_name,
-                    mode=data_mode,
-                    seed=self.seed_start,
-                    clean_val=self.clean_val,
-                    clean_test=self.clean_test,
-                    data_dir=self.data_dir,
-                    poisoned_dir=self.poisoned_dir,
-                    test_dir=self.poisoned_dir,
-                )
+            _, (y_train, _, _), _, metadata = load_data(
+                dataset_name=dataset_name,
+                mode=data_mode,
+                seed=self.seed_start,
+                clean_val=self.clean_val,
+                clean_test=self.clean_test,
+                data_dir=self.data_dir,
+                poisoned_dir=self.poisoned_dir,
+                test_dir=self.poisoned_dir,
+            )
             task = metadata.get('task_type', 'classification')
             if task not in ['classification', 'regression']:
                 n_unique = len(np.unique(y_train))
@@ -931,54 +730,48 @@ class OptunaExperiment:
             raise optuna.TrialPruned()
 
         # Suggest hyperparameters (or reuse from baseline run if applicable)
-        # Only reuse parameters for MLP models with curriculum/quail (not baseline)
-        if self.reuse_params and data_mode in ['ar', 'nar'] and (use_curriculum or use_gate):
+        # Only reuse parameters for quail runs on AR/NAR (not baseline)
+        if self.reuse_params and data_mode in ['ar', 'nar'] and use_gate:
             # Try to load baseline parameters from the same data mode
             baseline_params_list = self._load_baseline_params(dataset_name, data_mode, model_type)
 
             if baseline_params_list:
                 # Sample one configuration from top-N baseline runs (shallow copy to
-                # avoid mutating the cached dict when curriculum/quail keys are added below)
+                # avoid mutating the cached dict when quail keys are added below)
                 rng = np.random.RandomState(trial.number + self.optuna_sampler_seed)
                 hyperparams = dict(rng.choice(baseline_params_list))
 
-                # Now suggest only the curriculum/quail specific parameters
-                if use_curriculum:
-                    hyperparams['curriculum_strategy'] = trial.suggest_categorical(
-                        'curriculum_strategy', self.hp_ranges['curriculum_strategy_choices']
-                    )
-
-                if use_gate:
-                    hyperparams['gate_init'] = trial.suggest_categorical(
-                        'gate_init', self.hp_ranges['gate_init_choices']
-                    )
-                    hyperparams['gate_loss_weight'] = trial.suggest_float(
-                        'gate_loss_weight', *self.hp_ranges['gate_loss_weight'][:2],
-                        log=(self.hp_ranges['gate_loss_weight'][2] == 'log')
-                    )
-                    hyperparams['gate_anchor_interval'] = trial.suggest_int(
-                        'gate_anchor_interval', *self.hp_ranges['gate_anchor_interval']
-                    )
-                    hyperparams['gate_quality_weighting'] = trial.suggest_categorical(
-                        'gate_quality_weighting', self.hp_ranges['gate_quality_weighting_choices']
-                    )
-                    hyperparams['gate_loss_scheduler'] = trial.suggest_categorical(
-                        'gate_loss_scheduler', self.hp_ranges['gate_loss_scheduler_choices']
-                    )
+                # Now suggest only the quail specific parameters
+                hyperparams['gate_init'] = trial.suggest_categorical(
+                    'gate_init', self.hp_ranges['gate_init_choices']
+                )
+                hyperparams['gate_loss_weight'] = trial.suggest_float(
+                    'gate_loss_weight', *self.hp_ranges['gate_loss_weight'][:2],
+                    log=(self.hp_ranges['gate_loss_weight'][2] == 'log')
+                )
+                hyperparams['gate_anchor_interval'] = trial.suggest_int(
+                    'gate_anchor_interval', *self.hp_ranges['gate_anchor_interval']
+                )
+                hyperparams['gate_quality_weighting'] = trial.suggest_categorical(
+                    'gate_quality_weighting', self.hp_ranges['gate_quality_weighting_choices']
+                )
+                hyperparams['gate_loss_scheduler'] = trial.suggest_categorical(
+                    'gate_loss_scheduler', self.hp_ranges['gate_loss_scheduler_choices']
+                )
 
                 # Log which parameters we're reusing
                 trial.set_user_attr('reused_baseline_params', True)
 
                 if self.verbose > 1:
-                    print(f"  Trial {trial.number}: Reusing baseline params, optimizing curriculum/quail only")
+                    print(f"  Trial {trial.number}: Reusing baseline params, optimizing quail only")
             else:
                 # Fall back to normal optimization
-                hyperparams = self._suggest_hyperparameters(trial, model_type, use_curriculum, use_gate, task)
+                hyperparams = self._suggest_hyperparameters(trial, model_type, use_gate, task)
                 if self.verbose > 1:
                     print(f"  Trial {trial.number}: Baseline params not available, full optimization")
         else:
             # Normal hyperparameter optimization
-            hyperparams = self._suggest_hyperparameters(trial, model_type, use_curriculum, use_gate, task)
+            hyperparams = self._suggest_hyperparameters(trial, model_type, use_gate, task)
 
         # Generate seeds
         seeds = [self.seed_start + i for i in range(self.n_seeds)]
@@ -989,8 +782,7 @@ class OptunaExperiment:
 
             results = Parallel(n_jobs=self.n_jobs_seeds, backend='loky')(
                 delayed(self._evaluate_single_seed)(
-                    dataset_name, data_mode, model_type, use_curriculum, use_gate,
-                    hyperparams, seed, preparation
+                    dataset_name, data_mode, model_type, use_gate, hyperparams, seed
                 )
                 for seed in seeds
             )
@@ -1037,9 +829,7 @@ class OptunaExperiment:
         # use set_user_attr if in-memory recovery is ever needed in the future.
 
         # Save histories to disk immediately (so they're available even after warm_start)
-        study_name = self._get_study_name(
-            dataset_name, data_mode, model_type, use_curriculum, use_gate, preparation
-        )
+        study_name = self._get_study_name(dataset_name, data_mode, model_type, use_gate)
         self._save_trial_histories(study_name, trial.number, results)
 
         # For both classification (F1) and regression (R2), higher is better
@@ -1050,9 +840,7 @@ class OptunaExperiment:
         dataset_name: str,
         data_mode: str,
         model_type: str,
-        use_curriculum: bool,
         use_gate: bool,
-        preparation: str = 'standard',
     ) -> Tuple[Study, pd.DataFrame]:
         """
         Run a single Optuna experiment for a given configuration.
@@ -1071,12 +859,8 @@ class OptunaExperiment:
             Data quality mode ('clean', 'ar', 'nar')
         model_type : str
             'linear' or 'mlp'
-        use_curriculum : bool
-            Whether to use curriculum learning
         use_gate : bool
             Whether to use quail layer
-        preparation : str, default='standard'
-            Data preparation method ('standard' or other precomputed baselines).
 
         Returns
         -------
@@ -1085,9 +869,7 @@ class OptunaExperiment:
         top_results : pd.DataFrame
             DataFrame with top-M trial results
         """
-        study_name = self._get_study_name(
-            dataset_name, data_mode, model_type, use_curriculum, use_gate, preparation
-        )
+        study_name = self._get_study_name(dataset_name, data_mode, model_type, use_gate)
 
         # Check if study exists and determine trials to run
         existing_study = None
@@ -1102,10 +884,7 @@ class OptunaExperiment:
                 )
                 trials_completed = len([t for t in existing_study.trials if t.state == optuna.trial.TrialState.COMPLETE])
 
-                # Curriculum-only on AR/NAR always uses 3 trials (3 strategies)
                 target_trials = self.n_trials
-                if data_mode in ['ar', 'nar'] and use_curriculum and not use_gate:
-                    target_trials = 3
 
                 if trials_completed >= target_trials:
                     if self.verbose > 0:
@@ -1123,8 +902,7 @@ class OptunaExperiment:
                         print(f"Remaining trials: {target_trials - trials_completed}")
                         print(f"{'='*80}")
                     existing_study.optimize(
-                        lambda trial: self._objective(trial, dataset_name, data_mode, model_type,
-                                                      use_curriculum, use_gate, preparation),
+                        lambda trial: self._objective(trial, dataset_name, data_mode, model_type, use_gate),
                         n_trials=target_trials - trials_completed,
                         n_jobs=1,
                         show_progress_bar=(self.verbose > 0),
@@ -1155,21 +933,10 @@ class OptunaExperiment:
                 load_if_exists=False,
             )
 
-            # Determine number of trials
-            # Curriculum-only on AR/NAR: only 3 strategies to try
-            n_trials = self.n_trials
-            if data_mode in ['ar', 'nar'] and use_curriculum and not use_gate:
-                n_trials = 3
-                if self.verbose > 0:
-                    print(f"Using {n_trials} trials for curriculum-only experiment (3 strategies to test)")
-            elif self.verbose > 0 and n_trials != self.n_trials:
-                print(f"Using {n_trials} trials")
-
             # Run optimization
             study.optimize(
-                lambda trial: self._objective(trial, dataset_name, data_mode, model_type,
-                                              use_curriculum, use_gate, preparation),
-                n_trials=n_trials,
+                lambda trial: self._objective(trial, dataset_name, data_mode, model_type, use_gate),
+                n_trials=self.n_trials,
                 n_jobs=self.n_jobs_optuna,
                 show_progress_bar=(self.verbose > 0),
             )
@@ -1204,9 +971,8 @@ class OptunaExperiment:
                         'dataset': dataset_name,
                         'data_mode': data_mode,
                         'model_type': model_type,
-                        'use_curriculum': use_curriculum,
+                        **_LEGACY_RESULT_COLUMNS,
                         'use_gate': use_gate,
-                        'preparation': preparation,
                         'rank': rank,
                         'trial_number': trial.number,
                         'trial_value': trial.value,
@@ -1273,6 +1039,12 @@ class OptunaExperiment:
         return study, top_results
 
     def _build_experiment_list(self) -> List[Dict[str, Any]]:
+        """
+        Experiment design, applied symmetrically to every model type:
+          1. Clean baseline          (if 'clean' in data_modes)
+          2. AR/NAR poisoned baseline
+          3. AR/NAR + quail
+        """
         experiments = []
         ar_nar_modes = [m for m in self.data_modes if m in ('ar', 'nar')]
 
@@ -1281,78 +1053,21 @@ class OptunaExperiment:
                 if 'clean' in self.data_modes:
                     experiments.append({
                         'dataset': dataset, 'data_mode': 'clean', 'model_type': model_type,
-                        'use_curriculum': False, 'use_gate': False, 'preparation': 'standard',
+                        'use_gate': False,
                     })
 
                 for data_mode in ar_nar_modes:
-                    experiments.append({
-                        'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
-                        'use_curriculum': False, 'use_gate': False, 'preparation': 'standard',
-                    })
-
-                    if self.run_cp:
+                    for use_gate in (False, True):
                         experiments.append({
                             'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
-                            'use_curriculum': False, 'use_gate': False, 'preparation': 'cp',
+                            'use_gate': use_gate,
                         })
-
-                    if self.run_saga:
-                        experiments.append({
-                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
-                            'use_curriculum': False, 'use_gate': False, 'preparation': 'saga',
-                        })
-
-                    if self.run_learn2clean:
-                        experiments.append({
-                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
-                            'use_curriculum': False, 'use_gate': False,
-                            'preparation': 'learn2clean',
-                        })
-
-                    if self.run_diffprep:
-                        experiments.append({
-                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
-                            'use_curriculum': False, 'use_gate': False,
-                            'preparation': 'diffprep',
-                        })
-
-                    if self.run_ctxpipe:
-                        experiments.append({
-                            'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
-                            'use_curriculum': False, 'use_gate': False,
-                            'preparation': 'ctxpipe',
-                        })
-
-                    experiments.append({
-                        'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
-                        'use_curriculum': True, 'use_gate': False, 'preparation': 'standard',
-                    })
-
-                    experiments.append({
-                        'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
-                        'use_curriculum': False, 'use_gate': True, 'preparation': 'standard',
-                    })
-
-                    experiments.append({
-                        'dataset': dataset, 'data_mode': data_mode, 'model_type': model_type,
-                        'use_curriculum': True, 'use_gate': True, 'preparation': 'standard',
-                    })
 
         return experiments
 
     def run_all_experiments(self) -> pd.DataFrame:
         """
-        Run all experiments across all configurations.
-
-        Experiment design:
-        1. Baselines:
-           - linear on clean/ar/nar (baseline, no curriculum, no quail)
-           - mlp on clean/ar/nar (baseline, no curriculum, no quail)
-        2. State-of-art:
-           - mlp + curriculum on ar/nar
-        3. Proposed approach:
-           - mlp + quail on ar/nar
-           - mlp + quail + curriculum on ar/nar
+        Run all experiments across all configurations (see _build_experiment_list).
 
         Returns
         -------
@@ -1360,131 +1075,7 @@ class OptunaExperiment:
             Combined results from all experiments
         """
         all_results = []
-
-        # Generate experiment list matching the benchmark per model:
-        #  1. Clean baseline
-        #  2. AR/NAR poisoned baseline
-        #  3. AR/NAR + CP           (if run_cp)
-        #  4. AR/NAR + Saga         (if run_saga)
-        #  5. AR/NAR + Learn2Clean  (if run_learn2clean)
-        #  6. AR/NAR + DiffPrep     (if run_diffprep)
-        #  7. AR/NAR + CtxPipe      (if run_ctxpipe)
-        #  8. AR/NAR + curriculum
-        #  9. AR/NAR + quail
-        # 10. AR/NAR + quail + curriculum
-        # All configs apply symmetrically to both Linear and MLP.
-        experiments = []
-        ar_nar_modes = [m for m in self.data_modes if m in ('ar', 'nar')]
-
-        for dataset in self.datasets:
-            for model_type in self.model_types:
-                # 1. Clean baseline
-                if 'clean' in self.data_modes:
-                    experiments.append({
-                        'dataset': dataset,
-                        'data_mode': 'clean',
-                        'model_type': model_type,
-                        'use_curriculum': False,
-                        'use_gate': False,
-                        'preparation': 'standard',
-                    })
-
-                for data_mode in ar_nar_modes:
-                    # 2. Poisoned baseline
-                    experiments.append({
-                        'dataset': dataset,
-                        'data_mode': data_mode,
-                        'model_type': model_type,
-                        'use_curriculum': False,
-                        'use_gate': False,
-                        'preparation': 'standard',
-                    })
-
-                    # 3. CP (custom pipeline) data-preparation baseline
-                    if self.run_cp:
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': False,
-                            'use_gate': False,
-                            'preparation': 'cp',
-                        })
-
-                    # 4. Saga data-preparation baseline
-                    if self.run_saga:
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': False,
-                            'use_gate': False,
-                            'preparation': 'saga',
-                        })
-
-                    # 5. Learn2Clean data-preparation baseline
-                    if self.run_learn2clean:
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': False,
-                            'use_gate': False,
-                            'preparation': 'learn2clean',
-                        })
-
-                    # 6. DiffPrep data-preparation baseline
-                    if self.run_diffprep:
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': False,
-                            'use_gate': False,
-                            'preparation': 'diffprep',
-                        })
-
-                    # 7. CtxPipe data-preparation baseline
-                    if self.run_ctxpipe:
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': False,
-                            'use_gate': False,
-                            'preparation': 'ctxpipe',
-                        })
-
-                    # 6. Curriculum learning
-                    experiments.append({
-                        'dataset': dataset,
-                        'data_mode': data_mode,
-                        'model_type': model_type,
-                        'use_curriculum': True,
-                        'use_gate': False,
-                        'preparation': 'standard',
-                    })
-
-                    # 6. quAIL quail
-                    experiments.append({
-                        'dataset': dataset,
-                        'data_mode': data_mode,
-                        'model_type': model_type,
-                        'use_curriculum': False,
-                        'use_gate': True,
-                        'preparation': 'standard',
-                    })
-
-                    # 7. quAIL quail + curriculum
-                    if self.config.get('run_gate_curriculum', True):
-                        experiments.append({
-                            'dataset': dataset,
-                            'data_mode': data_mode,
-                            'model_type': model_type,
-                            'use_curriculum': True,
-                            'use_gate': True,
-                            'preparation': 'standard',
-                        })
+        experiments = self._build_experiment_list()
 
         total_experiments = len(experiments)
         experiment_count = 0
@@ -1500,9 +1091,7 @@ class OptunaExperiment:
                     dataset_name=exp['dataset'],
                     data_mode=exp['data_mode'],
                     model_type=exp['model_type'],
-                    use_curriculum=exp['use_curriculum'],
                     use_gate=exp['use_gate'],
-                    preparation=exp.get('preparation', 'standard'),
                 )
 
                 all_results.append(top_results)
@@ -1570,13 +1159,9 @@ class OptunaExperiment:
             dataset_name = exp['dataset']
             data_mode = exp['data_mode']
             model_type = exp['model_type']
-            use_curriculum = exp['use_curriculum']
             use_gate = exp['use_gate']
-            preparation = exp.get('preparation', 'standard')
 
-            study_name = self._get_study_name(
-                dataset_name, data_mode, model_type, use_curriculum, use_gate, preparation
-            )
+            study_name = self._get_study_name(dataset_name, data_mode, model_type, use_gate)
 
             try:
                 study = optuna.load_study(study_name=study_name, storage=self.storage_url)
@@ -1605,8 +1190,7 @@ class OptunaExperiment:
                     warnings.filterwarnings("ignore")
                     results = Parallel(n_jobs=self.n_jobs_seeds, backend='loky')(
                         delayed(self._evaluate_single_seed)(
-                            dataset_name, data_mode, model_type,
-                            use_curriculum, use_gate, trial.params, seed, preparation,
+                            dataset_name, data_mode, model_type, use_gate, trial.params, seed,
                         )
                         for seed in final_seeds
                     )
@@ -1629,9 +1213,8 @@ class OptunaExperiment:
                         'dataset': dataset_name,
                         'data_mode': data_mode,
                         'model_type': model_type,
-                        'use_curriculum': use_curriculum,
+                        **_LEGACY_RESULT_COLUMNS,
                         'use_gate': use_gate,
-                        'preparation': preparation,
                         'study_name': study_name,
                         'hpo_rank': rank,
                         'trial_number': trial.number,

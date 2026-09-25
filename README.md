@@ -1,266 +1,188 @@
-# QuAIL — Quality-Aware Inertial Learning
+# QuAIL — Quality-Aware Inertial Learning (federated starting point)
 
-QuAIL is a quality-informed training mechanism for tabular machine learning.
-Real-world tabular data is rarely uniformly reliable: individual columns are
-often affected by noise, missingness, or systematic bias, and in practice this
-is documented only through coarse, column-level reliability indicators (e.g.
-provenance, freshness, sensor calibration) rather than per-instance quality
-labels. QuAIL turns that column-level prior directly into a learning signal.
+This branch (`quailFed`) is the starting workspace for adapting QuAIL to
+**federated learning**, where the quality prior has to act at **aggregation**
+time rather than only inside a single centralized training run. It is a
+cleaned-up copy of the centralized codebase of the paper: the data-preparation
+baselines and curriculum learning are gone, and what is left is the data
+tooling, the QuAIL layer and the analysis scripts. The federated part itself is
+not implemented yet — see [TODO](#todo).
 
-It does so by augmenting a base model with a **learnable feature-modulation
-(gating) layer** `g`, applied element-wise to the input (`f(g ⊙ x)`). Each
-gate is initialized from a per-feature data-quality score `q ∈ [0, 1]` and its
-updates are constrained by a **quality-dependent proximal regularizer**:
+## What QuAIL is
 
-- **High-quality features** → a weak regularizer, so the gate is free to
-  adapt during training.
-- **Low-quality features** → a strong regularizer, which anchors the gate
-  close to its quality-informed initialization and dampens the feature's
-  influence.
+QuAIL augments a base model with a **learnable feature-modulation (gating)
+layer** `g`, applied element-wise to the input (`f(g ⊙ x)`). Each gate is
+initialized from a per-feature data-quality score `q ∈ [0, 1]` and its updates
+are constrained by a **quality-dependent proximal regularizer**:
 
-This induces controlled, feature-wise adaptation without requiring explicit
-data repair, instance-level quality annotations, or sample reweighting.
-Empirically, this stabilizes optimization under both random (AR) and
-value-dependent (NAR) corruption, with particularly strong gains in
-low-data and systematically biased regimes — see the accompanying paper,
-*"QuAIL: Quality-Aware Inertial Learning for Robust Training under Data
+- **High-quality features** → a weak regularizer, so the gate is free to adapt.
+- **Low-quality features** → a strong regularizer, which anchors the gate close
+  to its quality-informed initialization and dampens the feature's influence.
+
+See *"QuAIL: Quality-Aware Inertial Learning for Robust Training under Data
 Corruption"* (Sabella & Archetti et al., IJCNN 2026).
 
 ## Repository layout
 
 ```
-quail/                    Core library: data loading, preprocessing, the QuAIL
-                           gating layer, comparison baselines, Optuna training loop
-scripts/                  Standalone pipeline steps (see below), one per stage
+quail/                    Core library (details and usage in quail/README.md)
+  data.py                 get_datasets(), load_data(): train/val/test splits + per-feature
+                          and per-sample quality metadata from the poison masks
+  preprocessing.py        TabularPreprocessor (imputation, scaling, one-hot encoding)
+  nn.py                   build_model(): linear / MLP / residual / transformer networks
+  training.py             fit() and GatedModel — the QuAIL layer and its proximal loss
+  optimization.py         OptunaExperiment: centralized HPO over clean / baseline / gate
+  comparison_methods.py   Canonical method keys shared by evaluate.py and analysis/
+scripts/
+  download_data.py        Download the OpenML-CC18 suite into data/
+  select_datasets.py      Pick the experiment subset and write it into config.yaml
+  poison_data.py          AR / NAR corruption of data/ into data_poisoned/
+  evaluate.py             Friedman test + critical-difference diagrams
 analysis/                 Post-hoc analysis: Elo ratings, evidence tables, reports
-notebooks/                Exploratory notebooks (dataset summaries, walkthroughs)
-data/                     Clean source datasets (OpenML-CC18-derived)
-data_poisoned/            AR/NAR-corrupted versions of data/, from scripts/poison_data.py
-data_cleaned_cp/          Custom-pipeline-cleaned data (MICE + IQR + rule repair)
-data_cleaned_saga/        Saga++-cleaned data (baseline data-repair method)
-data_cleaned_learn2clean/ Learn2Clean-cleaned data (Q-learning pipeline selection)
-data_cleaned_diffprep/    DiffPrep-cleaned data (differentiable pipeline search)
-data_cleaned_ctxpipe/     CtxPipe-prepared data (context-aware RL pipeline construction)
-config.yaml               Single source of truth for all experiment settings
-run_pipeline.sh           Orchestrates the full pipeline end to end
-main.py                   Entry point for the Optuna hyperparameter search
-POISONING.md              Details of the AR/NAR corruption mechanisms and rates
+data/                     Clean source datasets (OpenML-CC18), not tracked
+config.yaml               Settings for poisoning, selection, HPO and analysis
+run_pipeline.sh           Select datasets + poison data per preset (rest is TODO)
+main.py                   Entry point of the centralized Optuna reference
+POISONING.md              AR/NAR corruption mechanisms and preset rates
 ```
 
-## Reproducing the experiments
+## What was removed
 
-### 1. Requirements
+- **Data-preparation baselines**: CP (`data_preparation_pipeline.py`), Saga++,
+  Learn2Clean, DiffPrep, CtxPipe (with its released agent weights), their
+  loaders in `quail/data.py`, their flags in `main.py`/`config.yaml` and their
+  dependencies (`shap`, `miceforest`, `mlxtend`, `lightgbm`, `transformers`).
+- **Curriculum learning** (quality-weighted sampling), alone and combined with
+  the quail layer.
+- The **notebooks**.
+
+All of it is still in the git history (last commit before the cleanup:
+`0dc3a4b`, also on `quail_v2`).
+
+## Setup
 
 - Python 3.12–3.14
-- [Poetry](https://python-poetry.org/) for dependency management (or use the
-  provided `Dockerfile` / `environment.yaml`, which set up a conda env with
-  Poetry inside it)
-
-### 2. Install
+- [Poetry](https://python-poetry.org/), or the provided `Dockerfile` /
+  `environment.yaml` (a conda env with Poetry inside it)
 
 ```bash
 cd Repository/FrogDQ.Federated_Proximal_Gating_with_Data_Quality
+poetry lock      # the lock file predates the dependency cleanup
 poetry install
 ```
 
-Or, via conda + Docker:
+## Data
+
+Clean datasets live under `data/`. To refresh them from OpenML-CC18:
 
 ```bash
-conda env create -f environment.yaml && conda activate quail
-poetry install --no-root
-# or: docker build -t quail . && docker run -it quail
+python scripts/download_data.py --dir data
 ```
 
-### 3. Data
-
-Clean datasets are already provided under `data/`. To refresh them from the
-OpenML-CC18 suite instead:
+The poisoning step writes, for each dataset, the corrupted train+val split and
+its cell-level mask under `data_poisoned/{ar,nar}/`, and the clean hold-out
+under `data_poisoned/test/`. The mechanisms and the preset rates (10–40 % of
+the feature cells) are documented in [POISONING.md](POISONING.md).
 
 ```bash
-python scripts/download_data.py --output-dir data
+python scripts/poison_data.py --input_dir data --output_dir data_poisoned --config config.yaml
+python scripts/poison_data.py --dataset car          # a single dataset
 ```
 
-### 4. Configure
-
-Edit [config.yaml](config.yaml) to pick datasets, data-quality modes
-(`clean`/`ar`/`nar`), model types, and which benchmarks to include
-(`run_cp`, `run_saga`). The corruption levels the pipeline sweeps live under
-`poisoning.presets` and are documented in [POISONING.md](POISONING.md).
-The Learn2Clean baseline is tuned under the `learn2clean` block (goal model,
-Q-learning parameters, per-method thresholds), DiffPrep under the `diffprep`
-block (variant, end model, training budget, learning-rate grid), and CtxPipe
-under the `ctxpipe` block (released agent weights, context embedding model,
-device, seeds).
-
-### 5. Run the full pipeline
+## Pipeline
 
 ```bash
-./run_pipeline.sh -y
+./run_pipeline.sh                      # all presets in poisoning.presets.run
+./run_pipeline.sh --presets 30         # a single preset
+./run_pipeline.sh --skip-select        # keep the datasets already in config.yaml
+PYTHON=venv/bin/python ./run_pipeline.sh   # default interpreter is ./.venv/bin/python
 ```
 
-After selecting datasets once, this loops over every corruption preset in
-`poisoning.presets.run` (10%, 20%, 30%, 40%). For each preset it poisons the data,
-runs data preparation (CP), Saga++, Learn2Clean, DiffPrep and CtxPipe, runs the Optuna
-experiments with the selected methods (QuAIL and Curriculum included) into
-`results/<preset>pct/`, evaluates them, then wipes `data_poisoned/`,
-`data_cleaned_cp/`, `data_cleaned_saga/`, `data_cleaned_learn2clean/`,
-`data_cleaned_diffprep/` and `data_cleaned_ctxpipe/` before the next preset.
+Step 1 selects the datasets once and rewrites the `datasets:` block of
+`config.yaml`; step 2 poisons them for each preset. Steps 3–5 (federated
+training and aggregation, evaluation, cleanup) are commented placeholders.
+Until they exist, every preset overwrites `data_poisoned/`, so only the last
+one is kept.
+
+## Centralized reference
+
+`main.py` still runs the centralized Optuna search the paper used, now reduced
+to three methods per dataset: `clean` (train on clean data), `baseline` (train
+on AR/NAR data) and `gate` (AR/NAR data + quail layer). It is kept as the
+non-federated upper bound to compare against. It reads `data_poisoned/`, so run
+the poisoning step first.
 
 ```bash
-./run_pipeline.sh --presets "10,30"                  # only some presets
-./run_pipeline.sh --skip-poison --skip-cp            # skip stages in every preset
-./run_pipeline.sh --skip-learn2clean                 # skip the Learn2Clean stage
-./run_pipeline.sh --skip-diffprep                    # skip the DiffPrep stage
-./run_pipeline.sh --skip-ctxpipe                     # skip the CtxPipe stage
-./run_pipeline.sh --no-cleanup                       # keep the intermediate data dirs
-./run_pipeline.sh --eval-output-dir my_evaluation    # plot subdir inside each results dir
-```
-
-### Data-preparation baselines
-
-| Baseline | Script | Output | Shape |
-|---|---|---|---|
-| CP | `scripts/data_preparation_pipeline.py` | `data_cleaned_cp/` | preserved |
-| Saga++ | `scripts/saga.py` | `data_cleaned_saga/` | preserved |
-| Learn2Clean | `scripts/learn2clean.py` | `data_cleaned_learn2clean/` | **reduced** |
-| DiffPrep | `scripts/diffprep.py` | `data_cleaned_diffprep/` | preserved (**rescaled**) |
-| CtxPipe | `scripts/ctxpipe.py` | `data_cleaned_ctxpipe/` | rows preserved, **new columns** |
-
-Learn2Clean ([Berti-Equille, WWW '19](https://doi.org/10.1145/3308558.3313602),
-ported from [the reference implementation](https://github.com/LaureBerti/Learn2Clean))
-picks its preparation pipeline by reinforcement learning: Q-learning explores the
-state-action graph of the 18 preparation/cleaning methods, then the greedy
-traversal from every starting state is executed and the pipeline maximizing the
-goal model's quality metric wins. Unlike CP and Saga++ it is *not*
-shape-preserving — outlier detection, deduplication and consistency checking drop
-rows, feature selection drops columns. The cleaned CSV, its residual mask and the
-surviving row/column labels recorded in `<dataset>_pipeline.pkl` are all aligned
-to the reduced frame.
-
-Because the frame it produces is smaller, Learn2Clean has its own loader,
-`quail.data.load_learn2clean_data`: it reads the reduced train+val frame, reads
-the hold-out from `data_cleaned_learn2clean/test/{mode}/` (already projected onto
-the surviving columns and rescaled), and, for the `clean_val` substitution, reads
-`data_cleaned_learn2clean/clean/{mode}/`: the clean counterparts of exactly the
-surviving rows and columns, put through the normalization and imputation
-*fitted on the training frame*. `scripts/learn2clean.py` records those fitted
-parameters while the winning strategy runs (`fitted_steps` in
-`<dataset>_pipeline.pkl`), so clean validation rows land on the same scale as the
-training rows instead of staying raw next to normalized ones.
-
-Enable it with `run_learn2clean` in [config.yaml](config.yaml) (or
-`--run-learn2clean` on `main.py`), and add `learn2clean` to `comparison_methods`
-to include it in the evaluation and analysis outputs.
-`scripts/learn2clean.py --help` documents the standalone CLI.
-
-DiffPrep ([Li et al., SIGMOD '23](https://doi.org/10.1145/3589328),
-ported from [the reference implementation](https://github.com/chu-data-lab/DiffPrep))
-searches the pipeline by gradient descent. The discrete choice of operator for
-each transformation type is relaxed with a softmax and the order of the
-transformation types with Sinkhorn normalization, which turns pipeline selection
-into a bi-level optimization problem — the model minimizes the training loss, the
-pipeline the validation loss — solved while training the end model only once.
-Both variants of the paper are available: `diffprep_fix` learns one operator per
-feature under a fixed order, `diffprep_flex` learns the order too, one
-permutation per feature.
-
-It keeps every row and column, so its mask lines up with the poison mask like
-CP's and Saga++'s do. What it changes is the *scale*: it picks a normalizer, and
-possibly a discretizer, per feature. `quail.data.load_diffprep_data` therefore
-builds its `TabularPreprocessor` with `scale_numerical=False` — standardizing
-again would compose another affine map on top of that choice and undo it — and
-reads the hold-out from `data_cleaned_diffprep/test/{mode}/` and, for the
-`clean_val` substitution, the clean train+val partition from
-`data_cleaned_diffprep/clean/{mode}/`, both already pushed through the
-transformers fitted on the training frame. One-hot encoding is the single step of
-the DiffPrep pipeline that `scripts/diffprep.py` deliberately does not write out,
-because the `TabularPreprocessor` performs it downstream.
-
-DiffPrep is by far the most expensive of the data-preparation baselines: it trains the end
-model once per learning rate in `diffprep.model_lr`, for every dataset and every
-corruption mode, and `diffprep_flex` evaluates every transformation type at every
-position of the permutation. Shrinking `model_lr` to a single value is the
-quickest way to cut the runtime.
-
-Enable it with `run_diffprep` in [config.yaml](config.yaml) (or `--run-diffprep`
-on `main.py`), and add `diffprep` to `comparison_methods` to include it in the
-evaluation and analysis outputs. `scripts/diffprep.py --help` documents the
-standalone CLI.
-
-CtxPipe ([Gao et al., SIGMOD '25](https://doi.org/10.1145/3698831),
-ported from [the reference implementation](https://github.com/ctxpipe/ctxpipe))
-builds the pipeline with deep Q-network agents: one picks the logical pipeline
-(the order of feature preprocessing, feature engineering and feature selection
-after imputation and encoding), then one agent per component type picks the
-component filling each slot, reading column statistics of the intermediate data
-and — through a gated *context plug-in* — a GTE-large embedding of 100 sampled
-rows, header included. The agents are the ones released upstream, trained for
-32,000 steps on the HAIPipe corpus and shipped in `scripts/ctxpipe_weights/`;
-nothing is trained here, exactly as in the paper's evaluation. The first run
-downloads GTE-large (~670 MB) into the Hugging Face cache and needs the
-`transformers` package.
-
-The whole pipeline the agents chose is written out, encoder and feature
-engineering included, so the output keeps every row but not the columns: every
-feature is numeric and prefixed `num_*` (its original name when a step transforms
-it in place, `num_pca_0`, `num_poly_12`, `num_rte_431`, ... when a step derives
-new ones). `quail.data.load_ctxpipe_data` builds its `TabularPreprocessor` with
-`scale_numerical=False`, and reads the hold-out and the clean train+val
-partition from `data_cleaned_ctxpipe/test/{mode}/` and
-`data_cleaned_ctxpipe/clean/{mode}/`, already pushed through the pipeline fitted
-on the training frame. The residual mask is written over the output columns, a
-derived feature inheriting the poison mask of the input columns it comes from.
-The port reproduces upstream's decisions exactly — same Q-values, same pipeline,
-same reward — and every deviation needed to write the data out is flagged with a
-`CTX-PORT` note in `scripts/ctxpipe.py`.
-
-Enable it with `run_ctxpipe` in [config.yaml](config.yaml) (or `--run-ctxpipe`
-on `main.py`), and add `ctxpipe` to `comparison_methods` to include it in the
-evaluation and analysis outputs. `scripts/ctxpipe.py --help` documents the
-standalone CLI.
-
-Each stage can also be run standalone via the corresponding script in
-`scripts/`, e.g. `python scripts/poison_data.py --input_dir data --output_dir
-data_poisoned --config config.yaml`.
-
-
-
-### 6. Quick smoke test
-
-To sanity-check the setup without a full run:
-
-```bash
-python main.py --quick-test --datasets iris
-```
-
-### 7. Outputs
-
-- `results/<preset>pct/` — per-trial and top-M metrics (CSV) for that corruption
-  level, keyed by dataset / data mode / model type / method, plus the evaluation
-  plots under `results/<preset>pct/evaluation/`
-
-### 8. Deep-dive analysis
-
-Once `results/` is populated, the `analysis/` scripts turn the raw metrics
-into the statistical evidence and plots used in the paper (Nemenyi/Friedman
-significance, Elo ratings, noise-robustness breakdowns, LaTeX tables). Run
-the whole suite end to end with:
-
-```bash
-python analysis/run_quail_evidence_report.py
-```
-
-This chains `optuna_progress.py`, `quail_analysis.py`, `elo_ratings.py`,
-`latex_evidence_table.py`, and `elo_baseline_table.py`, writing all plots to
-`analysis/plots/` and a single Markdown report to `analysis/reports/`. Each
-of these can also be run individually for a narrower output (e.g.
-`python analysis/quail_analysis.py --metric accuracy --latex`).
-
-List available datasets at any time with:
-
-```bash
+python main.py --datasets car --n-trials 10 --n-seeds 3
+python main.py --quick-test --datasets car      # 5 trials, 2 seeds, clean mode only
 python main.py --list-datasets
 ```
+
+Results go to `results/` (`optuna_studies.db`, one CSV per study and
+`all_experiments_results.csv`). Study names keep the old
+`<dataset>_<mode>_<model>_curr0_gate{0,1}` form, and the CSVs keep constant
+`use_curriculum` / `preparation` columns, so the analysis scripts below parse
+them unchanged.
+
+## Evaluation and analysis
+
+```bash
+python scripts/evaluate.py --config config.yaml --results-dir results --output-dir results/evaluation
+cd analysis && python run_quail_evidence_report.py
+```
+
+`run_quail_evidence_report.py` chains `optuna_progress.py`,
+`quail_analysis.py`, `elo_ratings.py`, `latex_evidence_table.py` and
+`elo_baseline_table.py`, reading `../results/optuna_studies.db` and writing to
+`analysis/plots/` and `analysis/reports/`. The scripts have not been modified.
+`comparison_methods` in `config.yaml` now accepts only `clean`, `baseline` and
+`gate`.
+
+## TODO
+
+**Federated setting**
+
+- [ ] **Client partitioning.** Split each dataset's poisoned train split across
+      clients, choosing how data and quality are distributed (IID or non-IID
+      labels; same or different corruption per client, e.g. different presets
+      or different corrupted columns).
+- [ ] **Per-client quality.** Compute the per-feature quality `q` on each
+      client from its own mask. `load_data` already returns `feature_quality`
+      and `sample_quality_*`, which may also serve as client-level signals.
+- [ ] **Local training.** Train on each client with the quail layer
+      (`quail.training.fit` / `GatedModel`), for a number of local epochs per
+      round.
+- [ ] **Quality-aware aggregation (the core).** Redesign the QuAIL logic for
+      the server: how gates `g` and base weights are aggregated (e.g. per-feature
+      weights driven by client quality), what the proximal anchor becomes
+      across clients, and whether the regularizer acts on the client, the
+      server, or both.
+- [ ] **Federated baselines.** Choose and implement the aggregation baselines
+      to compare against (e.g. FedAvg, FedProx).
+- [ ] **Entry point and configuration.** Add the federated entry point and a
+      `federated:` block to `config.yaml` (clients, rounds, local epochs,
+      aggregation rule), then fill steps 3–5 of `run_pipeline.sh`.
+- [ ] **Results format.** Either write results in the layout the analysis
+      scripts expect (Optuna DB with `curr0_gate{0,1}` studies, or the CSV
+      columns `evaluate.py` groups by), or adapt the scripts to the new
+      methods.
+
+**Known issues left as they are**
+
+- [ ] `scripts/evaluate.py` crashes on the "competitors only" plot with the
+      current methods: without `clean` only `baseline` and `gate` remain, but
+      the guard at line 198 checks for fewer than 2 methods, while the
+      Friedman test needs at least 3. The `with_clean` plot is written before
+      the crash. It goes away once a third method (e.g. a federated baseline)
+      exists, or by changing the guard to `< 3`.
+- [ ] `analysis/` still contains labels, regexes and paths for the removed
+      baselines. They are harmless (they simply do not match), but can be
+      cleaned up. `poisoning_pct_comparison.py` and `method_time_comparison.py`
+      read `results_old/` from the previous baseline runs.
+- [ ] `gate_anchor_interval` is still in the search space but has no effect in
+      `fit()`: the anchor is fixed before training.
+- [ ] `xgboost`, `ucimlrepo` and `tabulate` are declared as dependencies but
+      are not imported anywhere.
 
 ## License
 

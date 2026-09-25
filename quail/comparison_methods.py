@@ -4,10 +4,9 @@ scripts/evaluate.py and the analysis/*.py
 scripts (quail_analysis.py, optuna_progress.py, run_quail_evidence_report.py).
 
 Each of those scripts represents "which method a row belongs to" differently
-(a method_label() string, a study-name "config" token, or a
-(data_mode, model_type, use_curriculum, use_gate) column tuple), so this
-module defines one canonical set of method keys and a `resolve_*` function
-per representation, all mapping into that same canonical vocabulary. A single
+(a method_label() string or a study-name "config" token), so this module
+defines one canonical set of method keys and a `resolve_*` function per
+representation, all mapping into that same canonical vocabulary. A single
 `comparison_methods` list (read from config.yaml, or overridden with
 --comparison-methods on the CLI) can then restrict every script to the same
 chosen subset.
@@ -30,14 +29,7 @@ import yaml
 METHOD_CHOICES: List[str] = [
     "clean",
     "baseline",
-    "curriculum",
     "gate",
-    "gate_curriculum",
-    "saga",
-    "cp",
-    "learn2clean",
-    "diffprep",
-    "ctxpipe",
 ]
 
 # study-name "config" token (quail_analysis.py / optuna_progress.py /
@@ -46,28 +38,14 @@ METHOD_CHOICES: List[str] = [
 # "clean" and "baseline" everywhere else — so it is deliberately absent here;
 # callers resolve it via resolve_from_config_token(), which takes data_mode.
 _CONFIG_TOKEN_TO_METHOD: Dict[str, str] = {
-    "curr1_gate0": "curriculum",
     "curr0_gate1": "gate",
-    "curr1_gate1": "gate_curriculum",
-    "saga": "saga",
-    "cp": "cp",
-    "learn2clean": "learn2clean",
-    "diffprep": "diffprep",
-    "ctxpipe": "ctxpipe",
 }
 
 # evaluate.py's method_label() string -> canonical key.
 _LABEL_TO_METHOD: Dict[str, str] = {
     "clean": "clean",
     "baseline": "baseline",
-    "curriculum": "curriculum",
     "gate": "gate",
-    "gate+curriculum": "gate_curriculum",
-    "saga": "saga",
-    "cp": "cp",
-    "learn2clean": "learn2clean",
-    "diffprep": "diffprep",
-    "ctxpipe": "ctxpipe",
 }
 
 
@@ -81,17 +59,6 @@ def resolve_from_config_token(config_token: str, data_mode: str) -> str:
 def resolve_from_label(label: str) -> str:
     """Map an evaluate.py method_label() string to a canonical key."""
     return _LABEL_TO_METHOD.get(label, label)
-
-
-def resolve_from_column(data_mode: str, model_type: str, use_curriculum, use_gate) -> str:
-    """Map a generate_latex_tables.py (data_mode, model_type, use_curr, use_gate) column to a canonical key."""
-    if use_curriculum == "aggregated" or (use_curriculum and use_gate):
-        return "gate_curriculum"
-    if use_gate:
-        return "gate"
-    if use_curriculum:
-        return "curriculum"
-    return "clean" if data_mode == "clean" else "baseline"
 
 
 def is_selected(canonical: str, selected: Optional[List[str]]) -> bool:

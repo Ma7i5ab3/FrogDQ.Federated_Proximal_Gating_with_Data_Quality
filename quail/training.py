@@ -28,7 +28,7 @@ from torch.optim.lr_scheduler import (
     SequentialLR,
     StepLR,
 )
-from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
+from torch.utils.data import DataLoader, TensorDataset
 
 
 def fit(
@@ -56,10 +56,6 @@ def fit(
     use_class_weights: str = "false",
     label_smoothing: Union[float, str] = 0.0,
     mixup_alpha: Union[float, str] = 0.0,
-    # Curriculum learning
-    use_curriculum: str = "false",
-    sample_quality: Optional[np.ndarray] = None,
-    curriculum_strategy: str = "exponential",
     # Gate layer
     use_gate: str = "false",
     gate_init: str = "random",
@@ -127,12 +123,6 @@ def fit(
         Label smoothing factor (0 = no smoothing).
     mixup_alpha : float or str, default=0.0
         Mixup augmentation alpha (0 = no mixup).
-    use_curriculum : str, default="false"
-        Enable curriculum learning (prioritize high-quality samples).
-    sample_quality : np.ndarray, optional
-        Sample quality scores (same length as training data). Higher = better quality.
-    curriculum_strategy : str, default="exponential"
-        Sampling strategy: "linear", "exponential", "step".
     use_gate : str, default="false"
         Enable input quail layer (learnable feature weighting).
     gate_init : str, default="random"
@@ -174,13 +164,6 @@ def fit(
     ...     task="classification", epochs=100, early_stopping_patience=10
     ... )
 
-    >>> # With curriculum learning
-    >>> sample_quality = np.array([0.8, 0.9, 0.5, ...])  # Quality per sample
-    >>> model, history = fit(
-    ...     model, X_train, y_train, X_val, y_val,
-    ...     use_curriculum="true", sample_quality=sample_quality
-    ... )
-
     >>> # With quail layer
     >>> feature_quality = np.array([0.9, 0.7, 0.8, ...])  # Quality per feature
     >>> model, history = fit(
@@ -195,9 +178,7 @@ def fit(
     lr_scheduler = str(lr_scheduler).lower()
     device_str = str(device).lower()
     use_class_weights = str(use_class_weights).lower() in ("true", "1", "yes")
-    use_curriculum = str(use_curriculum).lower() in ("true", "1", "yes")
     use_gate = str(use_gate).lower() in ("true", "1", "yes")
-    curriculum_strategy = str(curriculum_strategy).lower()
     gate_init = str(gate_init).lower()
     gate_quality_weighting = str(gate_quality_weighting).lower()
     gate_loss_scheduler_str = str(gate_loss_scheduler).lower()
@@ -248,9 +229,6 @@ def fit(
         X_train, y_train, X_val, y_val, X_test, y_test,
         batch_size=batch_size,
         task=task,
-        use_curriculum=use_curriculum,
-        sample_quality=sample_quality,
-        curriculum_strategy=curriculum_strategy,
     )
 
     # Determine number of classes for classification
@@ -579,9 +557,6 @@ def _prepare_dataloaders(
     y_test: Optional[np.ndarray],
     batch_size: int,
     task: str,
-    use_curriculum: bool,
-    sample_quality: Optional[np.ndarray],
-    curriculum_strategy: str,
 ) -> Tuple[DataLoader, DataLoader, Optional[DataLoader]]:
     """Prepare PyTorch DataLoaders."""
     # Convert to tensors
@@ -599,24 +574,7 @@ def _prepare_dataloaders(
     train_dataset = TensorDataset(X_train_t, y_train_t)
     val_dataset = TensorDataset(X_val_t, y_val_t)
 
-    # Create train dataloader with curriculum learning if enabled
-    if use_curriculum and sample_quality is not None:
-        if len(sample_quality) != len(X_train):
-            raise ValueError(f"sample_quality length ({len(sample_quality)}) must match X_train length ({len(X_train)})")
-
-        # Compute sampling weights based on quality
-        sampling_weights = _compute_curriculum_weights(
-            sample_quality=sample_quality,
-            strategy=curriculum_strategy,
-        )
-        sampler = WeightedRandomSampler(
-            weights=sampling_weights,
-            num_samples=len(sampling_weights),
-            replacement=True,
-        )
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=sampler)
-    else:
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
     # Create val/test dataloaders (no shuffling)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
@@ -632,35 +590,6 @@ def _prepare_dataloaders(
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     return train_loader, val_loader, test_loader
-
-
-def _compute_curriculum_weights(
-    sample_quality: np.ndarray,
-    strategy: str,
-) -> np.ndarray:
-    """Compute sampling weights for curriculum learning."""
-    # Normalize quality to [0, 1]
-    quality_min = sample_quality.min()
-    quality_max = sample_quality.max()
-    if quality_max > quality_min:
-        quality_norm = (sample_quality - quality_min) / (quality_max - quality_min)
-    else:
-        quality_norm = np.ones_like(sample_quality)
-
-    if strategy == "linear":
-        weights = quality_norm + 0.1  # Add small offset to avoid zero weights
-    elif strategy == "exponential":
-        weights = np.exp(2 * quality_norm)  # Exponential emphasis on high quality
-    elif strategy == "step":
-        # Step function: high quality gets 2x, low quality gets 0.5x
-        median_quality = np.median(quality_norm)
-        weights = np.where(quality_norm >= median_quality, 2.0, 0.5)
-    else:
-        raise ValueError(f"Unknown curriculum strategy: {strategy}")
-
-    # Normalize weights to sum to 1
-    weights = weights / weights.sum()
-    return weights
 
 
 def _compute_gate_quality_weights(

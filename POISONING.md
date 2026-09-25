@@ -100,9 +100,9 @@ shares are *not* repeated there — they come from `poisoning.noise`
 (`moderate_frac`/`heavy_frac`/`severe_frac` = `0.35`/`0.22`/`0.10`) and are identical for
 every preset.
 
-`./run_pipeline.sh` reads that block and runs each preset end-to-end (poison → CP → Saga++ →
-Learn2Clean → DiffPrep → CtxPipe → experiments → evaluation) into `results/<preset>pct/`, wiping
-`data_poisoned/` and every `data_cleaned_*/` directory between rounds. Restrict a run with
+`./run_pipeline.sh` reads that block and poisons the data once per preset into
+`data_poisoned/`. The federated training, evaluation and cleanup steps of each round are
+still TODO, so for now every preset overwrites the previous one. Restrict a run with
 `--presets "10,30"`.
 
 A standalone `scripts/poison_data.py` invocation (outside the pipeline) uses the preset named

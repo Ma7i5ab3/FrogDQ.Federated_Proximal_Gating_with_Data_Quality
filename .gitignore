@@ -1,17 +1,12 @@
 data/*
 data_poisoned/*
 data_preprocessed/*
-data_cleaned_saga/*
-data_cleaned_learn2clean/*
-data_cleaned_diffprep/*
-data_cleaned_ctxpipe/*
 results/*
 results_old/*
 analysis/plots/*
 analysis/reports/*
 data_cleaned/*
 data_visualization/
-data_cleaned_cp/*
 data_knn/*
 evaluation/*
 data_baseline_zero/*
